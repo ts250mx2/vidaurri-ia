@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+html {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: auto;
+}
+
+body {
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
+}
+
+/* Evita zoom accidental por doble tap en elementos interactivos */
+button, a, input, select, textarea {
+  touch-action: manipulation;
+}
+
+/* ============================================================
+   Login Vidaurri IA — fondo tipo "taller nocturno":
+   malla técnica + auroras ámbar/rojo en movimiento lento.
+   Mismo lenguaje visual que kyk-server-web, acento propio.
+   ============================================================ */
+.vda-stage {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(110% 75% at 15% -10%, rgba(245, 158, 11, 0.13), transparent 55%),
+    radial-gradient(100% 70% at 90% 110%, rgba(239, 68, 68, 0.11), transparent 55%),
+    #060a12;
+}
+
+.vda-stage::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background-image:
+    linear-gradient(rgba(251, 191, 36, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(251, 191, 36, 0.06) 1px, transparent 1px);
+  background-size: 56px 56px, 56px 56px;
+  -webkit-mask-image: radial-gradient(75% 65% at 50% 40%, #000 30%, transparent 80%);
+          mask-image: radial-gradient(75% 65% at 50% 40%, #000 30%, transparent 80%);
+  pointer-events: none;
+}
+
+@keyframes vda-aurora {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33%      { transform: translate3d(4%, -6%, 0) scale(1.12); }
+  66%      { transform: translate3d(-5%, 5%, 0) scale(0.95); }
+}
+
+.vda-aurora {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.55;
+  animation: vda-aurora 14s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* Línea superior degradada de la tarjeta */
+.vda-card-accent {
+  background: linear-gradient(90deg, transparent, #fbbf24 25%, #f87171 75%, transparent);
+}
+
+/* Texto con degradado de marca */
+.vda-gradient-text {
+  background: linear-gradient(120deg, #fde68a, #fbbf24 40%, #f87171 80%);
+  -webkit-background-clip: text;
+          background-clip: text;
+  color: transparent;
+}
+
+/* Sacudida para errores de login */
+@keyframes vda-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+.vda-shake { animation: vda-shake 0.35s ease-in-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vda-aurora, .vda-shake { animation: none; }
+}
