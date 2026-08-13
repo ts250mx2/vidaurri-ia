@@ -3,6 +3,7 @@ import { sesionActual } from "@/lib/auth";
 import { consultaBdav } from "@/lib/db";
 import { ejecutarConsultaAgente, TABLAS_PERMITIDAS } from "@/lib/agente-sql";
 import { correrTurnoAgente, claveFaltante, type UsoHerramienta } from "@/lib/agente-modelo";
+import { esModeloVidaValido } from "@/lib/modelos-vida";
 
 // Agente VIDA — Vidaurri Inteligencia de Datos Automotriz.
 // Protocolo de streaming NDJSON (patrón kyk-server-web):
@@ -158,16 +159,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const modelo = process.env.AGENTES_MODELO || "claude-opus-5";
-  const claveEnv = claveFaltante(modelo);
-  if (claveEnv) {
-    return Response.json(
-      { error: `Falta configurar ${claveEnv} en el servidor` },
-      { status: 500 }
-    );
-  }
-
-  let cuerpo: { pregunta?: string; historial?: MensajeCliente[] };
+  let cuerpo: { pregunta?: string; historial?: MensajeCliente[]; modelo?: string };
   try {
     cuerpo = await request.json();
   } catch {
@@ -175,6 +167,20 @@ export async function POST(request: Request) {
   }
   const pregunta = String(cuerpo.pregunta ?? "").trim().slice(0, MAX_PREGUNTA);
   if (!pregunta) return Response.json({ error: "Escribe una pregunta" }, { status: 400 });
+
+  // El usuario elige el modelo desde la interfaz (lista blanca); si no llega uno
+  // válido, se usa el del entorno.
+  const modeloElegido = String(cuerpo.modelo ?? "");
+  const modelo = esModeloVidaValido(modeloElegido)
+    ? modeloElegido
+    : process.env.AGENTES_MODELO || "claude-opus-5";
+  const claveEnv = claveFaltante(modelo);
+  if (claveEnv) {
+    return Response.json(
+      { error: `Falta configurar ${claveEnv} en el servidor para el modelo seleccionado` },
+      { status: 500 }
+    );
+  }
 
   // Historial reciente (texto plano) → mensajes del modelo.
   const historial = (cuerpo.historial ?? []).slice(-MAX_HISTORIAL);

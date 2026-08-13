@@ -3,42 +3,39 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, RotateCcw, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { preguntarVida, SesionExpiradaError } from "@/lib/agente-cliente";
+import { preguntarAgente, SesionExpiradaError } from "@/lib/agente-cliente";
 import { AgenteMarkdown } from "@/components/dashboard/AgenteMarkdown";
-import { MODELOS_VIDA, esModeloVidaValido } from "@/lib/modelos-vida";
 
 interface Mensaje {
   rol: "usuario" | "agente";
   texto: string;
 }
 
-const CLAVE_STORAGE = "vida-conversacion";
-const CLAVE_MODELO = "vida-modelo";
+const ENDPOINT = "/api/chat/vendedor";
+const CLAVE_STORAGE = "vendedor-conversacion";
 
 const SUGERENCIAS = [
-  "¿Cómo van las ventas de hoy?",
-  "Top 10 artículos más vendidos del mes",
-  "¿Qué cofres de Nissan tenemos con existencia?",
-  "¿Qué clientes deben más dinero?",
-  "¿Qué artículos con venta reciente están agotados?",
-  "Compara las ventas de este mes contra el anterior",
+  "Cofre para Nissan Versa 2016",
+  "Defensa delantera de Aveo",
+  "¿Qué parrillas de Toyota Avanza tienen?",
+  "Faros para Chevy 2010 con existencia",
+  "Tolva salpicadera de Nissan",
+  "Cofre de Honda Civic 2018 y su precio",
 ];
 
-export default function VidaPage() {
+export default function VendedorPage() {
   const [mensajes, setMensajes] = useState<Mensaje[]>([]);
   const [borrador, setBorrador] = useState("");
   const [pregunta, setPregunta] = useState("");
   const [estado, setEstado] = useState("");
   const [pensando, setPensando] = useState(false);
   const [error, setError] = useState("");
-  const [modelo, setModelo] = useState(MODELOS_VIDA[0].id);
   const abortRef = useRef<AbortController | null>(null);
-  // Espejo del texto en curso: el catch de abort lee el acumulado real, no el
-  // valor capturado por el closure del render en que se hizo clic.
+  // Espejo del texto en curso, para conservar lo parcial al detener.
   const borradorRef = useRef("");
   const finalRef = useRef<HTMLDivElement | null>(null);
 
-  // Restaura la conversación y el modelo elegido.
+  // Restaura y respalda la conversación en sessionStorage.
   useEffect(() => {
     try {
       const guardado = sessionStorage.getItem(CLAVE_STORAGE);
@@ -46,22 +43,7 @@ export default function VidaPage() {
     } catch {
       // storage corrupto: se inicia limpio
     }
-    try {
-      const m = localStorage.getItem(CLAVE_MODELO);
-      if (m && esModeloVidaValido(m)) setModelo(m);
-    } catch {
-      // sin localStorage: se queda con el modelo por defecto
-    }
   }, []);
-
-  const cambiarModelo = (id: string) => {
-    setModelo(id);
-    try {
-      localStorage.setItem(CLAVE_MODELO, id);
-    } catch {
-      // sin localStorage: el cambio vale solo para esta sesión
-    }
-  };
   useEffect(() => {
     try {
       sessionStorage.setItem(CLAVE_STORAGE, JSON.stringify(mensajes.slice(-30)));
@@ -90,7 +72,8 @@ export default function VidaPage() {
       const controlador = new AbortController();
       abortRef.current = controlador;
       try {
-        const respuesta = await preguntarVida(
+        const respuesta = await preguntarAgente(
+          ENDPOINT,
           limpia,
           historial.slice(0, -1),
           {
@@ -100,8 +83,7 @@ export default function VidaPage() {
             },
             alEstado: setEstado,
           },
-          controlador.signal,
-          modelo
+          controlador.signal
         );
         setMensajes([...historial, { rol: "agente", texto: respuesta || "…" }]);
       } catch (err: unknown) {
@@ -110,13 +92,12 @@ export default function VidaPage() {
           return;
         }
         if (controlador.signal.aborted) {
-          // detenida por el usuario: conserva lo que alcanzó a responder
           const parcial = borradorRef.current;
           setMensajes((previos) =>
             parcial ? [...previos, { rol: "agente", texto: parcial }] : previos
           );
         } else {
-          setError(err instanceof Error ? err.message : "VIDA no pudo responder");
+          setError(err instanceof Error ? err.message : "El Vendedor IA no pudo responder");
         }
       } finally {
         setPensando(false);
@@ -126,7 +107,7 @@ export default function VidaPage() {
         abortRef.current = null;
       }
     },
-    [mensajes, pensando, modelo]
+    [mensajes, pensando]
   );
 
   const detener = () => abortRef.current?.abort();
@@ -149,57 +130,38 @@ export default function VidaPage() {
       {/* Cabecera del agente */}
       <div className="flex items-center justify-between gap-3 pb-4">
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">
-            🤖
+          <div className="w-11 h-11 rounded-2xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-xl">
+            🛒
           </div>
           <div>
             <h1 className="text-xl font-black text-white tracking-tight leading-none">
-              VIDA <span className="vda-gradient-text">· Agente IA</span>
+              Vendedor <span className="text-cyan-300">IA</span>
             </h1>
             <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mt-1.5">
-              Vidaurri Inteligencia de Datos Automotriz · Consulta la base en tu idioma
+              Asesor de mostrador · Pregunta por una parte y te sugiere productos con precio
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Selector de modelo */}
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.05] border border-white/10">
-            {MODELOS_VIDA.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => cambiarModelo(m.id)}
-                disabled={pensando}
-                title={`Usar ${m.etiqueta}`}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-50",
-                  modelo === m.id
-                    ? "bg-amber-500 text-slate-950"
-                    : "text-slate-400 hover:text-white"
-                )}
-              >
-                {m.etiqueta}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={reiniciar}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white transition-all"
-          >
-            <RotateCcw className="h-3.5 w-3.5" /> Nueva
-          </button>
-        </div>
+        <button
+          onClick={reiniciar}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white transition-all"
+        >
+          <RotateCcw className="h-3.5 w-3.5" /> Nueva consulta
+        </button>
       </div>
 
       {/* Conversación */}
       <div className="flex-1 overflow-y-auto bg-white/[0.03] border border-white/10 rounded-2xl backdrop-blur-xl p-4 space-y-4">
         {vacia ? (
           <div className="h-full flex flex-col items-center justify-center gap-5 text-center px-4">
-            <div className="text-5xl">🤖</div>
+            <div className="text-5xl">🛒</div>
             <div>
-              <p className="text-base font-black text-white">Pregúntame lo que quieras del negocio</p>
+              <p className="text-base font-black text-white">
+                Dime qué parte busca tu cliente
+              </p>
               <p className="text-[11px] font-bold text-slate-500 mt-1.5 max-w-md">
-                Consulto ventas, inventario, clientes, compras y cotizaciones directamente en la
-                base de datos, en tiempo real y solo en modo lectura.
+                Describe la pieza (marca, modelo, año y tipo) y te sugiero los productos del
+                catálogo con su precio con IVA, existencia y ubicación en la tienda.
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2 max-w-xl">
@@ -207,7 +169,7 @@ export default function VidaPage() {
                 <button
                   key={s}
                   onClick={() => enviar(s)}
-                  className="px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-200 text-[12px] font-bold hover:bg-amber-500/20 transition-colors"
+                  className="px-3.5 py-2 rounded-xl bg-cyan-500/10 border border-cyan-500/25 text-cyan-200 text-[12px] font-bold hover:bg-cyan-500/20 transition-colors"
                 >
                   {s}
                 </button>
@@ -225,7 +187,7 @@ export default function VidaPage() {
                   className={cn(
                     "max-w-[85%] px-4 py-3 rounded-2xl border",
                     m.rol === "usuario"
-                      ? "bg-amber-500/15 border-amber-500/25 rounded-br-md text-[13px] font-bold text-amber-100"
+                      ? "bg-cyan-500/15 border-cyan-500/25 rounded-br-md text-[13px] font-bold text-cyan-100"
                       : "bg-white/[0.05] border-white/10 rounded-bl-md"
                   )}
                 >
@@ -243,9 +205,9 @@ export default function VidaPage() {
                   ) : (
                     <div className="flex items-center gap-2">
                       <span className="flex gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-bounce" />
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-bounce [animation-delay:0.15s]" />
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-bounce [animation-delay:0.3s]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce [animation-delay:0.15s]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce [animation-delay:0.3s]" />
                       </span>
                       <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">
                         {estado || "Pensando..."}
@@ -253,7 +215,7 @@ export default function VidaPage() {
                     </div>
                   )}
                   {borrador && estado && (
-                    <p className="text-[10px] font-black text-amber-400/70 uppercase tracking-widest">
+                    <p className="text-[10px] font-black text-cyan-400/70 uppercase tracking-widest">
                       {estado}
                     </p>
                   )}
@@ -283,8 +245,8 @@ export default function VidaPage() {
               enviar(pregunta);
             }
           }}
-          placeholder="Pregúntale a VIDA... (Enter para enviar)"
-          className="flex-1 resize-none px-4 py-3.5 bg-white/[0.04] border border-white/10 rounded-2xl text-sm font-bold text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400/25 focus:border-amber-400/60 transition-all max-h-40"
+          placeholder="Ej: cofre para versa 2016... (Enter para enviar)"
+          className="flex-1 resize-none px-4 py-3.5 bg-white/[0.04] border border-white/10 rounded-2xl text-sm font-bold text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/25 focus:border-cyan-400/60 transition-all max-h-40"
         />
         {pensando ? (
           <button
@@ -298,10 +260,10 @@ export default function VidaPage() {
           <button
             onClick={() => enviar(pregunta)}
             disabled={!pregunta.trim()}
-            className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-400 to-red-500 text-slate-950 shadow-lg shadow-amber-500/20 hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            className="p-3.5 rounded-2xl bg-gradient-to-r from-cyan-500 via-sky-400 to-teal-500 text-slate-950 shadow-lg shadow-cyan-500/20 hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
             title="Enviar"
           >
-            {pensando ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
+            <Send className="h-5 w-5" />
           </button>
         )}
       </div>

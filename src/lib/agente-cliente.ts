@@ -1,4 +1,4 @@
-// Consumo del stream NDJSON del agente VIDA en el navegador.
+// Consumo del stream NDJSON de los agentes (VIDA, Vendedor) en el navegador.
 
 export class SesionExpiradaError extends Error {
   constructor() {
@@ -18,23 +18,29 @@ interface MensajeHistorial {
   texto: string;
 }
 
-/** Envía la pregunta y va entregando la respuesta en streaming. Devuelve el texto final. */
-export async function preguntarVida(
+/**
+ * Envía la pregunta a un endpoint de agente y va entregando la respuesta en
+ * streaming (protocolo NDJSON). Devuelve el texto final.
+ */
+export async function preguntarAgente(
+  endpoint: string,
   pregunta: string,
   historial: MensajeHistorial[],
   eventos: EventosAgente,
-  señal?: AbortSignal
+  señal?: AbortSignal,
+  /** Modelo elegido en la interfaz (opcional; el servidor valida y cae al default). */
+  modelo?: string
 ): Promise<string> {
-  const res = await fetch("/api/chat/vida", {
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pregunta, historial }),
+    body: JSON.stringify({ pregunta, historial, ...(modelo ? { modelo } : {}) }),
     signal: señal,
   });
   if (res.status === 401) throw new SesionExpiradaError();
   if (!res.ok || !res.body) {
     const json = await res.json().catch(() => null);
-    throw new Error(json?.error || "VIDA no pudo responder");
+    throw new Error(json?.error || "El agente no pudo responder");
   }
 
   const lector = res.body.getReader();
@@ -82,4 +88,15 @@ export async function preguntarVida(
 
   if (errorServidor) throw new Error(errorServidor);
   return texto;
+}
+
+/** Atajo para el agente VIDA (con modelo elegible). */
+export function preguntarVida(
+  pregunta: string,
+  historial: MensajeHistorial[],
+  eventos: EventosAgente,
+  señal?: AbortSignal,
+  modelo?: string
+): Promise<string> {
+  return preguntarAgente("/api/chat/vida", pregunta, historial, eventos, señal, modelo);
 }

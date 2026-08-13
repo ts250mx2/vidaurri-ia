@@ -1,0 +1,123 @@
+import crypto from "node:crypto";
+import { claveFaltante } from "@/lib/agente-modelo";
+import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
+
+// Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
+// la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
+// devuelve UNA respuesta completa en texto plano (WhatsApp no hace streaming).
+// El gateway de WhatsApp (Twilio, Cloud API, n8n, whatsapp-web.js…) llama aquí
+// con el teléfono y el mensaje del cliente, y reenvía la respuesta al chat.
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
+
+const MAX_MENSAJE = 2000;
+const MAX_HISTORIAL = 12; // mensajes recordados por conversación
+const TTL_CONVERSACION_MS = 30 * 60 * 1000; // 30 min de inactividad
+const LIMITE_POR_MINUTO = 20;
+
+// Memoria de conversación por número de teléfono (para que el chat tenga contexto).
+const conversaciones = new Map<string, { mensajes: MensajeConversacion[]; expira: number }>();
+// Rate limit por teléfono.
+const ventanas = new Map<string, number[]>();
+
+function comparaClaveSegura(recibida: string, esperada: string): boolean {
+  const a = Buffer.from(recibida);
+  const b = Buffer.from(esperada);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function autorizado(request: Request): boolean {
+  const esperada = process.env.WHATSAPP_API_KEY;
+  if (!esperada) return false; // sin key configurada, el webservice queda cerrado
+  const bearer = request.headers.get("authorization") ?? "";
+  const recibida = bearer.toLowerCase().startsWith("bearer ")
+    ? bearer.slice(7).trim()
+    : (request.headers.get("x-api-key") ?? "").trim();
+  if (!recibida) return false;
+  return comparaClaveSegura(recibida, esperada);
+}
+
+function excedeLimite(telefono: string): boolean {
+  const ahora = Date.now();
+  const ventana = (ventanas.get(telefono) ?? []).filter((t) => ahora - t < 60_000);
+  if (ventana.length >= LIMITE_POR_MINUTO) return true;
+  ventana.push(ahora);
+  ventanas.set(telefono, ventana);
+  return false;
+}
+
+function historialDe(telefono: string): MensajeConversacion[] {
+  const conv = conversaciones.get(telefono);
+  if (!conv || conv.expira < Date.now()) return [];
+  return conv.mensajes;
+}
+
+function guardarTurno(telefono: string, pregunta: string, respuesta: string): void {
+  const previos = historialDe(telefono);
+  const mensajes = [
+    ...previos,
+    { rol: "usuario" as const, texto: pregunta },
+    { rol: "agente" as const, texto: respuesta },
+  ].slice(-MAX_HISTORIAL);
+  conversaciones.set(telefono, { mensajes, expira: Date.now() + TTL_CONVERSACION_MS });
+}
+
+/** Salud del webservice (sin exponer datos). Útil para probar conectividad. */
+export function GET() {
+  return Response.json({ ok: true, servicio: "vendedor-ia-whatsapp" });
+}
+
+export async function POST(request: Request) {
+  if (!autorizado(request)) {
+    return Response.json({ ok: false, error: "No autorizado" }, { status: 401 });
+  }
+
+  const modelo = process.env.VENDEDOR_MODELO || "claude-sonnet-5";
+  if (claveFaltante(modelo)) {
+    return Response.json(
+      { ok: false, error: "Servicio de IA no configurado" },
+      { status: 500 }
+    );
+  }
+
+  let cuerpo: { telefono?: string; mensaje?: string; reiniciar?: boolean };
+  try {
+    cuerpo = await request.json();
+  } catch {
+    return Response.json({ ok: false, error: "Petición inválida" }, { status: 400 });
+  }
+
+  // El teléfono identifica la conversación; se saneé para usarlo de clave.
+  const telefono = String(cuerpo.telefono ?? "").replace(/[^\d+]/g, "").slice(0, 20) || "anon";
+  const mensaje = String(cuerpo.mensaje ?? "").trim().slice(0, MAX_MENSAJE);
+
+  if (cuerpo.reiniciar) conversaciones.delete(telefono);
+  if (!mensaje) {
+    return Response.json({ ok: false, error: "Falta el mensaje" }, { status: 400 });
+  }
+  if (excedeLimite(telefono)) {
+    return Response.json(
+      { ok: false, error: "Demasiados mensajes seguidos; espera un momento" },
+      { status: 429 }
+    );
+  }
+
+  try {
+    const respuesta = await correrVendedor({
+      pregunta: mensaje,
+      historial: historialDe(telefono),
+      modelo,
+    });
+    const texto = respuesta.trim() || "Disculpa, no te entendí. ¿Qué parte buscas?";
+    guardarTurno(telefono, mensaje, texto);
+    return Response.json({ ok: true, respuesta: texto });
+  } catch (error) {
+    console.error("Error en Vendedor IA (WhatsApp):", error);
+    return Response.json(
+      { ok: false, error: "No fue posible responder en este momento" },
+      { status: 502 }
+    );
+  }
+}

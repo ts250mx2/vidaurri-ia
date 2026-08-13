@@ -112,10 +112,15 @@ function traducirMensajes(sistema: string, mensajes: Anthropic.MessageParam[]): 
 
 async function turnoOpenAI(turno: TurnoAgente): Promise<ResultadoTurno> {
   const openai = new OpenAI(); // lee OPENAI_API_KEY del entorno
+  // Los modelos gpt-5.x son razonadores; chat.completions NO admite function
+  // tools con reasoning_effort activo, así que se fuerza a 'none' (además va
+  // más rápido para un agente con herramientas).
+  const esRazonadorGpt5 = /^gpt-5/i.test(turno.modelo.trim());
   const stream = await openai.chat.completions.create({
     model: turno.modelo,
     max_completion_tokens: turno.maxTokens,
     messages: traducirMensajes(turno.sistema, turno.mensajes),
+    ...(esRazonadorGpt5 ? { reasoning_effort: "none" as const } : {}),
     ...(turno.sinHerramientas
       ? {}
       : {
