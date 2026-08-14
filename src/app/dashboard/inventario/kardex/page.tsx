@@ -14,21 +14,30 @@ import {
   Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { entero, fechaCorta } from "@/lib/formato";
+import { entero, fechaCorta, moneda } from "@/lib/formato";
+import {
+  SelectorSucursal,
+  SUCURSALES,
+  type Sucursal,
+} from "@/components/dashboard/SelectorSucursal";
 
 // ---------- Tipos ----------
 interface Movimiento {
   id: number;
   fecha: string;
   tipoMov: string;
-  tipoDoc: string | null;
-  numDoc: number | null;
+  numDoc: number | string | null;
   codigo: string;
   descripcion: string;
   existAnt: number;
   cantidad: number;
   existPost: number;
-  usuario: string | null;
+  // Solo matriz (bdav)
+  tipoDoc?: string | null;
+  usuario?: string | null;
+  // Solo Bodega Usado (bitacora_piezas)
+  precio?: number;
+  total?: number;
 }
 
 interface Resumen {
@@ -67,6 +76,15 @@ const badgeTipo = (tipo: string) =>
       ? "text-cyan-300 bg-cyan-500/10 border-cyan-500/25"
       : "text-rose-300 bg-rose-500/10 border-rose-500/25";
 
+// Badge de la Bodega Usado: patrón claseTipoMov del proyecto
+// (VENTA verde, DEVOLUCION rojo, ENTRADA cyan).
+const badgeTipoUsadas = (tipo: string) =>
+  tipo === "VENTA"
+    ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/25"
+    : tipo === "DEVOLUCION"
+      ? "text-rose-300 bg-rose-500/10 border-rose-500/25"
+      : "text-cyan-300 bg-cyan-500/10 border-cyan-500/25";
+
 // Signo visual según el tipo: la venta descuenta existencia, lo demás la suma.
 const cantidadVisual = (m: Movimiento) =>
   m.tipoMov === "VENTA" ? `-${entero(Math.abs(m.cantidad))}` : `+${entero(Math.abs(m.cantidad))}`;
@@ -74,7 +92,11 @@ const cantidadVisual = (m: Movimiento) =>
 const colorCantidad = (tipo: string) =>
   tipo === "ENTRADA" ? "text-emerald-300" : tipo === "VENTA" ? "text-cyan-300" : "text-rose-300";
 
+const colorCantidadUsadas = (tipo: string) =>
+  tipo === "VENTA" ? "text-emerald-300" : tipo === "DEVOLUCION" ? "text-rose-300" : "text-cyan-300";
+
 export default function KardexPage() {
+  const [sucursal, setSucursal] = useState<Sucursal>("matriz");
   const [fechaInicio, setFechaInicio] = useState(hoyISO());
   const [fechaFin, setFechaFin] = useState(hoyISO());
   const [tipoMov, setTipoMov] = useState("");
@@ -92,7 +114,7 @@ export default function KardexPage() {
   const peticionRef = useRef(0);
 
   const cargar = useCallback(
-    async (inicio: string, fin: string, tipo: string, filtro: string, pagina: number) => {
+    async (suc: Sucursal, inicio: string, fin: string, tipo: string, filtro: string, pagina: number) => {
       const idPeticion = ++peticionRef.current;
       setCargando(true);
       setError("");
@@ -103,6 +125,7 @@ export default function KardexPage() {
           page: String(pagina),
           pageSize: String(PAGE_SIZE),
         });
+        if (suc === "usadas") qs.set("sucursal", "usadas");
         if (tipo) qs.set("tipoMov", tipo);
         if (filtro) qs.set("busqueda", filtro);
         const res = await fetch(`/api/inventario/kardex?${qs.toString()}`);
@@ -131,12 +154,21 @@ export default function KardexPage() {
   );
 
   useEffect(() => {
-    cargar(hoyISO(), hoyISO(), "", "", 1);
+    cargar("matriz", hoyISO(), hoyISO(), "", "", 1);
   }, [cargar]);
 
   const actualizar = () => {
     setPage(1);
-    cargar(fechaInicio, fechaFin, tipoMov, busqueda, 1);
+    cargar(sucursal, fechaInicio, fechaFin, tipoMov, busqueda, 1);
+  };
+
+  // Los tres tipos de movimiento y el resto de filtros aplican igual en ambas
+  // sucursales: al cambiar solo se resetea la página y se recarga.
+  const cambiarSucursal = (nueva: Sucursal) => {
+    if (nueva === sucursal) return;
+    setSucursal(nueva);
+    setPage(1);
+    cargar(nueva, fechaInicio, fechaFin, tipoMov, busqueda, 1);
   };
 
   const preset = (dias: number) => {
@@ -145,13 +177,13 @@ export default function KardexPage() {
     setFechaInicio(inicio);
     setFechaFin(fin);
     setPage(1);
-    cargar(inicio, fin, tipoMov, busqueda, 1);
+    cargar(sucursal, inicio, fin, tipoMov, busqueda, 1);
   };
 
   const cambiarTipo = (tipo: string) => {
     setTipoMov(tipo);
     setPage(1);
-    cargar(fechaInicio, fechaFin, tipo, busqueda, 1);
+    cargar(sucursal, fechaInicio, fechaFin, tipo, busqueda, 1);
   };
 
   const limpiar = () => {
@@ -160,12 +192,12 @@ export default function KardexPage() {
     setTipoMov("");
     setBusqueda("");
     setPage(1);
-    cargar(hoyISO(), hoyISO(), "", "", 1);
+    cargar(sucursal, hoyISO(), hoyISO(), "", "", 1);
   };
 
   const cambiarPagina = (pagina: number) => {
     setPage(pagina);
-    cargar(fechaInicio, fechaFin, tipoMov, busqueda, pagina);
+    cargar(sucursal, fechaInicio, fechaFin, tipoMov, busqueda, pagina);
   };
 
   const exportar = async (formato: "pdf" | "excel") => {
@@ -179,6 +211,7 @@ export default function KardexPage() {
         page: "1",
         pageSize: "20000",
       });
+      if (sucursal === "usadas") qs.set("sucursal", "usadas");
       if (tipoMov) qs.set("tipoMov", tipoMov);
       if (busqueda) qs.set("busqueda", busqueda);
       const res = await fetch(`/api/inventario/kardex?${qs.toString()}`);
@@ -186,6 +219,7 @@ export default function KardexPage() {
       if (!res.ok) throw new Error(json.error || "Error al exportar");
       const filas: Movimiento[] = json.movimientos;
 
+      const esUsadas = sucursal === "usadas";
       const columnas = [
         { header: "Fecha" },
         { header: "Tipo" },
@@ -195,16 +229,30 @@ export default function KardexPage() {
         { header: "Exist. ant.", align: "right" as const },
         { header: "Cantidad", align: "right" as const },
         { header: "Exist. post.", align: "right" as const },
-        { header: "Usuario" },
+        ...(esUsadas
+          ? [
+              { header: "Precio", align: "right" as const },
+              { header: "Total", align: "right" as const },
+            ]
+          : [{ header: "Usuario" }]),
       ];
       const base = {
-        titulo: "KARDEX DE INVENTARIO",
+        titulo: `KARDEX DE INVENTARIO${esUsadas ? " · BODEGA USADO" : ""}`,
         subtitulo: `Del ${fechaInicio} al ${fechaFin}${tipoMov ? `  ·  ${tipoMov}` : ""}${
           busqueda ? `  ·  "${busqueda}"` : ""
         }  ·  ${entero(filas.length)} movimientos`,
         columnas,
-        nombreArchivo: `kardex_${fechaInicio}_${fechaFin}`,
+        nombreArchivo: `kardex_${esUsadas ? "usadas_" : ""}${fechaInicio}_${fechaFin}`,
       };
+
+      // Columnas comunes; las finales cambian por sucursal (usuario vs precios).
+      const filaComun = (m: Movimiento) => [
+        fechaCorta(m.fecha),
+        m.tipoMov,
+        esUsadas ? String(m.numDoc ?? "") : `${m.tipoDoc ?? ""} ${m.numDoc ?? ""}`.trim(),
+        m.codigo,
+        m.descripcion,
+      ];
 
       if (formato === "pdf") {
         const { exportarPdf } = await import("@/lib/export");
@@ -212,15 +260,11 @@ export default function KardexPage() {
           ...base,
           orientacion: "landscape",
           filas: filas.map((m) => [
-            fechaCorta(m.fecha),
-            m.tipoMov,
-            `${m.tipoDoc ?? ""} ${m.numDoc ?? ""}`.trim(),
-            m.codigo,
-            m.descripcion,
+            ...filaComun(m),
             entero(m.existAnt),
             entero(m.cantidad),
             entero(m.existPost),
-            m.usuario ?? "",
+            ...(esUsadas ? [moneda(m.precio ?? 0), moneda(m.total ?? 0)] : [m.usuario ?? ""]),
           ]),
         });
       } else {
@@ -229,15 +273,11 @@ export default function KardexPage() {
           ...base,
           hoja: "Kardex",
           filas: filas.map((m) => [
-            fechaCorta(m.fecha),
-            m.tipoMov,
-            `${m.tipoDoc ?? ""} ${m.numDoc ?? ""}`.trim(),
-            m.codigo,
-            m.descripcion,
+            ...filaComun(m),
             m.existAnt,
             m.cantidad,
             m.existPost,
-            m.usuario ?? "",
+            ...(esUsadas ? [m.precio ?? 0, m.total ?? 0] : [m.usuario ?? ""]),
           ]),
         });
       }
@@ -249,12 +289,22 @@ export default function KardexPage() {
   };
 
   const totalPaginas = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const esUsadas = sucursal === "usadas";
 
+  // Colores de tarjetas coherentes con los badges de cada sucursal.
   const tarjetas = resumen
     ? [
         { titulo: "Movimientos", valor: entero(resumen.movimientos), color: "text-slate-200" },
-        { titulo: "Entradas", valor: entero(resumen.entradas), color: "text-emerald-300" },
-        { titulo: "Salidas por venta", valor: entero(resumen.ventas), color: "text-cyan-300" },
+        {
+          titulo: "Entradas",
+          valor: entero(resumen.entradas),
+          color: esUsadas ? "text-cyan-300" : "text-emerald-300",
+        },
+        {
+          titulo: "Salidas por venta",
+          valor: entero(resumen.ventas),
+          color: esUsadas ? "text-emerald-300" : "text-cyan-300",
+        },
         { titulo: "Devoluciones", valor: entero(resumen.devoluciones), color: "text-rose-300" },
         { titulo: "Piezas movidas", valor: entero(resumen.piezas), color: "text-amber-300" },
       ]
@@ -271,6 +321,7 @@ export default function KardexPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <SelectorSucursal opciones={SUCURSALES} valor={sucursal} onCambio={cambiarSucursal} />
           <button
             onClick={() => exportar("pdf")}
             disabled={!!exportando || cargando || movimientos.length === 0}
@@ -429,7 +480,14 @@ export default function KardexPage() {
                     <th className={cn(lbl, "px-4 py-2.5 text-right")}>Exist. ant.</th>
                     <th className={cn(lbl, "px-4 py-2.5 text-right")}>Cantidad</th>
                     <th className={cn(lbl, "px-4 py-2.5 text-right")}>Exist. post.</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-left")}>Usuario</th>
+                    {esUsadas ? (
+                      <>
+                        <th className={cn(lbl, "px-4 py-2.5 text-right")}>Precio</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-right")}>Total</th>
+                      </>
+                    ) : (
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Usuario</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
@@ -442,15 +500,23 @@ export default function KardexPage() {
                         <span
                           className={cn(
                             "text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border",
-                            badgeTipo(m.tipoMov)
+                            esUsadas ? badgeTipoUsadas(m.tipoMov) : badgeTipo(m.tipoMov)
                           )}
                         >
                           {m.tipoMov}
                         </span>
                       </td>
                       <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 whitespace-nowrap">
-                        {m.tipoDoc ?? "—"}
-                        {m.numDoc ? <span className="text-slate-500 ml-1.5">{m.numDoc}</span> : null}
+                        {esUsadas ? (
+                          (m.numDoc ?? "—")
+                        ) : (
+                          <>
+                            {m.tipoDoc ?? "—"}
+                            {m.numDoc ? (
+                              <span className="text-slate-500 ml-1.5">{m.numDoc}</span>
+                            ) : null}
+                          </>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 text-[12px] font-black text-amber-300">
                         {m.codigo}
@@ -464,7 +530,7 @@ export default function KardexPage() {
                       <td
                         className={cn(
                           "px-4 py-2.5 text-[12px] font-black text-right",
-                          colorCantidad(m.tipoMov)
+                          esUsadas ? colorCantidadUsadas(m.tipoMov) : colorCantidad(m.tipoMov)
                         )}
                       >
                         {cantidadVisual(m)}
@@ -472,9 +538,20 @@ export default function KardexPage() {
                       <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 text-right">
                         {entero(m.existPost)}
                       </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 max-w-[160px] truncate">
-                        {m.usuario ?? "—"}
-                      </td>
+                      {esUsadas ? (
+                        <>
+                          <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right whitespace-nowrap">
+                            {moneda(m.precio ?? 0)}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-black text-emerald-300 text-right whitespace-nowrap">
+                            {moneda(m.total ?? 0)}
+                          </td>
+                        </>
+                      ) : (
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 max-w-[160px] truncate">
+                          {m.usuario ?? "—"}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

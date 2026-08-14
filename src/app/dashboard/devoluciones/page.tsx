@@ -16,6 +16,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { moneda, entero, fechaCorta } from "@/lib/formato";
+import {
+  SelectorSucursal,
+  SUCURSALES,
+  type Sucursal,
+} from "@/components/dashboard/SelectorSucursal";
 
 // ---------- Tipos ----------
 interface Devolucion {
@@ -26,6 +31,20 @@ interface Devolucion {
   iva: number;
   total: number;
   estatus: string | null;
+}
+
+// Bodega Usado: cada devolución es un movimiento del kardex (bitacora_piezas),
+// ya con la pieza incluida — no hay encabezado ni detalle aparte.
+interface DevolucionUsada {
+  id: number;
+  fecha: string;
+  folio: string;
+  codigo: string;
+  descripcion: string;
+  cantidad: number;
+  precio: number;
+  total: number;
+  comentarios: string | null;
 }
 
 interface Resumen {
@@ -83,12 +102,14 @@ const badgeEstatus = (estatus: string | null): string => {
 };
 
 export default function DevolucionesPage() {
+  const [sucursal, setSucursal] = useState<Sucursal>("matriz");
   const [fechaInicio, setFechaInicio] = useState(diasAtras(DIAS_RANGO_DEFAULT));
   const [fechaFin, setFechaFin] = useState(hoyISO());
   const [busqueda, setBusqueda] = useState("");
   const [page, setPage] = useState(1);
 
   const [devoluciones, setDevoluciones] = useState<Devolucion[]>([]);
+  const [devolucionesUsadas, setDevolucionesUsadas] = useState<DevolucionUsada[]>([]);
   const [resumen, setResumen] = useState<Resumen | null>(null);
   const [total, setTotal] = useState(0);
   const [cargando, setCargando] = useState(true);
@@ -98,16 +119,18 @@ export default function DevolucionesPage() {
   const [detalle, setDetalle] = useState<DetalleDevolucion | null>(null);
   const [cargandoDetalle, setCargandoDetalle] = useState(false);
 
-  // Token de secuencia: descarta respuestas de peticiones obsoletas (evita race conditions).
+  // Tokens de secuencia: descartan respuestas de peticiones obsoletas (evita race conditions).
   const peticionRef = useRef(0);
+  const detalleRef = useRef(0);
 
   const cargar = useCallback(
-    async (inicio: string, fin: string, filtro: string, pagina: number) => {
+    async (suc: Sucursal, inicio: string, fin: string, filtro: string, pagina: number) => {
       const idPeticion = ++peticionRef.current;
       setCargando(true);
       setError("");
       try {
         const qs = new URLSearchParams({
+          sucursal: suc,
           fechaInicio: inicio,
           fechaFin: fin,
           page: String(pagina),
@@ -123,13 +146,20 @@ export default function DevolucionesPage() {
         const json = await res.json();
         if (idPeticion !== peticionRef.current) return;
         if (!res.ok) throw new Error(json.error || "Error al consultar devoluciones");
-        setDevoluciones(json.devoluciones);
+        if (suc === "usadas") {
+          setDevolucionesUsadas(json.devoluciones);
+          setDevoluciones([]);
+        } else {
+          setDevoluciones(json.devoluciones);
+          setDevolucionesUsadas([]);
+        }
         setResumen(json.resumen);
         setTotal(json.total);
       } catch (err: unknown) {
         if (idPeticion !== peticionRef.current) return;
         setError(err instanceof Error ? err.message : "Error desconocido");
         setDevoluciones([]);
+        setDevolucionesUsadas([]);
         setResumen(null);
         setTotal(0);
       } finally {
@@ -140,12 +170,12 @@ export default function DevolucionesPage() {
   );
 
   useEffect(() => {
-    cargar(diasAtras(DIAS_RANGO_DEFAULT), hoyISO(), "", 1);
+    cargar("matriz", diasAtras(DIAS_RANGO_DEFAULT), hoyISO(), "", 1);
   }, [cargar]);
 
   const actualizar = () => {
     setPage(1);
-    cargar(fechaInicio, fechaFin, busqueda, 1);
+    cargar(sucursal, fechaInicio, fechaFin, busqueda, 1);
   };
 
   const preset = (dias: number) => {
@@ -154,7 +184,7 @@ export default function DevolucionesPage() {
     setFechaInicio(inicio);
     setFechaFin(fin);
     setPage(1);
-    cargar(inicio, fin, busqueda, 1);
+    cargar(sucursal, inicio, fin, busqueda, 1);
   };
 
   const limpiar = () => {
@@ -164,29 +194,47 @@ export default function DevolucionesPage() {
     setFechaFin(fin);
     setBusqueda("");
     setPage(1);
-    cargar(inicio, fin, "", 1);
+    cargar(sucursal, inicio, fin, "", 1);
   };
 
   const cambiarPagina = (pagina: number) => {
     setPage(pagina);
-    cargar(fechaInicio, fechaFin, busqueda, pagina);
+    cargar(sucursal, fechaInicio, fechaFin, busqueda, pagina);
+  };
+
+  const cambiarSucursal = (nueva: Sucursal) => {
+    if (nueva === sucursal) return;
+    setSucursal(nueva);
+    // La búsqueda no aplica entre sucursales (folio vs código/descripción).
+    setBusqueda("");
+    setPage(1);
+    ++detalleRef.current; // invalida cualquier detalle en vuelo
+    setDetalle(null);
+    setCargandoDetalle(false);
+    cargar(nueva, fechaInicio, fechaFin, "", 1);
   };
 
   const verDetalle = async (devolucion: Devolucion) => {
+    // Token de secuencia: si el usuario cambia de sucursal antes de que
+    // responda el detalle, la respuesta vieja se descarta.
+    const idDetalle = ++detalleRef.current;
     setCargandoDetalle(true);
     try {
       const res = await fetch(`/api/devoluciones/${devolucion.id}`);
+      if (idDetalle !== detalleRef.current) return;
       if (res.status === 401) {
         window.location.href = "/login";
         return;
       }
       const json = await res.json();
+      if (idDetalle !== detalleRef.current) return;
       if (!res.ok) throw new Error(json.error || "Error al consultar el detalle");
       setDetalle(json);
     } catch (err: unknown) {
+      if (idDetalle !== detalleRef.current) return;
       setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
-      setCargandoDetalle(false);
+      if (idDetalle === detalleRef.current) setCargandoDetalle(false);
     }
   };
 
@@ -196,6 +244,7 @@ export default function DevolucionesPage() {
     try {
       // Trae el rango completo (hasta el tope del servidor) para exportar todo.
       const qs = new URLSearchParams({
+        sucursal,
         fechaInicio,
         fechaFin,
         page: "1",
@@ -205,50 +254,82 @@ export default function DevolucionesPage() {
       const res = await fetch(`/api/devoluciones?${qs.toString()}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Error al exportar");
-      const filas: Devolucion[] = json.devoluciones;
 
-      const columnas = [
-        { header: "Folio" },
-        { header: "Fecha" },
-        { header: "Subtotal", align: "right" as const },
-        { header: "IVA", align: "right" as const },
-        { header: "Total", align: "right" as const },
-        { header: "Estatus" },
-      ];
+      const esUsadas = sucursal === "usadas";
+      const columnas = esUsadas
+        ? [
+            { header: "Folio" },
+            { header: "Fecha" },
+            { header: "Código" },
+            { header: "Descripción" },
+            { header: "Cant", align: "right" as const },
+            { header: "Precio", align: "right" as const },
+            { header: "Total", align: "right" as const },
+          ]
+        : [
+            { header: "Folio" },
+            { header: "Fecha" },
+            { header: "Subtotal", align: "right" as const },
+            { header: "IVA", align: "right" as const },
+            { header: "Total", align: "right" as const },
+            { header: "Estatus" },
+          ];
+      const numFilas: number = json.devoluciones.length;
       const base = {
-        titulo: "REPORTE DE DEVOLUCIONES",
-        subtitulo: `Del ${fechaInicio} al ${fechaFin}  ·  ${entero(filas.length)} devoluciones`,
+        titulo: esUsadas
+          ? "REPORTE DE DEVOLUCIONES - BODEGA USADO"
+          : "REPORTE DE DEVOLUCIONES",
+        subtitulo: `Del ${fechaInicio} al ${fechaFin}  ·  ${entero(numFilas)} devoluciones`,
         columnas,
-        nombreArchivo: `devoluciones_${fechaInicio}_${fechaFin}`,
+        nombreArchivo: `devoluciones_${esUsadas ? "usadas_" : ""}${fechaInicio}_${fechaFin}`,
       };
 
       if (formato === "pdf") {
         const { exportarPdf } = await import("@/lib/export");
-        await exportarPdf({
-          ...base,
-          filas: filas.map((d) => [
-            d.numDevolucion,
-            fechaCorta(d.fecha),
-            moneda(d.subtotal),
-            moneda(d.iva),
-            moneda(d.total),
-            d.estatus ?? "",
-          ]),
-        });
+        const filas = esUsadas
+          ? (json.devoluciones as DevolucionUsada[]).map((m) => [
+              m.folio,
+              fechaCorta(m.fecha),
+              m.codigo,
+              m.descripcion,
+              entero(m.cantidad),
+              moneda(m.precio),
+              moneda(m.total),
+            ])
+          : (json.devoluciones as Devolucion[]).map((d) => [
+              d.numDevolucion,
+              fechaCorta(d.fecha),
+              moneda(d.subtotal),
+              moneda(d.iva),
+              moneda(d.total),
+              d.estatus ?? "",
+            ]);
+        await exportarPdf({ ...base, filas });
       } else {
         const { exportarExcel } = await import("@/lib/export");
+        const filas = esUsadas
+          ? (json.devoluciones as DevolucionUsada[]).map((m) => [
+              m.folio,
+              fechaCorta(m.fecha),
+              m.codigo,
+              m.descripcion,
+              m.cantidad,
+              m.precio,
+              m.total,
+            ])
+          : (json.devoluciones as Devolucion[]).map((d) => [
+              d.numDevolucion,
+              fechaCorta(d.fecha),
+              d.subtotal,
+              d.iva,
+              d.total,
+              d.estatus ?? "",
+            ]);
         await exportarExcel({
           ...base,
           hoja: "Devoluciones",
-          columnasMoneda: [2, 3, 4],
-          filas: filas.map((d) => [
-            d.numDevolucion,
-            fechaCorta(d.fecha),
-            d.subtotal,
-            d.iva,
-            d.total,
-            d.estatus ?? "",
-          ]),
+          columnasMoneda: esUsadas ? [5, 6] : [2, 3, 4],
+          filas,
         });
       }
     } catch (err: unknown) {
@@ -259,6 +340,8 @@ export default function DevolucionesPage() {
   };
 
   const totalPaginas = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const esUsadas = sucursal === "usadas";
+  const sinFilas = esUsadas ? devolucionesUsadas.length === 0 : devoluciones.length === 0;
 
   const tarjetas = resumen
     ? [
@@ -277,11 +360,17 @@ export default function DevolucionesPage() {
           <p className={cn(lbl, "mt-1")}>
             {cargando ? "Consultando..." : `${entero(total)} devoluciones en el rango`}
           </p>
+          {esUsadas && (
+            <p className="text-[11px] font-bold text-slate-500 mt-1">
+              Movimientos de devolución del kardex de la Bodega Usado
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
+          <SelectorSucursal opciones={SUCURSALES} valor={sucursal} onCambio={cambiarSucursal} />
           <button
             onClick={() => exportar("pdf")}
-            disabled={!!exportando || cargando || devoluciones.length === 0}
+            disabled={!!exportando || cargando || sinFilas}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-rose-300 transition-all disabled:opacity-40"
           >
             {exportando === "pdf" ? (
@@ -293,7 +382,7 @@ export default function DevolucionesPage() {
           </button>
           <button
             onClick={() => exportar("excel")}
-            disabled={!!exportando || cargando || devoluciones.length === 0}
+            disabled={!!exportando || cargando || sinFilas}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-emerald-300 transition-all disabled:opacity-40"
           >
             {exportando === "excel" ? (
@@ -356,7 +445,11 @@ export default function DevolucionesPage() {
             <input
               type="text"
               className={cn(inputCls, "pl-10")}
-              placeholder="Buscar por folio de devolución..."
+              placeholder={
+                esUsadas
+                  ? "Buscar por código o descripción de la pieza..."
+                  : "Buscar por folio de devolución..."
+              }
               value={busqueda}
               onChange={(e) => setBusqueda(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && actualizar()}
@@ -399,7 +492,7 @@ export default function DevolucionesPage() {
           <div className="flex items-center justify-center py-24">
             <Loader2 className="h-8 w-8 text-amber-400 animate-spin" />
           </div>
-        ) : devoluciones.length === 0 ? (
+        ) : sinFilas ? (
           <div className="flex flex-col items-center justify-center py-24 gap-3 text-slate-500">
             <Undo2 className="h-10 w-10" />
             <p className="text-[11px] font-black uppercase tracking-widest">
@@ -409,53 +502,102 @@ export default function DevolucionesPage() {
         ) : (
           <>
             <div className="overflow-auto max-h-[calc(100vh-26rem)]">
-              <table className="w-full">
-                <thead className="sticky top-0 z-10 bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
-                  <tr>
-                    <th className={cn(lbl, "px-4 py-2.5 text-left")}>Folio</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-left")}>Fecha</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-right")}>Subtotal</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-right")}>IVA</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-right")}>Total</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-center")}>Estatus</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  {devoluciones.map((d) => (
-                    <tr
-                      key={d.id}
-                      onClick={() => verDetalle(d)}
-                      className="cursor-pointer transition-colors hover:bg-white/[0.03]"
-                    >
-                      <td className="px-4 py-2.5 text-[12px] font-black text-cyan-300">
-                        {d.numDevolucion}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
-                        {fechaCorta(d.fecha)}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
-                        {moneda(d.subtotal)}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
-                        {moneda(d.iva)}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 text-right">
-                        {moneda(d.total)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center">
-                        <span
-                          className={cn(
-                            "text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border",
-                            badgeEstatus(d.estatus)
-                          )}
-                        >
-                          {d.estatus ?? "—"}
-                        </span>
-                      </td>
+              {esUsadas ? (
+                // Bodega Usado: cada fila ya es una pieza devuelta (sin detalle).
+                <table className="w-full">
+                  <thead className="sticky top-0 z-10 bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
+                    <tr>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Folio</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Fecha</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Código</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Descripción</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Cant</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Precio</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Total</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.04]">
+                    {devolucionesUsadas.map((m) => (
+                      <tr key={m.id} className="transition-colors hover:bg-white/[0.03]">
+                        <td className="px-4 py-2.5 text-[12px] font-black text-cyan-300">
+                          {m.folio || "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
+                          {fechaCorta(m.fecha)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-black text-amber-300">
+                          {m.codigo}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-300">
+                          {m.descripcion}
+                          {m.comentarios?.trim() ? (
+                            <p className="text-[10px] font-bold text-slate-500 mt-0.5">
+                              {m.comentarios}
+                            </p>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 text-right">
+                          {entero(m.cantidad)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
+                          {moneda(m.precio)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 text-right">
+                          {moneda(m.total)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="w-full">
+                  <thead className="sticky top-0 z-10 bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
+                    <tr>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Folio</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Fecha</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Subtotal</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>IVA</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Total</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-center")}>Estatus</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.04]">
+                    {devoluciones.map((d) => (
+                      <tr
+                        key={d.id}
+                        onClick={() => verDetalle(d)}
+                        className="cursor-pointer transition-colors hover:bg-white/[0.03]"
+                      >
+                        <td className="px-4 py-2.5 text-[12px] font-black text-cyan-300">
+                          {d.numDevolucion}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
+                          {fechaCorta(d.fecha)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
+                          {moneda(d.subtotal)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
+                          {moneda(d.iva)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 text-right">
+                          {moneda(d.total)}
+                        </td>
+                        <td className="px-4 py-2.5 text-center">
+                          <span
+                            className={cn(
+                              "text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border",
+                              badgeEstatus(d.estatus)
+                            )}
+                          >
+                            {d.estatus ?? "—"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
 
             {/* Paginación */}

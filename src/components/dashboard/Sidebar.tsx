@@ -22,6 +22,16 @@ const secciones: MenuSeccion[] = [
       { nombre: "Back Orders", emoji: "📬", href: "/dashboard/backorders" },
     ],
   },
+  {
+    titulo: "Análisis de Venta",
+    emoji: "📊",
+    items: [
+      { nombre: "Tendencias de Venta", emoji: "📈", href: "/dashboard/analisis/tendencias" },
+      { nombre: "Mapa de Calor", emoji: "🔥", href: "/dashboard/analisis/mapa-calor" },
+      { nombre: "Ventas por Cliente", emoji: "👥", href: "/dashboard/analisis/ventas-cliente" },
+      { nombre: "Proyección de Ventas", emoji: "🔮", href: "/dashboard/analisis/proyeccion" },
+    ],
+  },
   { titulo: "Artículos", emoji: "📦", href: "/dashboard/articulos", items: [] },
   {
     titulo: "Inventario",

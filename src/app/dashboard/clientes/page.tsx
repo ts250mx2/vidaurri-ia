@@ -16,6 +16,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { moneda, entero, fechaCorta } from "@/lib/formato";
+import {
+  SelectorSucursal,
+  SUCURSALES,
+  type Sucursal,
+} from "@/components/dashboard/SelectorSucursal";
 
 // ---------- Tipos ----------
 interface Cliente {
@@ -32,11 +37,34 @@ interface Cliente {
   bloqueado: number;
 }
 
+// Bodega Usado: no hay catálogo de clientes; se derivan de sus ventas
+// agrupadas por nombre y teléfono, por lo que no tienen id ni detalle.
+interface ClienteUsado {
+  nombre: string;
+  telefono: string | null;
+  compras: number;
+  importe: number;
+  saldo: number;
+  ultimaCompra: string;
+}
+
 interface Resumen {
   clientes: number;
   conSaldo: number;
   cartera: number;
   descuentoPromedio: number;
+}
+
+interface ResumenUsadas {
+  clientes: number;
+  compras: number;
+  importe: number;
+  saldo: number;
+}
+
+interface PublicoGeneral {
+  ventas: number;
+  importe: number;
 }
 
 interface DetalleCliente {
@@ -106,13 +134,17 @@ const estatusCliente = (c: { activo: number; bloqueado: number }) => {
 };
 
 export default function ClientesPage() {
+  const [sucursal, setSucursal] = useState<Sucursal>("matriz");
   const [busqueda, setBusqueda] = useState("");
   const [conSaldo, setConSaldo] = useState(false);
   const [incluirInactivos, setIncluirInactivos] = useState(false);
   const [page, setPage] = useState(1);
 
   const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [clientesUsadas, setClientesUsadas] = useState<ClienteUsado[]>([]);
   const [resumen, setResumen] = useState<Resumen | null>(null);
+  const [resumenUsadas, setResumenUsadas] = useState<ResumenUsadas | null>(null);
+  const [publicoGeneral, setPublicoGeneral] = useState<PublicoGeneral | null>(null);
   const [total, setTotal] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -121,22 +153,31 @@ export default function ClientesPage() {
   const [detalle, setDetalle] = useState<DetalleCliente | null>(null);
   const [cargandoDetalle, setCargandoDetalle] = useState(false);
 
-  // Token de secuencia: descarta respuestas viejas del listado que llegan tarde.
+  // Tokens de secuencia: descartan respuestas viejas del listado y del detalle que llegan tarde.
   const peticionRef = useRef(0);
+  const detalleRef = useRef(0);
 
   const cargar = useCallback(
-    async (filtro: string, soloSaldo: boolean, inactivos: boolean, pagina: number) => {
+    async (
+      suc: Sucursal,
+      filtro: string,
+      soloSaldo: boolean,
+      inactivos: boolean,
+      pagina: number
+    ) => {
       const idPeticion = ++peticionRef.current;
       setCargando(true);
       setError("");
       try {
         const qs = new URLSearchParams({
+          sucursal: suc,
           page: String(pagina),
           pageSize: String(PAGE_SIZE),
         });
         if (filtro) qs.set("busqueda", filtro);
-        if (soloSaldo) qs.set("conSaldo", "1");
-        if (inactivos) qs.set("incluirInactivos", "1");
+        // Saldo e inactivos son conceptos del catálogo de la matriz.
+        if (suc === "matriz" && soloSaldo) qs.set("conSaldo", "1");
+        if (suc === "matriz" && inactivos) qs.set("incluirInactivos", "1");
         const res = await fetch(`/api/clientes?${qs.toString()}`);
         if (idPeticion !== peticionRef.current) return;
         if (res.status === 401) {
@@ -146,14 +187,28 @@ export default function ClientesPage() {
         const json = await res.json();
         if (idPeticion !== peticionRef.current) return;
         if (!res.ok) throw new Error(json.error || "Error al consultar clientes");
-        setClientes(json.clientes);
-        setResumen(json.resumen);
+        if (suc === "usadas") {
+          setClientesUsadas(json.clientes);
+          setResumenUsadas(json.resumen);
+          setPublicoGeneral(json.publicoGeneral ?? null);
+          setClientes([]);
+          setResumen(null);
+        } else {
+          setClientes(json.clientes);
+          setResumen(json.resumen);
+          setClientesUsadas([]);
+          setResumenUsadas(null);
+          setPublicoGeneral(null);
+        }
         setTotal(json.total);
       } catch (err: unknown) {
         if (idPeticion !== peticionRef.current) return;
         setError(err instanceof Error ? err.message : "Error desconocido");
         setClientes([]);
+        setClientesUsadas([]);
         setResumen(null);
+        setResumenUsadas(null);
+        setPublicoGeneral(null);
         setTotal(0);
       } finally {
         if (idPeticion === peticionRef.current) setCargando(false);
@@ -163,26 +218,26 @@ export default function ClientesPage() {
   );
 
   useEffect(() => {
-    cargar("", false, false, 1);
+    cargar("matriz", "", false, false, 1);
   }, [cargar]);
 
   const actualizar = () => {
     setPage(1);
-    cargar(busqueda, conSaldo, incluirInactivos, 1);
+    cargar(sucursal, busqueda, conSaldo, incluirInactivos, 1);
   };
 
   const alternarConSaldo = () => {
     const nuevo = !conSaldo;
     setConSaldo(nuevo);
     setPage(1);
-    cargar(busqueda, nuevo, incluirInactivos, 1);
+    cargar(sucursal, busqueda, nuevo, incluirInactivos, 1);
   };
 
   const alternarInactivos = () => {
     const nuevo = !incluirInactivos;
     setIncluirInactivos(nuevo);
     setPage(1);
-    cargar(busqueda, conSaldo, nuevo, 1);
+    cargar(sucursal, busqueda, conSaldo, nuevo, 1);
   };
 
   const limpiar = () => {
@@ -190,29 +245,49 @@ export default function ClientesPage() {
     setConSaldo(false);
     setIncluirInactivos(false);
     setPage(1);
-    cargar("", false, false, 1);
+    cargar(sucursal, "", false, false, 1);
   };
 
   const cambiarPagina = (pagina: number) => {
     setPage(pagina);
-    cargar(busqueda, conSaldo, incluirInactivos, pagina);
+    cargar(sucursal, busqueda, conSaldo, incluirInactivos, pagina);
+  };
+
+  const cambiarSucursal = (nueva: Sucursal) => {
+    if (nueva === sucursal) return;
+    setSucursal(nueva);
+    // Los filtros del catálogo de la matriz no aplican entre sucursales.
+    setBusqueda("");
+    setConSaldo(false);
+    setIncluirInactivos(false);
+    setPage(1);
+    ++detalleRef.current; // invalida cualquier detalle en vuelo
+    setDetalle(null);
+    setCargandoDetalle(false);
+    cargar(nueva, "", false, false, 1);
   };
 
   const verDetalle = async (cliente: Cliente) => {
+    // Token de secuencia: si el usuario cambia de sucursal antes de que
+    // responda el detalle, la respuesta vieja se descarta.
+    const idDetalle = ++detalleRef.current;
     setCargandoDetalle(true);
     try {
       const res = await fetch(`/api/clientes/${cliente.id}`);
+      if (idDetalle !== detalleRef.current) return;
       if (res.status === 401) {
         window.location.href = "/login";
         return;
       }
       const json = await res.json();
+      if (idDetalle !== detalleRef.current) return;
       if (!res.ok) throw new Error(json.error || "Error al consultar el detalle");
       setDetalle(json);
     } catch (err: unknown) {
+      if (idDetalle !== detalleRef.current) return;
       setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
-      setCargandoDetalle(false);
+      if (idDetalle === detalleRef.current) setCargandoDetalle(false);
     }
   };
 
@@ -221,66 +296,94 @@ export default function ClientesPage() {
     setError("");
     try {
       // Trae el padrón completo (hasta el tope del servidor) para exportar todo.
-      const qs = new URLSearchParams({ page: "1", pageSize: "20000" });
+      const qs = new URLSearchParams({ sucursal, page: "1", pageSize: "20000" });
       if (busqueda) qs.set("busqueda", busqueda);
-      if (conSaldo) qs.set("conSaldo", "1");
-      if (incluirInactivos) qs.set("incluirInactivos", "1");
+      if (sucursal === "matriz" && conSaldo) qs.set("conSaldo", "1");
+      if (sucursal === "matriz" && incluirInactivos) qs.set("incluirInactivos", "1");
       const res = await fetch(`/api/clientes?${qs.toString()}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Error al exportar");
-      const filas: Cliente[] = json.clientes;
 
-      const columnas = [
-        { header: "Cliente" },
-        { header: "RFC" },
-        { header: "Teléfono" },
-        { header: "Ciudad" },
-        { header: "Desc. %", align: "right" as const },
-        { header: "Límite crédito", align: "right" as const },
-        { header: "Saldo", align: "right" as const },
-        { header: "Estatus" },
-      ];
+      const esUsadas = sucursal === "usadas";
+      const columnas = esUsadas
+        ? [
+            { header: "Cliente" },
+            { header: "Teléfono" },
+            { header: "Compras", align: "right" as const },
+            { header: "Importe", align: "right" as const },
+            { header: "Saldo", align: "right" as const },
+            { header: "Última compra" },
+          ]
+        : [
+            { header: "Cliente" },
+            { header: "RFC" },
+            { header: "Teléfono" },
+            { header: "Ciudad" },
+            { header: "Desc. %", align: "right" as const },
+            { header: "Límite crédito", align: "right" as const },
+            { header: "Saldo", align: "right" as const },
+            { header: "Estatus" },
+          ];
+      const numFilas: number = json.clientes.length;
       const base = {
-        titulo: "REPORTE DE CLIENTES",
-        subtitulo: `${entero(filas.length)} clientes${conSaldo ? "  ·  Solo con saldo" : ""}${
-          incluirInactivos ? "  ·  Incluye inactivos" : ""
-        }${busqueda ? `  ·  Filtro: ${busqueda}` : ""}`,
+        titulo: esUsadas ? "REPORTE DE CLIENTES - BODEGA USADO" : "REPORTE DE CLIENTES",
+        subtitulo: `${entero(numFilas)} clientes${
+          !esUsadas && conSaldo ? "  ·  Solo con saldo" : ""
+        }${!esUsadas && incluirInactivos ? "  ·  Incluye inactivos" : ""}${
+          busqueda ? `  ·  Filtro: ${busqueda}` : ""
+        }`,
         columnas,
-        nombreArchivo: `clientes_${hoyISO()}`,
+        nombreArchivo: `clientes_${esUsadas ? "usadas_" : ""}${hoyISO()}`,
       };
 
       if (formato === "pdf") {
         const { exportarPdf } = await import("@/lib/export");
-        await exportarPdf({
-          ...base,
-          orientacion: "landscape",
-          filas: filas.map((c) => [
-            c.nombre,
-            c.rfc ?? "",
-            c.telefono ?? "",
-            c.ciudad ?? "",
-            `${entero(c.descuento)}%`,
-            moneda(c.limiteCredito),
-            moneda(c.saldo),
-            estatusCliente(c),
-          ]),
-        });
+        const filas = esUsadas
+          ? (json.clientes as ClienteUsado[]).map((c) => [
+              c.nombre,
+              c.telefono ?? "",
+              entero(c.compras),
+              moneda(c.importe),
+              moneda(c.saldo),
+              fechaCorta(c.ultimaCompra),
+            ])
+          : (json.clientes as Cliente[]).map((c) => [
+              c.nombre,
+              c.rfc ?? "",
+              c.telefono ?? "",
+              c.ciudad ?? "",
+              `${entero(c.descuento)}%`,
+              moneda(c.limiteCredito),
+              moneda(c.saldo),
+              estatusCliente(c),
+            ]);
+        await exportarPdf({ ...base, orientacion: "landscape", filas });
       } else {
         const { exportarExcel } = await import("@/lib/export");
+        const filas = esUsadas
+          ? (json.clientes as ClienteUsado[]).map((c) => [
+              c.nombre,
+              c.telefono ?? "",
+              c.compras,
+              c.importe,
+              c.saldo,
+              fechaCorta(c.ultimaCompra),
+            ])
+          : (json.clientes as Cliente[]).map((c) => [
+              c.nombre,
+              c.rfc ?? "",
+              c.telefono ?? "",
+              c.ciudad ?? "",
+              c.descuento,
+              c.limiteCredito,
+              c.saldo,
+              estatusCliente(c),
+            ]);
         await exportarExcel({
           ...base,
           hoja: "Clientes",
-          columnasMoneda: [5, 6],
-          filas: filas.map((c) => [
-            c.nombre,
-            c.rfc ?? "",
-            c.telefono ?? "",
-            c.ciudad ?? "",
-            c.descuento,
-            c.limiteCredito,
-            c.saldo,
-            estatusCliente(c),
-          ]),
+          columnasMoneda: esUsadas ? [3, 4] : [5, 6],
+          filas,
         });
       }
     } catch (err: unknown) {
@@ -291,19 +394,30 @@ export default function ClientesPage() {
   };
 
   const totalPaginas = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const esUsadas = sucursal === "usadas";
+  const sinFilas = esUsadas ? clientesUsadas.length === 0 : clientes.length === 0;
 
-  const tarjetas = resumen
-    ? [
-        { titulo: "Clientes", valor: entero(resumen.clientes), color: "text-slate-200" },
-        { titulo: "Con saldo", valor: entero(resumen.conSaldo), color: "text-cyan-300" },
-        { titulo: "Cartera", valor: moneda(resumen.cartera), color: "text-rose-300" },
-        {
-          titulo: "Descuento prom.",
-          valor: `${resumen.descuentoPromedio.toFixed(1)}%`,
-          color: "text-amber-300",
-        },
-      ]
-    : [];
+  const tarjetas = esUsadas
+    ? resumenUsadas
+      ? [
+          { titulo: "Clientes", valor: entero(resumenUsadas.clientes), color: "text-slate-200" },
+          { titulo: "Compras", valor: entero(resumenUsadas.compras), color: "text-cyan-300" },
+          { titulo: "Importe", valor: moneda(resumenUsadas.importe), color: "text-amber-300" },
+          { titulo: "Saldo", valor: moneda(resumenUsadas.saldo), color: "text-rose-300" },
+        ]
+      : []
+    : resumen
+      ? [
+          { titulo: "Clientes", valor: entero(resumen.clientes), color: "text-slate-200" },
+          { titulo: "Con saldo", valor: entero(resumen.conSaldo), color: "text-cyan-300" },
+          { titulo: "Cartera", valor: moneda(resumen.cartera), color: "text-rose-300" },
+          {
+            titulo: "Descuento prom.",
+            valor: `${resumen.descuentoPromedio.toFixed(1)}%`,
+            color: "text-amber-300",
+          },
+        ]
+      : [];
 
   const direccion = detalle
     ? [
@@ -326,11 +440,18 @@ export default function ClientesPage() {
           <p className={cn(lbl, "mt-1")}>
             {cargando ? "Consultando..." : `${entero(total)} clientes con los filtros`}
           </p>
+          {esUsadas && publicoGeneral && publicoGeneral.ventas > 0 && (
+            <p className="text-[11px] font-bold text-slate-500 mt-1">
+              Además hay {entero(publicoGeneral.ventas)} ventas de público general por{" "}
+              {moneda(publicoGeneral.importe)}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
+          <SelectorSucursal opciones={SUCURSALES} valor={sucursal} onCambio={cambiarSucursal} />
           <button
             onClick={() => exportar("pdf")}
-            disabled={!!exportando || cargando || clientes.length === 0}
+            disabled={!!exportando || cargando || sinFilas}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-rose-300 transition-all disabled:opacity-40"
           >
             {exportando === "pdf" ? (
@@ -342,7 +463,7 @@ export default function ClientesPage() {
           </button>
           <button
             onClick={() => exportar("excel")}
-            disabled={!!exportando || cargando || clientes.length === 0}
+            disabled={!!exportando || cargando || sinFilas}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-emerald-300 transition-all disabled:opacity-40"
           >
             {exportando === "excel" ? (
@@ -363,34 +484,42 @@ export default function ClientesPage() {
             <input
               type="text"
               className={cn(inputCls, "pl-10")}
-              placeholder="Buscar por nombre, RFC o teléfono..."
+              placeholder={
+                esUsadas
+                  ? "Buscar por nombre o teléfono..."
+                  : "Buscar por nombre, RFC o teléfono..."
+              }
               value={busqueda}
               onChange={(e) => setBusqueda(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && actualizar()}
             />
           </div>
-          <button
-            onClick={alternarConSaldo}
-            className={cn(
-              "px-4 py-2.5 rounded-xl border text-[11px] font-black uppercase tracking-widest transition-all",
-              conSaldo
-                ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
-                : "bg-white/[0.05] border-white/10 text-slate-400 hover:text-amber-300"
-            )}
-          >
-            Solo con saldo
-          </button>
-          <button
-            onClick={alternarInactivos}
-            className={cn(
-              "px-4 py-2.5 rounded-xl border text-[11px] font-black uppercase tracking-widest transition-all",
-              incluirInactivos
-                ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
-                : "bg-white/[0.05] border-white/10 text-slate-400 hover:text-amber-300"
-            )}
-          >
-            Incluir inactivos
-          </button>
+          {!esUsadas && (
+            <>
+              <button
+                onClick={alternarConSaldo}
+                className={cn(
+                  "px-4 py-2.5 rounded-xl border text-[11px] font-black uppercase tracking-widest transition-all",
+                  conSaldo
+                    ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                    : "bg-white/[0.05] border-white/10 text-slate-400 hover:text-amber-300"
+                )}
+              >
+                Solo con saldo
+              </button>
+              <button
+                onClick={alternarInactivos}
+                className={cn(
+                  "px-4 py-2.5 rounded-xl border text-[11px] font-black uppercase tracking-widest transition-all",
+                  incluirInactivos
+                    ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                    : "bg-white/[0.05] border-white/10 text-slate-400 hover:text-amber-300"
+                )}
+              >
+                Incluir inactivos
+              </button>
+            </>
+          )}
           <button
             onClick={actualizar}
             disabled={cargando}
@@ -408,7 +537,7 @@ export default function ClientesPage() {
       </div>
 
       {/* Tarjetas de resumen */}
-      {resumen && (
+      {tarjetas.length > 0 && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {tarjetas.map((t) => (
             <div
@@ -435,7 +564,7 @@ export default function ClientesPage() {
           <div className="flex items-center justify-center py-24">
             <Loader2 className="h-8 w-8 text-amber-400 animate-spin" />
           </div>
-        ) : clientes.length === 0 ? (
+        ) : sinFilas ? (
           <div className="flex flex-col items-center justify-center py-24 gap-3 text-slate-500">
             <Users className="h-10 w-10" />
             <p className="text-[11px] font-black uppercase tracking-widest">
@@ -445,75 +574,120 @@ export default function ClientesPage() {
         ) : (
           <>
             <div className="overflow-auto max-h-[calc(100vh-24rem)]">
-              <table className="w-full">
-                <thead className="sticky top-0 z-10 bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
-                  <tr>
-                    <th className={cn(lbl, "px-4 py-2.5 text-left")}>Cliente</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-left")}>RFC</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-left")}>Teléfono</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-left")}>Ciudad</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-right")}>Desc.</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-right")}>Límite crédito</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-right")}>Saldo</th>
-                    <th className={cn(lbl, "px-4 py-2.5 text-center")}>Estatus</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  {clientes.map((c) => (
-                    <tr
-                      key={c.id}
-                      onClick={() => verDetalle(c)}
-                      className="cursor-pointer transition-colors hover:bg-white/[0.03]"
-                    >
-                      <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 max-w-[260px] truncate">
-                        {c.nombre}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-cyan-300">
-                        {c.rfc ?? "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
-                        {c.telefono ?? "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 max-w-[160px] truncate">
-                        {c.ciudad ?? "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
-                        {entero(c.descuento)}%
-                      </td>
-                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
-                        {moneda(c.limiteCredito)}
-                      </td>
-                      <td
-                        className={cn(
-                          "px-4 py-2.5 text-[12px] font-black text-right",
-                          c.saldo > 0 ? "text-rose-300" : "text-slate-500"
-                        )}
-                      >
-                        {moneda(c.saldo)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center">
-                        <span className="inline-flex items-center gap-1">
-                          {c.bloqueado === 1 && (
-                            <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border text-rose-300 bg-rose-500/10 border-rose-500/25">
-                              Bloqueado
-                            </span>
-                          )}
-                          {c.activo === 0 && (
-                            <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border text-slate-400 bg-slate-500/10 border-slate-500/25">
-                              Inactivo
-                            </span>
-                          )}
-                          {c.bloqueado === 0 && c.activo === 1 && (
-                            <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border text-emerald-300 bg-emerald-500/10 border-emerald-500/25">
-                              Activo
-                            </span>
-                          )}
-                        </span>
-                      </td>
+              {esUsadas ? (
+                <table className="w-full">
+                  <thead className="sticky top-0 z-10 bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
+                    <tr>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Nombre</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Teléfono</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Compras</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Importe</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Saldo</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Última compra</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.04]">
+                    {/* Sin detalle: el cliente derivado de ventas no tiene id. */}
+                    {clientesUsadas.map((c) => (
+                      <tr key={`${c.nombre}|${c.telefono ?? ""}`}>
+                        <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 max-w-[260px] truncate">
+                          {c.nombre}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
+                          {c.telefono ?? "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
+                          {entero(c.compras)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 text-right">
+                          {moneda(c.importe)}
+                        </td>
+                        <td
+                          className={cn(
+                            "px-4 py-2.5 text-[12px] font-black text-right",
+                            c.saldo > 0 ? "text-rose-300" : "text-slate-500"
+                          )}
+                        >
+                          {moneda(c.saldo)}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
+                          {fechaCorta(c.ultimaCompra)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="w-full">
+                  <thead className="sticky top-0 z-10 bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
+                    <tr>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Cliente</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>RFC</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Teléfono</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-left")}>Ciudad</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Desc.</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Límite crédito</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-right")}>Saldo</th>
+                      <th className={cn(lbl, "px-4 py-2.5 text-center")}>Estatus</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.04]">
+                    {clientes.map((c) => (
+                      <tr
+                        key={c.id}
+                        onClick={() => verDetalle(c)}
+                        className="cursor-pointer transition-colors hover:bg-white/[0.03]"
+                      >
+                        <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 max-w-[260px] truncate">
+                          {c.nombre}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-cyan-300">
+                          {c.rfc ?? "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
+                          {c.telefono ?? "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 max-w-[160px] truncate">
+                          {c.ciudad ?? "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
+                          {entero(c.descuento)}%
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
+                          {moneda(c.limiteCredito)}
+                        </td>
+                        <td
+                          className={cn(
+                            "px-4 py-2.5 text-[12px] font-black text-right",
+                            c.saldo > 0 ? "text-rose-300" : "text-slate-500"
+                          )}
+                        >
+                          {moneda(c.saldo)}
+                        </td>
+                        <td className="px-4 py-2.5 text-center">
+                          <span className="inline-flex items-center gap-1">
+                            {c.bloqueado === 1 && (
+                              <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border text-rose-300 bg-rose-500/10 border-rose-500/25">
+                                Bloqueado
+                              </span>
+                            )}
+                            {c.activo === 0 && (
+                              <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border text-slate-400 bg-slate-500/10 border-slate-500/25">
+                                Inactivo
+                              </span>
+                            )}
+                            {c.bloqueado === 0 && c.activo === 1 && (
+                              <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border text-emerald-300 bg-emerald-500/10 border-emerald-500/25">
+                                Activo
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
 
             {/* Paginación */}
@@ -549,7 +723,7 @@ export default function ClientesPage() {
         </div>
       )}
 
-      {/* Modal de detalle */}
+      {/* Modal de detalle (solo matriz) */}
       {detalle && (
         <div
           className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"

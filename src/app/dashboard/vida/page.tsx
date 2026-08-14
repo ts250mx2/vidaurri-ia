@@ -22,6 +22,7 @@ const SUGERENCIAS = [
   "¿Qué clientes deben más dinero?",
   "¿Qué artículos con venta reciente están agotados?",
   "Compara las ventas de este mes contra el anterior",
+  "¿Cómo van las ventas de la Bodega Usado?",
 ];
 
 export default function VidaPage() {

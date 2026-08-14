@@ -96,6 +96,84 @@ async function consultarSitio(codigo: string): Promise<PrecioAldo> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Búsqueda multi-fila: el buscador de Aldo devuelve una tabla de resultados
+// (puede traer varios códigos para un término). Se usa en la vista de
+// Existencias con fuente "Aldo Autopartes".
+// ---------------------------------------------------------------------------
+
+export interface ResultadoAldo {
+  codigo: string;
+  descripcion: string;
+  /** Precio de lista de Aldo sin IVA. */
+  sinIva: number;
+  /** Precio de lista de Aldo con IVA. */
+  conIva: number;
+  /** Existencia: número exacto o etiqueta como "Mas de 60". */
+  existencia: number | string;
+}
+
+const MAX_FILAS_BUSQUEDA = 50;
+const cacheBusqueda = new Map<string, { valor: ResultadoAldo[]; expira: number }>();
+
+/** Extrae todas las filas de resultados del HTML aplanado. Tras el encabezado
+ *  (que termina en "Cantidad") vienen la categoría y las filas:
+ *  CÓDIGO DESCRIPCIÓN [***** FNx.xx] $sinIVA $conIVA existencia cantidad. */
+function parsearFilas(html: string): ResultadoAldo[] {
+  const t = textoPlano(html);
+  // Recorta el encabezado de la tabla para no confundir sus palabras con datos.
+  const inicio = t.search(/\bCantidad\b/);
+  const cuerpo = inicio >= 0 ? t.slice(inicio + "Cantidad".length) : t;
+
+  const filas: ResultadoAldo[] = [];
+  // El código es todo mayúsculas/dígitos; la categoría ("Cofres") no matchea.
+  const re =
+    /([A-Z0-9][A-Z0-9._/-]{2,29})\s+(.{3,150}?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})\s+(Mas de \d+|\d+(?:\.\d+)?)(?=\s|$)/g;
+  const num = (s: string) => parseFloat(s.replace(/,/g, ""));
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cuerpo)) !== null && filas.length < MAX_FILAS_BUSQUEDA) {
+    const existBruta = m[5];
+    filas.push({
+      codigo: m[1],
+      // Quita la calificación/ubicación al final ("***** FN8.04").
+      descripcion: m[2].replace(/\s*\*{2,}.*$/, "").trim(),
+      sinIva: num(m[3]),
+      conIva: num(m[4]),
+      existencia: /Mas de/i.test(existBruta) ? existBruta : num(existBruta),
+    });
+  }
+  return filas;
+}
+
+/** Busca un término en el catálogo en línea de Aldo y devuelve todas las filas
+ *  de resultados, con caché en memoria y límite de concurrencia. */
+export async function buscarAldo(termino: string): Promise<ResultadoAldo[]> {
+  const clave = termino.trim().toUpperCase();
+  const enCache = cacheBusqueda.get(clave);
+  if (enCache && enCache.expira > Date.now()) return enCache.valor;
+
+  return conLimite(async () => {
+    const reciente = cacheBusqueda.get(clave);
+    if (reciente && reciente.expira > Date.now()) return reciente.valor;
+
+    const res = await fetch(URL_BUSQUEDA, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0",
+      },
+      body: "codigo=" + encodeURIComponent(termino),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error("Aldo no respondió");
+    const html = new TextDecoder("latin1").decode(await res.arrayBuffer());
+    const filas = parsearFilas(html);
+    const ttl = filas.length > 0 ? TTL_ENCONTRADO_MS : TTL_NO_ENCONTRADO_MS;
+    cacheBusqueda.set(clave, { valor: filas, expira: Date.now() + ttl });
+    return filas;
+  });
+}
+
 /** Devuelve el precio de Aldo para un código, con caché en memoria y límite
  *  de concurrencia contra su sitio. */
 export async function precioAldo(codigo: string): Promise<PrecioAldo> {

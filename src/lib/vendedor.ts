@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { consultaBdav } from "@/lib/db";
+import { consultaUsadas } from "@/lib/db-usadas";
 import { precioAldo } from "@/lib/aldo";
 import { correrTurnoAgente, type UsoHerramienta } from "@/lib/agente-modelo";
 
@@ -10,31 +11,43 @@ import { correrTurnoAgente, type UsoHerramienta } from "@/lib/agente-modelo";
 const MAX_ITERACIONES = 6;
 const MAX_TOKENS = 1500; // respuestas cortas estilo chat de WhatsApp
 const MAX_RESULTADOS = 15;
+// Disponibilidad con el proveedor (Aldo): solo para los primeros resultados,
+// porque cada consulta es scraping de su sitio (con caché y semáforo en aldo.ts).
+const MAX_CONSULTAS_ALDO = 5;
+// Llaves distintas de cruce con la Bodega Usado por búsqueda (una sola consulta).
+const MAX_LLAVES_USADO = 8;
 
 /** Estilo de respuesta según el canal de conversación. */
 export const ETIQUETA_HERRAMIENTA: Record<string, string> = {
   buscar_productos: "Buscando productos",
+  buscar_piezas_usadas: "Buscando piezas usadas",
   listar_marcas: "Revisando marcas",
   listar_tipos_parte: "Revisando tipos de pieza",
-  precio_referencia_aldo: "Consultando precio de Aldo",
 };
 
 export function promptSistema(hoy: string): string {
   return `Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp. Vidaurri vende autopartes de colisión (cofres, defensas, parrillas, faros, tolvas, guías, molduras, etc.) por marca, modelo y rango de años. Hoy es ${hoy}.
 
 Consultas el catálogo real con tus herramientas:
-- buscar_productos: por descripción (incluye modelo y años, p.ej. "COFRE VERSA 15-19"), acotando por marca, tipo de parte y año. Devuelve código, descripción, años, precio con IVA, existencia y ubicación.
+- buscar_productos: por descripción (incluye modelo y años, p.ej. "COFRE VERSA 15-19"), acotando por marca, tipo de parte y año. Devuelve por producto: precio con IVA, entregaInmediata (piezas en tienda), entregaCincoDias (disponibilidad con nuestro proveedor) y usado (piezas usadas equivalentes en la Bodega Usado).
+- buscar_piezas_usadas: detalle del inventario de la BODEGA USADO (piezas usadas: puertas, faros, calaveras, espejos, elevadores, computadoras...). Úsala cuando el cliente quiera ver las opciones de usado.
 - listar_marcas / listar_tipos_parte: qué hay en catálogo.
-- precio_referencia_aldo: precio del proveedor Aldo, solo si lo piden para comparar.
+
+LÓGICA DE ENTREGA Y PRECIOS (obligatoria, síguela SIEMPRE):
+- *Entrega inmediata*: cuando entregaInmediata > 0 (existencia en tienda). Precio: precioConIva.
+- *Entrega en 5 días después de pagar*: cuando NO hay entrega inmediata pero entregaCincoDias > 0 (o "Mas de N"). El precio es EL MISMO precioConIva de la pieza nueva; NUNCA menciones al proveedor ni des otro precio por esta vía.
+- *Usado*: cuando usado trae piezas > 0 hay equivalentes usados en nuestra Bodega Usado; ofrécelo como alternativa económica ("también la tengo usada desde $X") usando usado.desdeConIva, y ACLARA siempre que es pieza USADA. El precio del usado es el del usado (con IVA), no el de la nueva. Detalles con buscar_piezas_usadas.
+- Si una opción NO existe (entregaCincoDias en 0 o null, usado null o con 0 piezas), simplemente NO la menciones; no digas "no hay usado" ni "no hay con proveedor".
+- Si no hay entrega inmediata, ni en 5 días, ni usado, dilo claro y ofrece tomar sus datos para conseguirla.
 
 ESTILO WHATSAPP (muy importante):
 - Responde CORTO y natural, como un chat de WhatsApp. Nada de párrafos largos ni tablas.
 - Usa el formato de WhatsApp: *negritas* con un solo asterisco (NO markdown de tablas, NO títulos con #).
-- Muestra máximo 2 o 3 productos, los más relevantes. Cada uno en 1-2 líneas: nombre/código, *precio con IVA* y si hay existencia.
+- Muestra máximo 2 o 3 productos, los más relevantes. Cada uno en 1-2 líneas: nombre/código, *precio con IVA* y la forma de entrega (inmediata / 5 días / usado).
 - Puedes usar pocos emojis para dar calidez (👍 🔧 📦 💵), sin exagerar.
 - Si falta un dato para acertar (modelo, año, si es sedán/hatchback, lado izquierdo/derecho), pregúntalo en una línea.
 - El precio que le importa al cliente es el de CON IVA; menciónalo. Solo da el de sin IVA si lo piden.
-- Si no hay existencia, dilo claro y ofrece pedirlo. Si no encuentras nada, pide más datos amablemente.
+- Si no encuentras nada, pide más datos amablemente.
 
 Reglas:
 - NUNCA inventes productos, códigos ni precios: solo lo que devuelvan las herramientas.
@@ -46,7 +59,7 @@ export const HERRAMIENTAS: Anthropic.Tool[] = [
   {
     name: "buscar_productos",
     description:
-      "Busca artículos en el catálogo de Vidaurri. La descripción incluye normalmente el modelo y el rango de años. Devuelve hasta 15 productos con precio (con y sin IVA) y existencia.",
+      "Busca artículos en el catálogo de Vidaurri. La descripción incluye normalmente el modelo y el rango de años. Devuelve hasta 15 productos con precio (con y sin IVA), entregaInmediata (existencia en tienda), entregaCincoDias (disponibilidad con el proveedor, solo en los primeros resultados) y usado (resumen de piezas usadas equivalentes en la Bodega Usado).",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -83,14 +96,26 @@ export const HERRAMIENTAS: Anthropic.Tool[] = [
     input_schema: { type: "object" as const, properties: {} },
   },
   {
-    name: "precio_referencia_aldo",
+    name: "buscar_piezas_usadas",
     description:
-      "Devuelve el precio público de un código en el catálogo de Aldo Autopartes (proveedor), como comparación. No todos los códigos están en Aldo.",
+      "Busca piezas USADAS con existencia en el inventario de la Bodega Usado (sucursal de piezas usadas, base aparte del catálogo de nuevas). Devuelve hasta 15 piezas con precio (sin y con IVA), años de aplicación y ubicación.",
+    // cache_control en la última herramienta: cachea el prefijo tools+system.
     cache_control: { type: "ephemeral" },
     input_schema: {
       type: "object" as const,
-      properties: { codigo: { type: "string", description: "Código del artículo" } },
-      required: ["codigo"],
+      properties: {
+        descripcion: {
+          type: "string",
+          description:
+            "Palabras a buscar en la descripción o el código de la pieza, p.ej. 'puerta sonic'. Todas las palabras deben aparecer.",
+        },
+        marca: { type: "string", description: "Marca de auto, opcional. Ej. CHEVROLET" },
+        anio: {
+          type: "number",
+          description: "Año del vehículo para filtrar por aplicación, opcional. Ej. 2015",
+        },
+      },
+      required: ["descripcion"],
     },
   },
 ];
@@ -106,6 +131,91 @@ interface FilaProducto {
   precioConIva: number;
   existencia: number;
   localizacion: string | null;
+}
+
+/** Resumen de piezas usadas equivalentes para un producto (Bodega Usado). */
+interface ResumenUsado {
+  piezas: number;
+  /** Precio "desde" del usado CON IVA; null si ninguna pieza tiene precio. */
+  desdeConIva: number | null;
+}
+
+/** Raíz del tipo de parte para cruzar catálogos (bdav usa plural "FAROS", la
+ *  Bodega singular "FARO"). Mismo criterio que /api/articulos/usadas. */
+function raizParte(parte: string): string {
+  const primera = parte.trim().toUpperCase().split(/\s+/)[0] ?? "";
+  return primera.replace(/S$/, "");
+}
+
+/** Llave de cruce con la Bodega por producto (marca + raíz + rango de años). */
+function llaveUsado(f: FilaProducto): string | null {
+  const raiz = raizParte(f.tipoParte);
+  const marca = f.marca.trim();
+  if (!raiz || !marca) return null;
+  return `${raiz}|${marca}|${f.aini ?? ""}|${f.afin ?? ""}`;
+}
+
+/** Consulta en UNA pasada (UNION ALL por llave) cuántas piezas usadas
+ *  equivalentes hay y su precio "desde". Si la Bodega no responde, devuelve un
+ *  mapa vacío: la venta de nuevo no debe bloquearse por la base remota. */
+async function resumenUsadoPorLlave(
+  filas: FilaProducto[]
+): Promise<Map<string, ResumenUsado>> {
+  const llaves = new Map<string, FilaProducto>();
+  for (const f of filas) {
+    const llave = llaveUsado(f);
+    if (llave && !llaves.has(llave)) llaves.set(llave, f);
+    if (llaves.size >= MAX_LLAVES_USADO) break;
+  }
+  if (llaves.size === 0) return new Map();
+
+  const bloques: string[] = [];
+  const params: unknown[] = [];
+  for (const [llave, f] of llaves) {
+    const condiciones = [
+      "p.existencia > 0",
+      "pa.parte LIKE ?",
+      // La marca puede venir compuesta en la Bodega ("DODGE / CHRYSLER").
+      "(ma.marca LIKE ? OR ? LIKE CONCAT('%', ma.marca, '%'))",
+    ];
+    params.push(llave, `${raizParte(f.tipoParte)}%`, `%${f.marca.trim()}%`, f.marca.trim());
+    const aini = Number(f.aini);
+    const afin = Number(f.afin);
+    if (aini > 1900 && afin > 1900) {
+      // Piezas sin rango capturado (0/NULL) cuentan como comodín.
+      condiciones.push(
+        "(IFNULL(p.anio_inicio, 0) = 0 OR p.anio_inicio <= ?)",
+        "(IFNULL(p.anio_fin, 0) = 0 OR p.anio_fin >= ?)"
+      );
+      params.push(afin, aini);
+    }
+    bloques.push(
+      `SELECT ? AS clave, COUNT(*) AS piezas, MIN(NULLIF(p.precio, 0)) AS desde
+         FROM piezas p
+         JOIN partes pa ON pa.id_parte = p.id_parte
+         LEFT JOIN modelos mo ON mo.id_modelo = p.id_modelo
+         LEFT JOIN marcas ma ON ma.id_marca = mo.id_marca
+        WHERE ${condiciones.join(" AND ")}`
+    );
+  }
+
+  try {
+    const resultados = await consultaUsadas<{ clave: string; piezas: number; desde: number | null }>(
+      bloques.join("\nUNION ALL\n"),
+      params
+    );
+    const mapa = new Map<string, ResumenUsado>();
+    for (const r of resultados) {
+      mapa.set(r.clave, {
+        piezas: r.piezas,
+        desdeConIva: r.desde ? Math.round(r.desde * 1.16 * 100) / 100 : null,
+      });
+    }
+    return mapa;
+  } catch (error) {
+    console.error("Bodega Usado sin respuesta al cruzar productos:", error);
+    return new Map();
+  }
 }
 
 async function buscarProductos(input: Record<string, unknown>): Promise<string> {
@@ -159,12 +269,119 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
   if (filas.length === 0) {
     return JSON.stringify({ resultados: [], nota: "Sin coincidencias en el catálogo." });
   }
+
+  // Enriquecimiento para la lógica de entrega: disponibilidad con el proveedor
+  // (Aldo, solo primeros resultados; precioAldo cachea y limita concurrencia)
+  // y resumen de usado equivalente en la Bodega, en paralelo.
+  const [disponibilidadAldo, usadoPorLlave] = await Promise.all([
+    Promise.all(
+      filas.map(async (f, i) => {
+        if (i >= MAX_CONSULTAS_ALDO) return null; // no consultado
+        const aldo = await precioAldo(f.codigo);
+        return aldo.encontrado ? (aldo.existencia ?? 0) : 0;
+      })
+    ),
+    resumenUsadoPorLlave(filas),
+  ]);
+
+  const resultados = filas.map((f, i) => {
+    const llave = llaveUsado(f);
+    return {
+      codigo: f.codigo,
+      descripcion: f.descripcion,
+      marca: f.marca,
+      tipoParte: f.tipoParte,
+      aini: f.aini,
+      afin: f.afin,
+      precioSinIva: f.precioSinIva,
+      precioConIva: f.precioConIva,
+      // Entrega inmediata = existencia en tienda (matriz).
+      entregaInmediata: f.existencia,
+      // Entrega en 5 días después de pagar = disponibilidad con el proveedor
+      // (null = no consultado; el precio al cliente sigue siendo precioConIva).
+      entregaCincoDias: disponibilidadAldo[i],
+      // Piezas usadas equivalentes en la Bodega Usado (null = sin dato).
+      usado: (llave && usadoPorLlave.get(llave)) || null,
+      localizacion: f.localizacion,
+    };
+  });
+
+  return JSON.stringify({ total: resultados.length, resultados });
+}
+
+interface FilaPiezaUsada {
+  codigo: string;
+  descripcion: string;
+  marca: string;
+  modelo: string;
+  tipoParte: string;
+  anioInicio: number | null;
+  anioFin: number | null;
+  precioSinIva: number;
+  precioConIva: number;
+  existencia: number;
+  ubicacion: string | null;
+}
+
+async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<string> {
+  const descripcion = String(input.descripcion ?? "").trim();
+  const marca = String(input.marca ?? "").trim();
+  const anio = Number(input.anio);
+
+  const condiciones: string[] = ["p.existencia > 0"];
+  const params: unknown[] = [];
+
+  const palabras = descripcion.split(/\s+/).filter(Boolean).slice(0, 6);
+  for (const palabra of palabras) {
+    condiciones.push("(p.descripcion LIKE ? OR p.codigo LIKE ?)");
+    params.push(`%${palabra}%`, `%${palabra}%`);
+  }
+  if (marca) {
+    condiciones.push("ma.marca LIKE ?");
+    params.push(`%${marca}%`);
+  }
+  if (Number.isInteger(anio) && anio > 1950 && anio < 2100) {
+    // Hay piezas sin rango capturado (0/NULL): se incluyen igual.
+    condiciones.push(
+      "(IFNULL(p.anio_inicio, 0) = 0 OR IFNULL(p.anio_fin, 0) = 0 OR ? BETWEEN p.anio_inicio AND p.anio_fin)"
+    );
+    params.push(anio);
+  }
+
+  const filas = await consultaUsadas<FilaPiezaUsada>(
+    `SELECT p.codigo, p.descripcion,
+            IFNULL(ma.marca, '') AS marca, IFNULL(mo.modelo, '') AS modelo,
+            IFNULL(pa.parte, '') AS tipoParte,
+            NULLIF(p.anio_inicio, 0) AS anioInicio, NULLIF(p.anio_fin, 0) AS anioFin,
+            IFNULL(p.precio, 0) AS precioSinIva,
+            ROUND(IFNULL(p.precio, 0) * 1.16, 2) AS precioConIva,
+            IFNULL(p.existencia, 0) AS existencia,
+            CONCAT_WS(' / ', md.modulo, u.casillero) AS ubicacion
+       FROM piezas p
+       LEFT JOIN partes pa ON pa.id_parte = p.id_parte
+       LEFT JOIN modelos mo ON mo.id_modelo = p.id_modelo
+       LEFT JOIN marcas ma ON ma.id_marca = mo.id_marca
+       LEFT JOIN ubicaciones u ON u.id_ubicacion = p.id_ubicacion
+       LEFT JOIN modulos md ON md.id_modulo = u.id_modulo
+      WHERE ${condiciones.join(" AND ")}
+      ORDER BY (p.precio > 0) DESC, p.precio ASC
+      LIMIT ${MAX_RESULTADOS}`,
+    params
+  );
+
+  if (filas.length === 0) {
+    return JSON.stringify({
+      resultados: [],
+      nota: "Sin piezas usadas con existencia que coincidan en la Bodega Usado.",
+    });
+  }
   return JSON.stringify({ total: filas.length, resultados: filas });
 }
 
 export async function ejecutarHerramienta(uso: UsoHerramienta): Promise<string> {
   try {
     if (uso.name === "buscar_productos") return await buscarProductos(uso.input);
+    if (uso.name === "buscar_piezas_usadas") return await buscarPiezasUsadas(uso.input);
     if (uso.name === "listar_marcas") {
       const marcas = await consultaBdav<{ marca: string }>(
         "SELECT linea AS marca FROM lineas WHERE linea <> '' ORDER BY linea"
@@ -176,13 +393,6 @@ export async function ejecutarHerramienta(uso: UsoHerramienta): Promise<string> 
         "SELECT parte FROM partes WHERE parte <> '' ORDER BY parte"
       );
       return JSON.stringify({ tiposParte: partes.map((p) => p.parte) });
-    }
-    if (uso.name === "precio_referencia_aldo") {
-      const codigo = String(uso.input.codigo ?? "").trim();
-      if (!/^[A-Za-z0-9._-]{1,50}$/.test(codigo)) {
-        return JSON.stringify({ error: "Código inválido" });
-      }
-      return JSON.stringify(await precioAldo(codigo));
     }
     return JSON.stringify({ error: "Herramienta desconocida" });
   } catch (error) {

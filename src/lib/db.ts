@@ -56,6 +56,8 @@ function crearPool(): mysql.Pool {
     // Fechas como 'AAAA-MM-DD' y decimales como número: reportes, no contabilidad.
     dateStrings: true,
     decimalNumbers: true,
+    // Nunca permitir apilar varios comandos en una sola llamada (anti-inyección).
+    multipleStatements: false,
   });
 }
 
@@ -66,11 +68,12 @@ export function poolBdav(): mysql.Pool {
   return globalConPool.__poolBdav;
 }
 
-/** SELECT tipado contra bdav con parámetros posicionales (?). */
+/** SELECT tipado contra bdav con parámetros posicionales (?). Solo lectura. */
 export async function consultaBdav<T = Record<string, unknown>>(
   sql: string,
   params: unknown[] = []
 ): Promise<T[]> {
+  garantizarSoloLectura(sql);
   const [filas] = await poolBdav().query(sql, params);
   return filas as T[];
 }

@@ -28,3 +28,6 @@ next-env.d.ts
 # respaldos de la base de datos
 Dump*.sql
 Dump*.zip
+
+# script con la clave real del usuario de solo lectura (no subir al repo)
+docs/usuario-solo-lectura.sql

@@ -16,6 +16,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { moneda, entero, fechaCorta } from "@/lib/formato";
+import {
+  SelectorSucursal,
+  SUCURSALES,
+  type Sucursal,
+} from "@/components/dashboard/SelectorSucursal";
 
 // ---------- Tipos ----------
 interface BackOrder {
@@ -89,6 +94,11 @@ export default function BackOrdersPage() {
   const [estatus, setEstatus] = useState("");
   const [busqueda, setBusqueda] = useState("");
   const [page, setPage] = useState(1);
+
+  // Sucursal activa. La Bodega Usado no maneja back orders: con "usadas" no se
+  // consulta nada, solo se muestra el aviso y se conservan los datos de matriz.
+  const [sucursal, setSucursal] = useState<Sucursal>("matriz");
+  const esUsadas = sucursal === "usadas";
 
   const [backOrders, setBackOrders] = useState<BackOrder[]>([]);
   const [resumen, setResumen] = useState<Resumen | null>(null);
@@ -279,38 +289,60 @@ export default function BackOrdersPage() {
         <div>
           <h1 className="text-2xl font-black text-white tracking-tight">Back Orders</h1>
           <p className={cn(lbl, "mt-1")}>
-            {cargando ? "Consultando..." : `${entero(total)} pedidos especiales`}
+            {esUsadas
+              ? "Sucursal Bodega Usado"
+              : cargando
+                ? "Consultando..."
+                : `${entero(total)} pedidos especiales`}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => exportar("pdf")}
-            disabled={!!exportando || cargando || backOrders.length === 0}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-rose-300 transition-all disabled:opacity-40"
-          >
-            {exportando === "pdf" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <FileText className="h-3.5 w-3.5" />
-            )}
-            PDF
-          </button>
-          <button
-            onClick={() => exportar("excel")}
-            disabled={!!exportando || cargando || backOrders.length === 0}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-emerald-300 transition-all disabled:opacity-40"
-          >
-            {exportando === "excel" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <FileSpreadsheet className="h-3.5 w-3.5" />
-            )}
-            Excel
-          </button>
+          <SelectorSucursal opciones={SUCURSALES} valor={sucursal} onCambio={setSucursal} />
+          {!esUsadas && (
+            <>
+              <button
+                onClick={() => exportar("pdf")}
+                disabled={!!exportando || cargando || backOrders.length === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-rose-300 transition-all disabled:opacity-40"
+              >
+                {exportando === "pdf" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FileText className="h-3.5 w-3.5" />
+                )}
+                PDF
+              </button>
+              <button
+                onClick={() => exportar("excel")}
+                disabled={!!exportando || cargando || backOrders.length === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-300 text-[11px] font-black uppercase tracking-widest hover:text-emerald-300 transition-all disabled:opacity-40"
+              >
+                {exportando === "excel" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                )}
+                Excel
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Filtros (sin fechas: los back orders son pocos y se listan completos) */}
+      {/* Bodega Usado: módulo sin equivalente, solo se muestra el aviso */}
+      {esUsadas && (
+        <div className="bg-white/[0.04] border border-white/10 rounded-2xl backdrop-blur-xl flex flex-col items-center justify-center text-center gap-3 py-24 px-6">
+          <span className="text-4xl" aria-hidden="true">
+            ♻️
+          </span>
+          <p className="text-sm font-bold text-slate-400 max-w-md">
+            La Bodega Usado no maneja back orders en su sistema.
+          </p>
+        </div>
+      )}
+
+      {/* Filtros (sin fechas: los back orders son pocos y se listan completos; solo matriz) */}
+      {!esUsadas && (
       <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-4 backdrop-blur-xl">
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5">
@@ -353,9 +385,10 @@ export default function BackOrdersPage() {
           </button>
         </div>
       </div>
+      )}
 
       {/* Tarjetas de resumen */}
-      {resumen && (
+      {!esUsadas && resumen && (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           {tarjetas.map((t) => (
             <div
@@ -370,13 +403,14 @@ export default function BackOrdersPage() {
       )}
 
       {/* Error */}
-      {error && (
+      {!esUsadas && error && (
         <div className="flex items-center gap-2 text-rose-300 text-[11px] font-black bg-rose-500/10 p-3 rounded-xl border border-rose-500/25 uppercase tracking-wider">
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
 
-      {/* Tabla */}
+      {/* Tabla (solo matriz) */}
+      {!esUsadas && (
       <div className="bg-white/[0.04] border border-white/10 rounded-2xl backdrop-blur-xl overflow-hidden">
         {cargando ? (
           <div className="flex items-center justify-center py-24">
@@ -487,6 +521,7 @@ export default function BackOrdersPage() {
           </>
         )}
       </div>
+      )}
 
       {/* Overlay de carga del detalle */}
       {cargandoDetalle && (

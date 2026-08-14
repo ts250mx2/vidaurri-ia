@@ -1,7 +1,13 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { sesionActual } from "@/lib/auth";
 import { consultaBdav } from "@/lib/db";
-import { ejecutarConsultaAgente, TABLAS_PERMITIDAS } from "@/lib/agente-sql";
+import { consultaUsadas } from "@/lib/db-usadas";
+import {
+  ejecutarConsultaAgente,
+  ejecutarConsultaAgenteUsadas,
+  TABLAS_PERMITIDAS,
+  TABLAS_PERMITIDAS_USADAS,
+} from "@/lib/agente-sql";
 import { correrTurnoAgente, claveFaltante, type UsoHerramienta } from "@/lib/agente-modelo";
 import { esModeloVidaValido } from "@/lib/modelos-vida";
 
@@ -67,12 +73,34 @@ vendedores(id, vendedor)
 generales(id, rfc, empresa, ...)  -- datos de la empresa
 NO uses: articulos_21mzo26, clientes_21mzo26, generales_23mzo26, bk_arts*, articulos_eliminados, pedido_tony, banderas, tbl_*, tmp*, vistas vw_* (legacy/respaldos). La tabla de usuarios/claves NO está disponible.`;
 
+// Esquema compacto de la base de la BODEGA USADO (sucursal de piezas usadas,
+// wwapvi_bd-usadas). Es un sistema aparte de bdav: no comparten IDs ni códigos.
+const ESQUEMA_USADAS = `
+piezas(id_pieza, id_parte→partes, id_ubicacion→ubicaciones, id_modelo→modelos, codigo, descripcion, lado, posicion, tipo_puerta, anio_inicio, anio_fin, puertas, precio, existencia, motor, numeroparte, origen, fecha_alta, comentarios)  -- inventario de piezas usadas (~19k)
+partes(id_parte, parte, cve_parte)  -- tipo de pieza: PUERTA, FARO, CALAVERA, ESPEJO, COMPUTADORA DE MOTOR ECM PCM...
+marcas(id_marca, marca)  -- marca del auto
+modelos(id_modelo, id_marca→marcas, modelo)
+ubicaciones(id_ubicacion, id_modulo→modulos, casillero, estatus)
+modulos(id_modulo, modulo)  -- zona física: TERRENO ATRAS, BODEGA PISO 1, PATIO RB...
+lados_piezas(id_lado, lado_pieza) / posicion_piezas(id_posicion, posicion) / tipos_puertas(id_tipo, tipo_puerta)
+compatibilidades(id_compatibilidad, id_pieza→piezas, id_auto→autos_partes)
+autos_partes(id_auto, id_parte→partes, id_modelo→modelos, marca, modelo, lado, posicion, tipo, pines, numeroparte, anio_inicio, anio_fin, precio)  -- catálogo de aplicaciones
+ventas(id_venta, num_venta, nombre_cliente, telefono_cliente, fecha, subtotal, iva, total, saldo, estatus 'ACTIVO'|'PAGADO', observa)
+venta_detalle(id_vta_detalle, id_venta→ventas, id_pieza→piezas, precio, cantidad, total_item)
+bitacora_piezas(id_bitacora, id_pieza→piezas, id_venta, fecha_movimiento, tipo_movimiento 'ENTRADA'|'VENTA'|'DEVOLUCION', folio_movimiento, existencia_anterior, cantidad, existencia_posterior, precio, total)  -- kardex de la sucursal
+piezas_imagenes(id, id_pieza→piezas, nombre_imagen, path_imagen, activo) / piezas_ml(id_piezas_ml, id_pieza, pub_ml, tienda) / piezas_ag / piezas_conectores / reglas_compatibilidad / nvos_modelos / proveedores(id_prov, clave_proveedor)
+NO uses: usuarios, perfiles, permisos, metodos, control_folios, tmp_*, ni respaldos con fecha (autos_partes_11jul26, piezas_puertas_2jul26, piezas_imagenes_backup...).`;
+
 function promptSistema(nombreUsuario: string, hoy: string): string {
   return `Eres VIDA (Vidaurri Inteligencia de Datos Automotriz), el agente inteligente del sistema de AUTO PARTES VIDAURRI, un negocio mexicano de autopartes de colisión (cofres, defensas, parrillas, polveras...) por marca, modelo y rango de años.
 Hoy es ${hoy}. Conversas con ${nombreUsuario}.
 
 Tienes acceso DE SOLO LECTURA a la base de datos MySQL "bdav" mediante la herramienta consulta_sql. Esquema (tabla(columnas, → indica llave foránea)):
 ${ESQUEMA_BDAV}
+
+La empresa también tiene la BODEGA USADO (sucursal de piezas usadas: puertas, faros, calaveras, espejos, computadoras...), con su PROPIA base de datos, accesible con la herramienta consulta_sql_usadas. Esquema:
+${ESQUEMA_USADAS}
+Cuando pregunten por piezas usadas, la Bodega Usado, o pidan un panorama de toda la empresa, consulta también esa base. En sus ventas los folios se muestran como U-num_venta (ej. U-645). Sus precios son sin IVA.
 
 Reglas:
 - SIEMPRE escribe en español, desde la primera palabra, incluso los comentarios previos a usar herramientas.
@@ -103,15 +131,36 @@ const HERRAMIENTAS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "consulta_sql_usadas",
+    description:
+      "Ejecuta una consulta SELECT de solo lectura en la base de datos de la BODEGA USADO (sucursal de piezas usadas) y devuelve las filas en JSON (máximo 200). Úsala para piezas usadas, sus ventas y su inventario.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        sql: { type: "string", description: "Consulta SELECT de MySQL (una sola, sin ';')" },
+        proposito: {
+          type: "string",
+          description: "Qué estás consultando, en 3-6 palabras en español (se muestra al usuario)",
+        },
+      },
+      required: ["sql"],
+    },
+  },
+  {
     name: "esquema_tabla",
     description:
-      "Devuelve las columnas y tipos exactos de una tabla de bdav (SHOW COLUMNS). Úsala si dudas de un nombre de columna.",
+      "Devuelve las columnas y tipos exactos de una tabla (SHOW COLUMNS). Úsala si dudas de un nombre de columna.",
     // cache_control en la última herramienta: cachea el prefijo tools+system.
     cache_control: { type: "ephemeral" },
     input_schema: {
       type: "object" as const,
       properties: {
         tabla: { type: "string", description: "Nombre exacto de la tabla" },
+        base: {
+          type: "string",
+          enum: ["bdav", "usadas"],
+          description: "Base de datos: 'bdav' (matriz, por defecto) o 'usadas' (sucursal)",
+        },
       },
       required: ["tabla"],
     },
@@ -124,17 +173,25 @@ async function ejecutarHerramienta(uso: UsoHerramienta): Promise<string> {
     const resultado = await ejecutarConsultaAgente(sql);
     return resultado.contenido;
   }
+  if (uso.name === "consulta_sql_usadas") {
+    const sql = String(uso.input.sql ?? "");
+    const resultado = await ejecutarConsultaAgenteUsadas(sql);
+    return resultado.contenido;
+  }
   if (uso.name === "esquema_tabla") {
     const tabla = String(uso.input.tabla ?? "").trim();
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(tabla)) {
       return JSON.stringify({ error: "Nombre de tabla inválido" });
     }
-    if (!TABLAS_PERMITIDAS.has(tabla.toLowerCase())) {
+    const esUsadas = uso.input.base === "usadas";
+    const permitidas = esUsadas ? TABLAS_PERMITIDAS_USADAS : TABLAS_PERMITIDAS;
+    if (!permitidas.has(tabla.toLowerCase())) {
       return JSON.stringify({ error: `La tabla ${tabla} no está disponible para consulta` });
     }
     try {
-      const columnas = await consultaBdav(`SHOW COLUMNS FROM \`${tabla}\``);
-      return JSON.stringify({ tabla, columnas });
+      const consulta = esUsadas ? consultaUsadas : consultaBdav;
+      const columnas = await consulta(`SHOW COLUMNS FROM \`${tabla}\``);
+      return JSON.stringify({ tabla, base: esUsadas ? "usadas" : "bdav", columnas });
     } catch {
       return JSON.stringify({ error: `No existe la tabla ${tabla}` });
     }
@@ -232,7 +289,9 @@ export async function POST(request: Request) {
                 ? uso.input.proposito
                 : uso.name === "esquema_tabla"
                   ? `Revisando la tabla ${uso.input.tabla ?? ""}`
-                  : "Consultando la base de datos";
+                  : uso.name === "consulta_sql_usadas"
+                    ? "Consultando la Bodega Usado"
+                    : "Consultando la base de datos";
             emitir({ t: "estado", texto: proposito });
             const contenido = await ejecutarHerramienta(uso);
             resultadosHerramientas.push({

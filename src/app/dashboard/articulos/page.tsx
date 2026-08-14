@@ -49,6 +49,34 @@ interface PrecioAldo {
   existencia?: number | string;
 }
 
+interface PiezaUsada {
+  codigo: string;
+  descripcion: string;
+  parte: string;
+  marca: string;
+  modelo: string;
+  anioInicio: number | null;
+  anioFin: number | null;
+  precio: number;
+  existencia: number;
+  ubicacion: string | null;
+}
+
+interface RespuestaUsadas {
+  encontrado: boolean;
+  total: number;
+  piezas: PiezaUsada[];
+  /** Presente cuando la base de la sucursal no respondió (distinto de "sin coincidencias"). */
+  error?: string;
+}
+
+interface ResumenUsadasLote {
+  /** Piezas con existencia en la Bodega Usado que cruzan con el artículo. */
+  piezas: number;
+  /** Precio mínimo (sin IVA) de esas piezas; null cuando ninguna tiene precio. */
+  desde: number | null;
+}
+
 interface OpcionLinea {
   id: number;
   linea: string;
@@ -147,18 +175,35 @@ export default function ArticulosPage() {
   const [detalle, setDetalle] = useState<DetalleArticulo | null>(null);
   const [cargandoDetalle, setCargandoDetalle] = useState(false);
 
+  // Pestaña activa del modal de detalle (Matriz / Aldo Autopartes / Bodega Usado).
+  const [pestanaDetalle, setPestanaDetalle] = useState<"matriz" | "aldo" | "usadas">("matriz");
+
   // Precio de Aldo Autopartes para el artículo abierto en el detalle.
   const [aldo, setAldo] = useState<PrecioAldo | null>(null);
   const [cargandoAldo, setCargandoAldo] = useState(false);
+
+  // Piezas equivalentes en la Bodega Usado para el artículo abierto.
+  const [usadas, setUsadas] = useState<RespuestaUsadas | null>(null);
+  const [cargandoUsadas, setCargandoUsadas] = useState(false);
 
   // Precios de Aldo por código para las filas de la tabla (carga progresiva).
   // undefined = aún cargando; objeto = ya resuelto (encontrado o no).
   const [preciosAldo, setPreciosAldo] = useState<Record<string, PrecioAldo>>({});
 
+  // Resumen de la Bodega Usado por artículo para las filas de la tabla.
+  // null = cargando el lote; objeto = ya resuelto ({} cuando la consulta falló).
+  const [usadasTabla, setUsadasTabla] = useState<Record<number, ResumenUsadasLote> | null>(null);
+
   // Token de secuencia: descarta respuestas viejas que lleguen tras una petición más nueva.
   const peticionRef = useRef(0);
+
+  // Token propio del detalle: descarta respuestas de Aldo/usadas de un artículo
+  // que el usuario ya cambió.
+  const detalleRef = useRef(0);
   // Token propio para la carga de precios Aldo de la tabla.
   const aldoTablaRef = useRef(0);
+  // Token propio para la carga del lote de la Bodega Usado de la tabla.
+  const usadasTablaRef = useRef(0);
 
   const cargar = useCallback(
     async (
@@ -236,6 +281,8 @@ export default function ArticulosPage() {
   // saturar el sitio de Aldo. Cada fila se va llenando conforme llega su precio.
   useEffect(() => {
     if (articulos.length === 0) {
+      // Invalida a los trabajadores de la página anterior antes de limpiar.
+      aldoTablaRef.current++;
       setPreciosAldo({});
       return;
     }
@@ -267,6 +314,33 @@ export default function ArticulosPage() {
     void Promise.all(Array.from({ length: TRABAJADORES }, trabajar));
   }, [articulos]);
 
+  // Al cambiar la página de artículos, trae en UNA sola llamada el resumen de
+  // la Bodega Usado (piezas equivalentes y precio "desde") de los ids visibles.
+  useEffect(() => {
+    if (articulos.length === 0) {
+      // Invalida el lote en vuelo de la página anterior antes de limpiar.
+      usadasTablaRef.current++;
+      setUsadasTabla({});
+      return;
+    }
+    const idCarga = ++usadasTablaRef.current;
+    // Mientras llega el lote, las celdas del grupo muestran "…".
+    setUsadasTabla(null);
+    const ids = articulos.map((a) => a.id).join(",");
+    fetch(`/api/articulos/usadas-lote?ids=${ids}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Lote no disponible"))))
+      .then((json: { porArticulo: Record<number, ResumenUsadasLote> }) => {
+        // Si el usuario cambió de página/filtro, descarta este resultado.
+        if (idCarga !== usadasTablaRef.current) return;
+        setUsadasTabla(json.porArticulo ?? {});
+      })
+      .catch(() => {
+        // Falla del lote: todas las celdas del grupo muestran "—".
+        if (idCarga !== usadasTablaRef.current) return;
+        setUsadasTabla({});
+      });
+  }, [articulos]);
+
   const actualizar = () => {
     setPage(1);
     cargar(busqueda, idLinea, idParte, soloExistencia, 1);
@@ -294,8 +368,13 @@ export default function ArticulosPage() {
   };
 
   const verDetalle = async (articulo: Articulo) => {
+    // Token de secuencia: si el usuario abre otro artículo antes de que Aldo o
+    // la sucursal respondan, la respuesta vieja se descarta.
+    const idDetalle = ++detalleRef.current;
     setCargandoDetalle(true);
     setAldo(null);
+    setUsadas(null);
+    setPestanaDetalle("matriz");
     try {
       const res = await fetch(`/api/articulos/${articulo.id}`);
       if (res.status === 401) {
@@ -304,15 +383,44 @@ export default function ArticulosPage() {
       }
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Error al consultar el detalle");
+      if (idDetalle !== detalleRef.current) return;
       setDetalle(json);
       // El precio de Aldo se consulta aparte (scraping de su catálogo): no debe
       // bloquear ni romper la apertura del detalle si su sitio no responde.
       setCargandoAldo(true);
       fetch(`/api/articulos/precio-aldo?codigo=${encodeURIComponent(articulo.codigo)}`)
         .then((r) => (r.ok ? r.json() : { encontrado: false }))
-        .then((datos: PrecioAldo) => setAldo(datos))
-        .catch(() => setAldo({ encontrado: false }))
-        .finally(() => setCargandoAldo(false));
+        .then((datos: PrecioAldo) => {
+          if (idDetalle !== detalleRef.current) return;
+          setAldo(datos);
+          setCargandoAldo(false);
+        })
+        .catch(() => {
+          if (idDetalle !== detalleRef.current) return;
+          setAldo({ encontrado: false });
+          setCargandoAldo(false);
+        });
+      // Piezas equivalentes en la Bodega Usado (base remota aparte):
+      // tampoco debe bloquear el detalle si esa base no responde.
+      const sinSucursal: RespuestaUsadas = {
+        encontrado: false,
+        total: 0,
+        piezas: [],
+        error: "Sin respuesta de la sucursal",
+      };
+      setCargandoUsadas(true);
+      fetch(`/api/articulos/usadas?id=${articulo.id}`)
+        .then((r) => r.json().catch(() => sinSucursal))
+        .then((datos: RespuestaUsadas) => {
+          if (idDetalle !== detalleRef.current) return;
+          setUsadas(datos);
+          setCargandoUsadas(false);
+        })
+        .catch(() => {
+          if (idDetalle !== detalleRef.current) return;
+          setUsadas(sinSucursal);
+          setCargandoUsadas(false);
+        });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
@@ -420,6 +528,16 @@ export default function ArticulosPage() {
       return <Loader2 className="h-3 w-3 animate-spin text-cyan-400/50 inline-block" />;
     }
     if (!dato.encontrado) return <span className="text-slate-600">—</span>;
+    return render(dato);
+  };
+
+  // Contenido de una celda del grupo Bodega Usado según el estado del lote.
+  const celdaUsadas = (id: number, render: (u: ResumenUsadasLote) => React.ReactNode) => {
+    if (usadasTabla === null) {
+      return <span className="text-slate-600">…</span>;
+    }
+    const dato = usadasTabla[id];
+    if (!dato || dato.piezas <= 0) return <span className="text-slate-600">—</span>;
     return render(dato);
   };
 
@@ -592,7 +710,7 @@ export default function ArticulosPage() {
             <div className="overflow-auto max-h-[calc(100vh-24rem)]">
               <table className="w-full">
                 <thead className="sticky top-0 z-10 bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
-                  {/* Fila 1: columnas de contexto + los dos grupos */}
+                  {/* Fila 1: columnas de contexto + los tres grupos */}
                   <tr>
                     <th rowSpan={2} className={cn(lbl, "px-4 py-2 text-center")}>Foto</th>
                     <th rowSpan={2} className={cn(lbl, "px-4 py-2 text-left")}>Código</th>
@@ -604,13 +722,19 @@ export default function ArticulosPage() {
                       colSpan={4}
                       className="px-4 pt-2 pb-1 text-center text-[10px] font-black text-amber-300 uppercase tracking-widest border-l border-amber-500/25 bg-amber-500/[0.06]"
                     >
-                      Vidaurri
+                      Principal
                     </th>
                     <th
                       colSpan={3}
                       className="px-4 pt-2 pb-1 text-center text-[10px] font-black text-cyan-300 uppercase tracking-widest border-l border-cyan-500/25 bg-cyan-500/[0.06]"
                     >
                       Aldo Autopartes
+                    </th>
+                    <th
+                      colSpan={2}
+                      className="px-4 pt-2 pb-1 text-center text-[10px] font-black text-emerald-300 uppercase tracking-widest border-l border-emerald-500/25 bg-emerald-500/[0.06]"
+                    >
+                      Bodega Usado
                     </th>
                   </tr>
                   {/* Fila 2: subcolumnas de cada grupo */}
@@ -622,6 +746,8 @@ export default function ArticulosPage() {
                     <th className={cn(lbl, "px-4 py-2 text-right border-l border-cyan-500/25")}>Sin IVA</th>
                     <th className={cn(lbl, "px-4 py-2 text-right")}>Con IVA</th>
                     <th className={cn(lbl, "px-4 py-2 text-right")}>Exist.</th>
+                    <th className={cn(lbl, "px-4 py-2 text-right border-l border-emerald-500/25")}>Piezas</th>
+                    <th className={cn(lbl, "px-4 py-2 text-right")}>Desde</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
@@ -654,7 +780,7 @@ export default function ArticulosPage() {
                         {rangoAnios(a.aini, a.afin)}
                       </td>
 
-                      {/* Grupo Vidaurri */}
+                      {/* Grupo Principal */}
                       <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right border-l border-amber-500/15">
                         {moneda(a.precioLista)}
                       </td>
@@ -686,6 +812,20 @@ export default function ArticulosPage() {
                       </td>
                       <td className="px-4 py-2.5 text-[12px] font-black text-slate-300 text-right">
                         {celdaAldo(a.codigo, (al) => existenciaAldoTexto(al.existencia))}
+                      </td>
+
+                      {/* Grupo Bodega Usado */}
+                      <td className="px-4 py-2.5 text-[12px] font-black text-emerald-300 text-right border-l border-emerald-500/15">
+                        {celdaUsadas(a.id, (u) => entero(u.piezas))}
+                      </td>
+                      <td className="px-4 py-2.5 text-[12px] font-bold text-slate-300 text-right">
+                        {celdaUsadas(a.id, (u) =>
+                          u.desde !== null ? (
+                            moneda(u.desde)
+                          ) : (
+                            <span className="text-slate-600">—</span>
+                          )
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -738,9 +878,10 @@ export default function ArticulosPage() {
           >
             {/* Cabecera del modal */}
             <div className="flex items-start gap-4 p-5 border-b border-white/[0.06]">
-              {/* Foto del catálogo de Aldo Autopartes (por código) */}
+              {/* Foto del catálogo de Aldo Autopartes (por código); clic para ampliar */}
               <FotoArticulo
                 codigo={detalle.articulo.codigo}
+                ampliable
                 className="h-24 w-24 shrink-0 rounded-xl border border-white/10"
               />
               <div className="min-w-0 flex-1">
@@ -783,9 +924,42 @@ export default function ArticulosPage() {
               </button>
             </div>
 
+            {/* Pestañas: Matriz / Aldo Autopartes / Bodega Usado */}
+            <div className="flex items-center gap-1 px-5 border-b border-white/[0.06] bg-[#0a101c]">
+              {(
+                [
+                  { clave: "matriz", etiqueta: "Matriz" },
+                  { clave: "aldo", etiqueta: "Aldo Autopartes" },
+                  { clave: "usadas", etiqueta: "Bodega Usado" },
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.clave}
+                  onClick={() => setPestanaDetalle(p.clave)}
+                  className={cn(
+                    "px-3 py-2.5 text-[11px] font-black uppercase tracking-widest border-b-2 -mb-px transition-colors whitespace-nowrap",
+                    pestanaDetalle === p.clave
+                      ? "text-amber-300 border-amber-400"
+                      : "text-slate-500 border-transparent hover:text-white"
+                  )}
+                >
+                  {p.etiqueta}
+                  {p.clave === "usadas" && usadas?.encontrado && (
+                    <span className="ml-1.5 text-[9px] text-emerald-300">
+                      {entero(usadas.total)}
+                    </span>
+                  )}
+                  {p.clave === "aldo" && !cargandoAldo && aldo?.encontrado && (
+                    <span className="ml-1.5 text-[9px] text-emerald-300">✓</span>
+                  )}
+                </button>
+              ))}
+            </div>
+
             {/* Secciones */}
             <div className="flex-1 overflow-auto p-5 space-y-5">
               {/* Precio Vidaurri */}
+              {pestanaDetalle === "matriz" && (
               <div>
                 <p className={cn(lbl, "mb-2")}>Precio Vidaurri</p>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
@@ -808,8 +982,10 @@ export default function ArticulosPage() {
                   ))}
                 </div>
               </div>
+              )}
 
               {/* Precio Aldo Autopartes (catálogo en línea) */}
+              {pestanaDetalle === "aldo" && (
               <div>
                 <p className={cn(lbl, "mb-2")}>Precio Aldo Autopartes</p>
                 {cargandoAldo ? (
@@ -879,8 +1055,79 @@ export default function ArticulosPage() {
                   </p>
                 )}
               </div>
+              )}
 
-              {/* Inventario */}
+              {/* Bodega Usado (base de datos de la sucursal de piezas usadas) */}
+              {pestanaDetalle === "usadas" && (
+              <div>
+                <p className={cn(lbl, "mb-2")}>
+                  Bodega Usado
+                  {usadas?.encontrado && usadas.total > usadas.piezas.length
+                    ? ` · ${entero(usadas.total)} piezas (mostrando ${usadas.piezas.length})`
+                    : ""}
+                </p>
+                {cargandoUsadas ? (
+                  <div className="flex items-center gap-2 text-slate-500 bg-white/[0.03] border border-white/10 rounded-xl p-3">
+                    <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
+                    <span className="text-[11px] font-black uppercase tracking-widest">
+                      Consultando la Bodega Usado...
+                    </span>
+                  </div>
+                ) : usadas?.encontrado ? (
+                  <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-[#10151f]">
+                          <tr>
+                            <th className={cn(lbl, "px-3 py-2 text-left")}>Pieza</th>
+                            <th className={cn(lbl, "px-3 py-2 text-left")}>Años</th>
+                            <th className={cn(lbl, "px-3 py-2 text-right")}>Precio</th>
+                            <th className={cn(lbl, "px-3 py-2 text-right")}>Exist.</th>
+                            <th className={cn(lbl, "px-3 py-2 text-left")}>Ubicación</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.04]">
+                          {usadas.piezas.map((p) => (
+                            <tr key={p.codigo} className="hover:bg-white/[0.03] transition-colors">
+                              <td className="px-3 py-2 max-w-[260px]">
+                                <p className="text-[11px] font-black text-emerald-300 truncate">
+                                  {p.codigo}
+                                </p>
+                                <p className="text-[11px] font-bold text-slate-400 truncate">
+                                  {p.descripcion}
+                                </p>
+                              </td>
+                              <td className="px-3 py-2 text-[11px] font-bold text-slate-400 whitespace-nowrap">
+                                {rangoAnios(p.anioInicio, p.anioFin)}
+                              </td>
+                              <td className="px-3 py-2 text-[11px] font-black text-slate-200 text-right whitespace-nowrap">
+                                {p.precio > 0 ? moneda(p.precio) : "—"}
+                              </td>
+                              <td className="px-3 py-2 text-[11px] font-black text-emerald-300 text-right">
+                                {entero(p.existencia)}
+                              </td>
+                              <td className="px-3 py-2 text-[11px] font-bold text-cyan-300 whitespace-nowrap">
+                                {p.ubicacion || "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] font-bold text-slate-500 bg-white/[0.03] border border-white/10 rounded-xl p-3">
+                    {usadas?.error
+                      ? "No se pudo consultar la base de la Bodega Usado."
+                      : "Sin piezas usadas equivalentes con existencia en la Bodega Usado."}
+                  </p>
+                )}
+              </div>
+              )}
+
+              {/* Inventario, aplicaciones, códigos y movimientos (pestaña Matriz) */}
+              {pestanaDetalle === "matriz" && (
+              <>
               <div>
                 <p className={cn(lbl, "mb-2")}>Inventario</p>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
@@ -1018,6 +1265,8 @@ export default function ArticulosPage() {
                   </div>
                 )}
               </div>
+              </>
+              )}
             </div>
           </div>
         </div>

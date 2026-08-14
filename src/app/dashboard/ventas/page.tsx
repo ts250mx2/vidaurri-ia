@@ -16,6 +16,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { moneda, entero, fechaCorta } from "@/lib/formato";
+import {
+  SelectorSucursal,
+  SUCURSALES,
+  type Sucursal,
+} from "@/components/dashboard/SelectorSucursal";
 
 // ---------- Tipos ----------
 interface Venta {
@@ -28,7 +33,8 @@ interface Venta {
   total: number;
   saldo: number;
   estatus: string | null;
-  cliente: string;
+  /** NULL en la Bodega Usado = público general. */
+  cliente: string | null;
   numCotiza: number | null;
 }
 
@@ -53,7 +59,7 @@ interface DetalleVenta {
     estatus: string | null;
     numCotiza: number | null;
     observa: string | null;
-    cliente: string;
+    cliente: string | null;
     rfc: string | null;
     telefonoCliente: string | null;
     telefonoVenta: string | null;
@@ -67,6 +73,8 @@ interface DetalleVenta {
     totalPartida: number;
     devolucion: number | null;
     numDevol: number | null;
+    /** Solo Bodega Usado: "MODULO / CASILLERO" de la pieza. */
+    ubicacion?: string | null;
   }[];
   formasPago: { formaPago: string; usuario: string }[];
 }
@@ -86,6 +94,7 @@ const diasAtras = (n: number) => {
 };
 
 export default function VentasPage() {
+  const [sucursal, setSucursal] = useState<Sucursal>("matriz");
   const [fechaInicio, setFechaInicio] = useState(hoyISO());
   const [fechaFin, setFechaFin] = useState(hoyISO());
   const [serie, setSerie] = useState("");
@@ -103,9 +112,10 @@ export default function VentasPage() {
   const [detalle, setDetalle] = useState<DetalleVenta | null>(null);
   const [cargandoDetalle, setCargandoDetalle] = useState(false);
 
-  // Token de secuencia: descarta respuestas de peticiones que quedaron obsoletas
-  // (el usuario cambió filtros o página antes de que la anterior respondiera).
+  // Tokens de secuencia: descartan respuestas de peticiones que quedaron obsoletas
+  // (el usuario cambió filtros, página o sucursal antes de que la anterior respondiera).
   const peticionRef = useRef(0);
+  const detalleRef = useRef(0);
 
   const cargar = useCallback(
     async (
@@ -114,7 +124,8 @@ export default function VentasPage() {
       s: string,
       e: string,
       filtro: string,
-      pagina: number
+      pagina: number,
+      suc: Sucursal
     ) => {
       const idPeticion = ++peticionRef.current;
       setCargando(true);
@@ -126,7 +137,8 @@ export default function VentasPage() {
           page: String(pagina),
           pageSize: String(PAGE_SIZE),
         });
-        if (s) qs.set("serie", s);
+        if (suc === "usadas") qs.set("sucursal", "usadas");
+        if (s && suc === "matriz") qs.set("serie", s);
         if (e) qs.set("estatus", e);
         if (filtro) qs.set("busqueda", filtro);
         const res = await fetch(`/api/ventas?${qs.toString()}`);
@@ -155,12 +167,12 @@ export default function VentasPage() {
   );
 
   useEffect(() => {
-    cargar(hoyISO(), hoyISO(), "", "", "", 1);
+    cargar(hoyISO(), hoyISO(), "", "", "", 1, "matriz");
   }, [cargar]);
 
   const actualizar = () => {
     setPage(1);
-    cargar(fechaInicio, fechaFin, serie, estatus, busqueda, 1);
+    cargar(fechaInicio, fechaFin, serie, estatus, busqueda, 1, sucursal);
   };
 
   const preset = (dias: number) => {
@@ -169,7 +181,7 @@ export default function VentasPage() {
     setFechaInicio(inicio);
     setFechaFin(fin);
     setPage(1);
-    cargar(inicio, fin, serie, estatus, busqueda, 1);
+    cargar(inicio, fin, serie, estatus, busqueda, 1, sucursal);
   };
 
   const limpiar = () => {
@@ -179,31 +191,58 @@ export default function VentasPage() {
     setEstatus("");
     setBusqueda("");
     setPage(1);
-    cargar(hoyISO(), hoyISO(), "", "", "", 1);
+    cargar(hoyISO(), hoyISO(), "", "", "", 1, sucursal);
   };
 
   const cambiarPagina = (pagina: number) => {
     setPage(pagina);
-    cargar(fechaInicio, fechaFin, serie, estatus, busqueda, pagina);
+    cargar(fechaInicio, fechaFin, serie, estatus, busqueda, pagina, sucursal);
+  };
+
+  const cambiarSucursal = (nueva: Sucursal) => {
+    if (nueva === sucursal) return;
+    setSucursal(nueva);
+    // Serie y estatus no aplican entre sucursales (la Bodega no tiene serie y
+    // sus estatus son ACTIVO/PAGADO); se resetean junto con la página.
+    setSerie("");
+    setEstatus("");
+    setPage(1);
+    ++detalleRef.current; // invalida cualquier detalle en vuelo
+    setDetalle(null);
+    setCargandoDetalle(false);
+    cargar(fechaInicio, fechaFin, "", "", busqueda, 1, nueva);
   };
 
   const verDetalle = async (venta: Venta) => {
+    // Token de secuencia: si el usuario cambia de sucursal antes de que
+    // responda el detalle, la respuesta vieja se descarta.
+    const idDetalle = ++detalleRef.current;
     setCargandoDetalle(true);
     try {
-      const res = await fetch(`/api/ventas/${venta.id}`);
+      const qs = sucursal === "usadas" ? "?sucursal=usadas" : "";
+      const res = await fetch(`/api/ventas/${venta.id}${qs}`);
+      if (idDetalle !== detalleRef.current) return;
       if (res.status === 401) {
         window.location.href = "/login";
         return;
       }
       const json = await res.json();
+      if (idDetalle !== detalleRef.current) return;
       if (!res.ok) throw new Error(json.error || "Error al consultar el detalle");
       setDetalle(json);
     } catch (err: unknown) {
+      if (idDetalle !== detalleRef.current) return;
       setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
-      setCargandoDetalle(false);
+      if (idDetalle === detalleRef.current) setCargandoDetalle(false);
     }
   };
+
+  // Folio según sucursal: la Bodega Usado no maneja serie, su folio es "U-###".
+  const folioVenta = (v: { serie: string | null; numVenta: number }) =>
+    sucursal === "usadas" ? `U-${v.numVenta}` : `${v.serie ?? ""}-${v.numVenta}`;
+
+  const esPagada = (e: string | null) => e === "PAGADA" || e === "PAGADO";
 
   const exportar = async (formato: "pdf" | "excel") => {
     setExportando(formato);
@@ -216,7 +255,8 @@ export default function VentasPage() {
         page: "1",
         pageSize: "20000",
       });
-      if (serie) qs.set("serie", serie);
+      if (sucursal === "usadas") qs.set("sucursal", "usadas");
+      if (serie && sucursal === "matriz") qs.set("serie", serie);
       if (estatus) qs.set("estatus", estatus);
       if (busqueda) qs.set("busqueda", busqueda);
       const res = await fetch(`/api/ventas?${qs.toString()}`);
@@ -235,12 +275,13 @@ export default function VentasPage() {
         { header: "Estatus" },
       ];
       const base = {
-        titulo: "REPORTE DE VENTAS",
+        titulo:
+          sucursal === "usadas" ? "REPORTE DE VENTAS · BODEGA USADO" : "REPORTE DE VENTAS",
         subtitulo: `Del ${fechaInicio} al ${fechaFin}${serie ? `  ·  Serie ${serie}` : ""}${
           estatus ? `  ·  ${estatus}` : ""
         }  ·  ${entero(filas.length)} ventas`,
         columnas,
-        nombreArchivo: `ventas_${fechaInicio}_${fechaFin}`,
+        nombreArchivo: `ventas_${sucursal === "usadas" ? "usadas_" : ""}${fechaInicio}_${fechaFin}`,
       };
 
       if (formato === "pdf") {
@@ -249,9 +290,9 @@ export default function VentasPage() {
           ...base,
           orientacion: "landscape",
           filas: filas.map((v) => [
-            `${v.serie ?? ""}-${v.numVenta}`,
+            folioVenta(v),
             fechaCorta(v.fecha),
-            v.cliente,
+            v.cliente ?? "Público general",
             moneda(v.subtotal),
             moneda(v.iva),
             moneda(v.total),
@@ -266,9 +307,9 @@ export default function VentasPage() {
           hoja: "Ventas",
           columnasMoneda: [3, 4, 5, 6],
           filas: filas.map((v) => [
-            `${v.serie ?? ""}-${v.numVenta}`,
+            folioVenta(v),
             fechaCorta(v.fecha),
-            v.cliente,
+            v.cliente ?? "Público general",
             v.subtotal,
             v.iva,
             v.total,
@@ -291,7 +332,11 @@ export default function VentasPage() {
         { titulo: "Ventas", valor: entero(resumen.ventas), color: "text-slate-200" },
         { titulo: "Importe", valor: moneda(resumen.importe), color: "text-amber-300" },
         { titulo: "Pagadas", valor: entero(resumen.pagadas), color: "text-emerald-300" },
-        { titulo: "Vigentes", valor: entero(resumen.vigentes), color: "text-cyan-300" },
+        {
+          titulo: sucursal === "usadas" ? "Activas" : "Vigentes",
+          valor: entero(resumen.vigentes),
+          color: "text-cyan-300",
+        },
         { titulo: "Saldo pendiente", valor: moneda(resumen.saldoPendiente), color: "text-rose-300" },
       ]
     : [];
@@ -307,6 +352,7 @@ export default function VentasPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <SelectorSucursal opciones={SUCURSALES} valor={sucursal} onCambio={cambiarSucursal} />
           <button
             onClick={() => exportar("pdf")}
             disabled={!!exportando || cargando || ventas.length === 0}
@@ -355,18 +401,20 @@ export default function VentasPage() {
               onChange={(e) => setFechaFin(e.target.value)}
             />
           </div>
-          <div className="space-y-1.5">
-            <label className={lbl}>Serie</label>
-            <select
-              className={cn(inputCls, "w-40 appearance-none [color-scheme:dark]")}
-              value={serie}
-              onChange={(e) => setSerie(e.target.value)}
-            >
-              <option value="" className="bg-[#0d1320]">Todas</option>
-              <option value="V" className="bg-[#0d1320]">V · Ventas</option>
-              <option value="M" className="bg-[#0d1320]">M · Mostrador</option>
-            </select>
-          </div>
+          {sucursal === "matriz" && (
+            <div className="space-y-1.5">
+              <label className={lbl}>Serie</label>
+              <select
+                className={cn(inputCls, "w-40 appearance-none [color-scheme:dark]")}
+                value={serie}
+                onChange={(e) => setSerie(e.target.value)}
+              >
+                <option value="" className="bg-[#0d1320]">Todas</option>
+                <option value="V" className="bg-[#0d1320]">V · Ventas</option>
+                <option value="M" className="bg-[#0d1320]">M · Mostrador</option>
+              </select>
+            </div>
+          )}
           <div className="space-y-1.5">
             <label className={lbl}>Estatus</label>
             <select
@@ -375,8 +423,17 @@ export default function VentasPage() {
               onChange={(e) => setEstatus(e.target.value)}
             >
               <option value="" className="bg-[#0d1320]">Todos</option>
-              <option value="PAGADA" className="bg-[#0d1320]">Pagadas</option>
-              <option value="VIGENTE" className="bg-[#0d1320]">Vigentes</option>
+              {sucursal === "matriz" ? (
+                <>
+                  <option value="PAGADA" className="bg-[#0d1320]">Pagadas</option>
+                  <option value="VIGENTE" className="bg-[#0d1320]">Vigentes</option>
+                </>
+              ) : (
+                <>
+                  <option value="PAGADO" className="bg-[#0d1320]">Pagadas</option>
+                  <option value="ACTIVO" className="bg-[#0d1320]">Activas</option>
+                </>
+              )}
             </select>
           </div>
           <button
@@ -482,13 +539,13 @@ export default function VentasPage() {
                       className="cursor-pointer transition-colors hover:bg-white/[0.03]"
                     >
                       <td className="px-4 py-2.5 text-[12px] font-black text-cyan-300">
-                        {v.serie}-{v.numVenta}
+                        {folioVenta(v)}
                       </td>
                       <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
                         {fechaCorta(v.fecha)}
                       </td>
                       <td className="px-4 py-2.5 text-[12px] font-bold text-slate-300 max-w-[240px] truncate">
-                        {v.cliente}
+                        {v.cliente ?? "Público general"}
                       </td>
                       <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-right">
                         {moneda(v.subtotal)}
@@ -511,7 +568,7 @@ export default function VentasPage() {
                         <span
                           className={cn(
                             "text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border",
-                            v.estatus === "PAGADA"
+                            esPagada(v.estatus)
                               ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/25"
                               : "text-amber-300 bg-amber-500/10 border-amber-500/25"
                           )}
@@ -573,12 +630,12 @@ export default function VentasPage() {
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-lg font-black text-white">
-                    Venta {detalle.venta.serie}-{detalle.venta.numVenta}
+                    Venta {folioVenta(detalle.venta)}
                   </h2>
                   <span
                     className={cn(
                       "text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border",
-                      detalle.venta.estatus === "PAGADA"
+                      esPagada(detalle.venta.estatus)
                         ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/25"
                         : "text-amber-300 bg-amber-500/10 border-amber-500/25"
                     )}
@@ -592,7 +649,7 @@ export default function VentasPage() {
                   ) : null}
                 </div>
                 <p className="text-[11px] font-bold text-slate-400 mt-1.5">
-                  {fechaCorta(detalle.venta.fecha)} · {detalle.venta.cliente}
+                  {fechaCorta(detalle.venta.fecha)} · {detalle.venta.cliente ?? "Público general"}
                   {detalle.venta.rfc ? ` · ${detalle.venta.rfc}` : ""}
                 </p>
                 {detalle.venta.observa && (
@@ -633,6 +690,11 @@ export default function VentasPage() {
                       <td className="px-4 py-2 text-[12px] font-black text-amber-300">{p.codigo}</td>
                       <td className="px-4 py-2 text-[12px] font-bold text-slate-300">
                         {p.descripcion}
+                        {p.ubicacion && (
+                          <span className="ml-2 text-[9px] font-black text-slate-500 uppercase tracking-wider">
+                            {p.ubicacion}
+                          </span>
+                        )}
                         {(p.devolucion ?? 0) > 0 && (
                           <span className="ml-2 text-[9px] font-black text-rose-300 uppercase">
                             Dev: {p.devolucion}
@@ -657,14 +719,16 @@ export default function VentasPage() {
             {/* Pie: formas de pago y totales */}
             <div className="p-5 border-t border-white/[0.06] flex flex-wrap items-end justify-between gap-4">
               <div className="space-y-1">
-                {detalle.formasPago.map((fp, i) => (
-                  <p key={i} className="text-[11px] font-bold text-slate-400">
-                    <span className="text-slate-500 uppercase text-[9px] font-black tracking-widest mr-2">
-                      Pago
-                    </span>
-                    {fp.formaPago} · atendió {fp.usuario}
-                  </p>
-                ))}
+                {/* La Bodega Usado no registra formas de pago ni vendedor. */}
+                {sucursal === "matriz" &&
+                  detalle.formasPago.map((fp, i) => (
+                    <p key={i} className="text-[11px] font-bold text-slate-400">
+                      <span className="text-slate-500 uppercase text-[9px] font-black tracking-widest mr-2">
+                        Pago
+                      </span>
+                      {fp.formaPago} · atendió {fp.usuario}
+                    </p>
+                  ))}
               </div>
               <div className="text-right space-y-0.5">
                 <p className="text-[11px] font-bold text-slate-400">
