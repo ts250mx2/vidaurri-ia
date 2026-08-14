@@ -3,6 +3,7 @@ import { consultaBdav } from "@/lib/db";
 import { consultaUsadas } from "@/lib/db-usadas";
 import { precioAldo } from "@/lib/aldo";
 import { correrTurnoAgente, type UsoHerramienta } from "@/lib/agente-modelo";
+import { raizBusqueda } from "@/lib/texto";
 
 // Núcleo del agente "Vendedor IA": prompt, herramientas de catálogo y el loop
 // del agente. Lo comparten el endpoint web (streaming) y el de WhatsApp (una
@@ -27,16 +28,28 @@ export const ETIQUETA_HERRAMIENTA: Record<string, string> = {
 
 export type CanalVendedor = "web" | "whatsapp";
 
+// Fotos públicas de las piezas usadas (mismo origen que el proxy /api/usadas/foto).
+// El archivo es el nombre_imagen que registra piezas_imagenes.
+const BASE_FOTOS_USADAS = "https://sistema.apvidaurri.com/imagenes_piezas";
+
+export function urlFotoUsadaPublica(nombreImagen: string): string {
+  return `${BASE_FOTOS_USADAS}/${encodeURIComponent(nombreImagen)}`;
+}
+
 export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp"): string {
   // En el panel web se pueden mostrar imágenes; en WhatsApp no (llegaría como
   // texto crudo), así que solo se pide la foto para el canal web.
   const instruccionFoto =
     canal === "web"
-      ? `\n- OBLIGATORIO: cada vez que menciones un producto concreto (con su código), DEBAJO de esa línea agrega SIEMPRE su foto en una línea aparte con este formato exacto: ![](/api/articulos/foto?codigo=CODIGO) — reemplaza CODIGO por el código EXACTO que te dio la herramienta. Ejemplo:
+      ? `\n- OBLIGATORIO: cada vez que menciones un producto concreto (con su código), DEBAJO de esa línea agrega SIEMPRE su foto en una línea aparte:
+  * Producto NUEVO (de buscar_productos): ![](/api/articulos/foto?codigo=CODIGO) — reemplaza CODIGO por el código EXACTO que te dio la herramienta. Ejemplo:
   *Cofre Versa 15-19* (CNVE15) — $1,709.84 c/IVA 📦
   ![](/api/articulos/foto?codigo=CNVE15)
-  Nunca omitas la foto de un producto que sugieres. Si el artículo no tuviera foto, no se mostrará y no pasa nada, pero igual incluye la línea.`
-      : `\n- AL FINAL de tu respuesta agrega SIEMPRE una última línea técnica con los códigos EXACTOS de los productos que sugeriste, con este formato: [[FOTOS: CODIGO1, CODIGO2]] (máximo 3, usa los códigos EXACTOS que te dio la herramienta). Esa línea es SOLO para el sistema (sirve para enviar las fotos); el cliente no la verá, así que no la comentes ni la expliques. Si no sugeriste ningún producto, no pongas la línea.`;
+  * Pieza USADA (de buscar_piezas_usadas): usa el campo foto que trae cada resultado (una ruta que empieza con /api/usadas/foto). Pon exactamente: ![](valor del campo foto). Si foto viene null, omite la imagen de esa pieza.
+  Nunca omitas la foto de un producto que sugieres y NUNCA inventes rutas de foto.
+- Si el cliente pide fotos (o vuelves a mencionar productos de turnos anteriores), NO respondas de memoria: el campo foto SOLO viene en resultados de herramientas de ESTE turno, así que DEBES volver a buscar esos productos con la herramienta y entonces incluir sus ![](...). PROHIBIDO decir "aquí las fotos" sin incluir las imágenes.`
+      : `\n- AL FINAL de tu respuesta agrega SIEMPRE una última línea técnica con los códigos EXACTOS de los productos que sugeriste (nuevos o usados), con este formato: [[FOTOS: CODIGO1, CODIGO2]] (máximo 3, usa los códigos EXACTOS que te dio la herramienta). Esa línea es SOLO para el sistema (sirve para enviar las fotos); el cliente no la verá, así que no la comentes ni la expliques. Si no sugeriste ningún producto, no pongas la línea.
+- Si el cliente pide fotos (o vuelves a mencionar productos de turnos anteriores), DEBES volver a buscarlos con la herramienta en ESTE turno: las fotos solo se pueden enviar de productos consultados en este turno.`;
   return `Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp. Vidaurri vende autopartes de colisión (cofres, defensas, parrillas, faros, tolvas, guías, molduras, etc.) por marca, modelo y rango de años. Hoy es ${hoy}.
 
 Consultas el catálogo real con tus herramientas:
@@ -79,7 +92,11 @@ export const HERRAMIENTAS: Anthropic.Tool[] = [
           description:
             "Palabras a buscar en la descripción o el código, p.ej. 'cofre versa'. Todas las palabras deben aparecer.",
         },
-        marca: { type: "string", description: "Marca de auto (línea), opcional. Ej. NISSAN" },
+        marca: {
+          type: "string",
+          description:
+            "Marca (fabricante) del auto, opcional. Ej. NISSAN, DODGE. El MODELO (Journey, Versa...) NO va aquí: ponlo en descripcion.",
+        },
         tipoParte: {
           type: "string",
           description: "Tipo de pieza, opcional. Ej. COFRES, DEFENSAS DELANTERAS",
@@ -118,9 +135,13 @@ export const HERRAMIENTAS: Anthropic.Tool[] = [
         descripcion: {
           type: "string",
           description:
-            "Palabras a buscar en la descripción o el código de la pieza, p.ej. 'puerta sonic'. Todas las palabras deben aparecer.",
+            "Palabras a buscar: tipo de pieza y MODELO del auto, p.ej. 'puerta journey' o 'calavera sentra'. Todas las palabras deben aparecer (cruzan descripción, código, tipo de parte, marca y modelo).",
         },
-        marca: { type: "string", description: "Marca de auto, opcional. Ej. CHEVROLET" },
+        marca: {
+          type: "string",
+          description:
+            "Marca (fabricante) del auto, opcional. Ej. CHEVROLET, DODGE. El MODELO (Journey, Versa...) NO va aquí: ponlo en descripcion.",
+        },
         anio: {
           type: "number",
           description: "Año del vehículo para filtrar por aplicación, opcional. Ej. 2015",
@@ -342,14 +363,23 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
   const condiciones: string[] = ["p.existencia > 0"];
   const params: unknown[] = [];
 
+  // Cada palabra cruza descripción/código/parte/marca/modelo: "puerta
+  // silverado" encuentra parte=PUERTA + modelo=SILVERADO aunque la descripción
+  // no traiga el nombre del modelo. Se busca por raíz ("delantera" → "delanter")
+  // porque la bodega captura con género variable ("DELANTERO(A)").
   const palabras = descripcion.split(/\s+/).filter(Boolean).slice(0, 6);
   for (const palabra of palabras) {
-    condiciones.push("(p.descripcion LIKE ? OR p.codigo LIKE ?)");
-    params.push(`%${palabra}%`, `%${palabra}%`);
+    condiciones.push(
+      "(p.descripcion LIKE ? OR p.codigo LIKE ? OR pa.parte LIKE ? OR ma.marca LIKE ? OR mo.modelo LIKE ?)"
+    );
+    const like = `%${raizBusqueda(palabra)}%`;
+    params.push(like, like, like, like, like);
   }
   if (marca) {
-    condiciones.push("ma.marca LIKE ?");
-    params.push(`%${marca}%`);
+    // El modelo a veces manda el MODELO del auto aquí ("Journey"): se acepta
+    // contra marca O modelo para no anular la búsqueda por ese error.
+    condiciones.push("(ma.marca LIKE ? OR mo.modelo LIKE ?)");
+    params.push(`%${marca}%`, `%${marca}%`);
   }
   if (Number.isInteger(anio) && anio > 1950 && anio < 2100) {
     // Hay piezas sin rango capturado (0/NULL): se incluyen igual.
@@ -359,25 +389,50 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
     params.push(anio);
   }
 
-  const filas = await consultaUsadas<FilaPiezaUsada>(
-    `SELECT p.codigo, p.descripcion,
-            IFNULL(ma.marca, '') AS marca, IFNULL(mo.modelo, '') AS modelo,
-            IFNULL(pa.parte, '') AS tipoParte,
-            NULLIF(p.anio_inicio, 0) AS anioInicio, NULLIF(p.anio_fin, 0) AS anioFin,
-            IFNULL(p.precio, 0) AS precioSinIva,
-            ROUND(IFNULL(p.precio, 0) * 1.16, 2) AS precioConIva,
-            IFNULL(p.existencia, 0) AS existencia,
-            CONCAT_WS(' / ', md.modulo, u.casillero) AS ubicacion
-       FROM piezas p
-       LEFT JOIN partes pa ON pa.id_parte = p.id_parte
-       LEFT JOIN modelos mo ON mo.id_modelo = p.id_modelo
-       LEFT JOIN marcas ma ON ma.id_marca = mo.id_marca
-       LEFT JOIN ubicaciones u ON u.id_ubicacion = p.id_ubicacion
-       LEFT JOIN modulos md ON md.id_modulo = u.id_modulo
-      WHERE ${condiciones.join(" AND ")}
-      ORDER BY (p.precio > 0) DESC, p.precio ASC
-      LIMIT ${MAX_RESULTADOS}`,
-    params
+  // Relevancia: primero las piezas cuyo TIPO de parte coincide con alguna
+  // palabra. Sin esto, "puerta journey" llena el tope con espejos y
+  // motoventiladores cuya descripción dice "5 PUERTAS" (carrocería).
+  const coincideParte =
+    palabras.length > 0 ? `(${palabras.map(() => "pa.parte LIKE ?").join(" OR ")})` : "0";
+  const paramsOrden = palabras.map((p) => `%${raizBusqueda(p)}%`);
+
+  // Diversidad: máximo 3 piezas por TIPO de parte (ROW_NUMBER por id_parte).
+  // Sin esto, una búsqueda como "puerta journey" llena el tope con 15 quintas
+  // puertas baratas y la puerta lateral (más cara) nunca aparece.
+  // Ojo con el orden de los ?: los de coincideParte van primero (SELECT interno).
+  const filas = await consultaUsadas<
+    FilaPiezaUsada & { idPieza: number; fotoNombre: string | null; rn: number; relevante: number }
+  >(
+    `SELECT * FROM (
+       SELECT p.id_pieza AS idPieza, p.codigo, p.descripcion,
+              IFNULL(ma.marca, '') AS marca, IFNULL(mo.modelo, '') AS modelo,
+              IFNULL(pa.parte, '') AS tipoParte,
+              NULLIF(p.anio_inicio, 0) AS anioInicio, NULLIF(p.anio_fin, 0) AS anioFin,
+              IFNULL(p.precio, 0) AS precioSinIva,
+              ROUND(IFNULL(p.precio, 0) * 1.16, 2) AS precioConIva,
+              IFNULL(p.existencia, 0) AS existencia,
+              CONCAT_WS(' / ', md.modulo, u.casillero) AS ubicacion,
+              (SELECT pi.nombre_imagen FROM piezas_imagenes pi
+                WHERE pi.id_pieza = p.id_pieza AND pi.activo = 1
+                  AND pi.consecutivo >= 1
+                ORDER BY pi.consecutivo LIMIT 1) AS fotoNombre,
+              ${coincideParte} AS relevante,
+              ROW_NUMBER() OVER (
+                PARTITION BY p.id_parte
+                ORDER BY (p.precio > 0) DESC, p.precio ASC
+              ) AS rn
+         FROM piezas p
+         LEFT JOIN partes pa ON pa.id_parte = p.id_parte
+         LEFT JOIN modelos mo ON mo.id_modelo = p.id_modelo
+         LEFT JOIN marcas ma ON ma.id_marca = mo.id_marca
+         LEFT JOIN ubicaciones u ON u.id_ubicacion = p.id_ubicacion
+         LEFT JOIN modulos md ON md.id_modulo = u.id_modulo
+        WHERE ${condiciones.join(" AND ")}
+     ) sub
+     WHERE sub.rn <= 3
+     ORDER BY sub.relevante DESC, (sub.precioSinIva > 0) DESC, sub.precioSinIva ASC
+     LIMIT ${MAX_RESULTADOS}`,
+    [...paramsOrden, ...params]
   );
 
   if (filas.length === 0) {
@@ -386,7 +441,14 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
       nota: "Sin piezas usadas con existencia que coincidan en la Bodega Usado.",
     });
   }
-  return JSON.stringify({ total: filas.length, resultados: filas });
+  // `foto` (proxy interno) es lo que el agente inserta en el chat web;
+  // `fotoPublica` la usa el canal WhatsApp para adjuntar la imagen real.
+  const resultados = filas.map(({ idPieza: _id, fotoNombre, rn: _rn, relevante: _rel, ...pieza }) => ({
+    ...pieza,
+    foto: fotoNombre ? `/api/usadas/foto?n=${encodeURIComponent(fotoNombre)}` : null,
+    fotoPublica: fotoNombre ? urlFotoUsadaPublica(fotoNombre) : null,
+  }));
+  return JSON.stringify({ total: resultados.length, resultados });
 }
 
 export async function ejecutarHerramienta(uso: UsoHerramienta): Promise<string> {
@@ -425,6 +487,9 @@ export interface OpcionesVendedor {
   canal?: CanalVendedor;
   /** Recibe los códigos que devolvió cada búsqueda de productos (para fotos). */
   alCodigos?: (codigos: string[]) => void;
+  /** Recibe código → URL pública de la foto de cada pieza usada encontrada
+   *  (para que el canal WhatsApp adjunte la imagen real). */
+  alFotosUsadas?: (fotos: Array<{ codigo: string; url: string }>) => void;
   /** Fragmento de texto en curso (para streaming del canal web). */
   alTexto?: (fragmento: string) => void;
   /** Descarta el borrador porque viene una ronda de herramientas (web). */
@@ -476,15 +541,30 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     for (const uso of resultado.usos) {
       op.alEstado?.(ETIQUETA_HERRAMIENTA[uso.name] ?? "Consultando el catálogo");
       const contenido = await ejecutarHerramienta(uso);
-      // Reporta los códigos que devolvió una búsqueda de productos (para que el
-      // canal WhatsApp pueda adjuntar las fotos de los que el agente mencione).
-      if (uso.name === "buscar_productos" && op.alCodigos) {
+      // Reporta los códigos que devolvió una búsqueda (para que el canal
+      // WhatsApp pueda adjuntar las fotos de los que el agente mencione).
+      if (
+        (uso.name === "buscar_productos" || uso.name === "buscar_piezas_usadas") &&
+        (op.alCodigos || op.alFotosUsadas)
+      ) {
         try {
-          const datos = JSON.parse(contenido) as { resultados?: Array<{ codigo?: string }> };
-          const codigos = (datos.resultados ?? [])
+          const datos = JSON.parse(contenido) as {
+            resultados?: Array<{ codigo?: string; fotoPublica?: string | null }>;
+          };
+          const filas = datos.resultados ?? [];
+          const codigos = filas
             .map((r) => r.codigo)
             .filter((c): c is string => typeof c === "string" && c.length > 0);
-          if (codigos.length) op.alCodigos(codigos);
+          if (codigos.length && op.alCodigos) op.alCodigos(codigos);
+          if (uso.name === "buscar_piezas_usadas" && op.alFotosUsadas) {
+            const fotos = filas
+              .filter(
+                (r): r is { codigo: string; fotoPublica: string } =>
+                  typeof r.codigo === "string" && typeof r.fotoPublica === "string"
+              )
+              .map((r) => ({ codigo: r.codigo, url: r.fotoPublica }));
+            if (fotos.length) op.alFotosUsadas(fotos);
+          }
         } catch {
           // resultado no parseable: se ignora para las fotos
         }

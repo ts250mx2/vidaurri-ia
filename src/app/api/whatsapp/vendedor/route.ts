@@ -106,13 +106,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    // Códigos que el agente consultó (para adjuntar las fotos que mencione).
+    // Códigos que el agente consultó (para adjuntar las fotos que mencione) y
+    // fotos públicas de las piezas usadas encontradas (código → URL).
     const codigosConsultados = new Set<string>();
+    const fotosUsadas = new Map<string, string>();
     const respuesta = await correrVendedor({
       pregunta: mensaje,
       historial: historialDe(telefono),
       modelo,
       alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),
+      alFotosUsadas: (fotos) =>
+        fotos.forEach((f) => fotosUsadas.set(f.codigo.toUpperCase(), f.url)),
     });
     // El agente marca los productos sugeridos con [[FOTOS: cod1, cod2]] al final;
     // se extraen los códigos y se quita esa línea técnica del texto visible.
@@ -132,12 +136,18 @@ export async function POST(request: Request) {
       .map((c) => reales.get(c.trim().toUpperCase()))
       .filter((c): c is string => Boolean(c))
       .slice(0, 3);
+    // Pieza usada: su foto ya viene con URL pública de la bodega. Producto
+    // nuevo: se verifica que exista en el S3 de Aldo antes de adjuntarla.
     const verificadas = await Promise.all(
-      pedidos.map(async (codigo) => ({ codigo, existe: await fotoAldoExiste(codigo) }))
+      pedidos.map(async (codigo) => {
+        const urlUsada = fotosUsadas.get(codigo.toUpperCase());
+        if (urlUsada) return { codigo, url: urlUsada };
+        return { codigo, url: (await fotoAldoExiste(codigo)) ? urlFotoAldo(codigo) : null };
+      })
     );
     const fotos = verificadas
-      .filter((f) => f.existe)
-      .map((f) => ({ codigo: f.codigo, url: urlFotoAldo(f.codigo) }));
+      .filter((f): f is { codigo: string; url: string } => Boolean(f.url))
+      .map((f) => ({ codigo: f.codigo, url: f.url }));
 
     return Response.json({ ok: true, respuesta: texto, fotos });
   } catch (error) {

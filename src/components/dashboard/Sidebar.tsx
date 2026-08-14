@@ -13,6 +13,7 @@ type MenuSeccion = { titulo: string; emoji: string; items: MenuItem[]; href?: st
 const secciones: MenuSeccion[] = [
   { titulo: "Principal", emoji: "📊", href: "/dashboard", items: [] },
   { titulo: "Artículos", emoji: "📦", href: "/dashboard/articulos", items: [] },
+  { titulo: "Piezas Usadas", emoji: "♻️", href: "/dashboard/usadas", items: [] },
   {
     titulo: "Ventas",
     emoji: "🧾",

@@ -205,6 +205,12 @@ export default function ArticulosPage() {
   // Token propio para la carga del lote de la Bodega Usado de la tabla.
   const usadasTablaRef = useRef(0);
 
+  // Respaldo: cuando la búsqueda no encuentra nada en la Matriz, se busca el
+  // mismo texto en la Bodega Usado y se ofrecen esas piezas usadas.
+  const [usadasRespaldo, setUsadasRespaldo] = useState<RespuestaUsadas | null>(null);
+  const [cargandoRespaldo, setCargandoRespaldo] = useState(false);
+  const usadasRespaldoRef = useRef(0);
+
   const cargar = useCallback(
     async (
       filtro: string,
@@ -238,6 +244,30 @@ export default function ArticulosPage() {
         setArticulos(json.articulos);
         setResumen(json.resumen);
         setTotal(json.total);
+
+        // Sin resultados en Matriz y con texto de búsqueda: busca ese mismo
+        // texto en la Bodega Usado como respaldo (no bloquea el listado).
+        const idRespaldo = ++usadasRespaldoRef.current;
+        if (json.total === 0 && filtro) {
+          setCargandoRespaldo(true);
+          setUsadasRespaldo(null);
+          fetch(`/api/articulos/buscar-usadas?busqueda=${encodeURIComponent(filtro)}`)
+            .then(async (r) => ({ ok: r.ok, j: (await r.json()) as RespuestaUsadas }))
+            .then(({ ok, j }) => {
+              if (idRespaldo !== usadasRespaldoRef.current) return;
+              setUsadasRespaldo(ok ? j : { encontrado: false, total: 0, piezas: [] });
+            })
+            .catch(() => {
+              if (idRespaldo !== usadasRespaldoRef.current) return;
+              setUsadasRespaldo({ encontrado: false, total: 0, piezas: [] });
+            })
+            .finally(() => {
+              if (idRespaldo === usadasRespaldoRef.current) setCargandoRespaldo(false);
+            });
+        } else {
+          setUsadasRespaldo(null);
+          setCargandoRespaldo(false);
+        }
       } catch (err: unknown) {
         // No escribas el error de una petición obsoleta.
         if (idPeticion !== peticionRef.current) return;
@@ -245,6 +275,9 @@ export default function ArticulosPage() {
         setArticulos([]);
         setResumen(null);
         setTotal(0);
+        usadasRespaldoRef.current++;
+        setUsadasRespaldo(null);
+        setCargandoRespaldo(false);
       } finally {
         // Solo la petición vigente apaga el spinner.
         if (idPeticion === peticionRef.current) setCargando(false);
@@ -699,11 +732,88 @@ export default function ArticulosPage() {
             <Loader2 className="h-8 w-8 text-amber-400 animate-spin" />
           </div>
         ) : articulos.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 gap-3 text-slate-500">
-            <Package className="h-10 w-10" />
-            <p className="text-[11px] font-black uppercase tracking-widest">
-              Sin artículos con los filtros seleccionados
-            </p>
+          <div className="py-10 px-4 space-y-5">
+            <div className="flex flex-col items-center justify-center gap-3 text-slate-500">
+              <Package className="h-10 w-10" />
+              <p className="text-[11px] font-black uppercase tracking-widest">
+                {usadasRespaldo?.encontrado
+                  ? "No está en Matriz — pero sí en la Bodega Usado"
+                  : "Sin artículos con los filtros seleccionados"}
+              </p>
+            </div>
+
+            {/* Respaldo: lo que sí hay en la Bodega Usado para esa búsqueda */}
+            {cargandoRespaldo && (
+              <div className="flex items-center justify-center gap-2 text-emerald-300/80">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-[10px] font-black uppercase tracking-widest">
+                  Buscando en la Bodega Usado...
+                </span>
+              </div>
+            )}
+            {usadasRespaldo?.encontrado && (
+              <div className="border border-emerald-500/25 rounded-2xl overflow-hidden">
+                <div className="px-4 py-2.5 bg-emerald-500/[0.08] border-b border-emerald-500/25 flex items-center justify-between">
+                  <p className="text-[10px] font-black text-emerald-300 uppercase tracking-widest">
+                    Encontrado en Bodega Usado · piezas usadas con existencia
+                  </p>
+                  <p className="text-[10px] font-black text-emerald-300/70 uppercase tracking-widest">
+                    {entero(usadasRespaldo.total)} pieza(s)
+                    {usadasRespaldo.total > usadasRespaldo.piezas.length
+                      ? ` · mostrando ${usadasRespaldo.piezas.length}`
+                      : ""}
+                  </p>
+                </div>
+                <div className="overflow-auto max-h-[420px]">
+                  <table className="w-full">
+                    <thead className="sticky top-0 z-10 bg-[#10151f]">
+                      <tr>
+                        <th className={cn(lbl, "px-4 py-2.5 text-left")}>Código</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-left")}>Descripción</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-left")}>Parte</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-left")}>Marca / Modelo</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-center")}>Años</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-right")}>Precio</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-right")}>Exist.</th>
+                        <th className={cn(lbl, "px-4 py-2.5 text-left")}>Ubicación</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/[0.04]">
+                      {usadasRespaldo.piezas.map((pz) => (
+                        <tr key={pz.codigo} className="hover:bg-white/[0.03] transition-colors">
+                          <td className="px-4 py-2.5 text-[12px] font-black text-emerald-300">
+                            {pz.codigo}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-bold text-slate-300 max-w-[280px] truncate">
+                            {pz.descripcion}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
+                            {pz.parte || "—"}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 max-w-[180px] truncate">
+                            {[pz.marca, pz.modelo].filter(Boolean).join(" ") || "—"}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 text-center">
+                            {pz.anioInicio || pz.anioFin
+                              ? `${pz.anioInicio ?? "?"}-${pz.anioFin ?? "?"}`
+                              : "—"}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-black text-emerald-300 text-right">
+                            {pz.precio > 0 ? moneda(pz.precio) : "—"}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 text-right">
+                            {entero(pz.existencia)}
+                          </td>
+                          <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400">
+                            {pz.ubicacion || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <>

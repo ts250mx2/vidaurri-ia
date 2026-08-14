@@ -36,10 +36,12 @@ export function AgenteMarkdown({ texto }: { texto: string }) {
             return <span className="text-slate-300">{children}</span>;
           },
           img: ({ src }) => {
-            // Solo se permiten las fotos servidas por el proxy interno del
+            // Solo se permiten las fotos servidas por los proxys internos del
             // catálogo (evita cargar imágenes externas desde la respuesta del IA).
             const ruta = typeof src === "string" ? src : "";
-            if (!ruta.startsWith("/api/articulos/foto")) return null;
+            const permitida =
+              ruta.startsWith("/api/articulos/foto") || ruta.startsWith("/api/usadas/foto");
+            if (!permitida) return null;
             return (
               // eslint-disable-next-line @next/next/no-img-element
               <img
