@@ -29,5 +29,8 @@ next-env.d.ts
 Dump*.sql
 Dump*.zip
 
+# documentación con credenciales reales (repo público): se comparte por fuera
+docs/AXON-LOGIC.md
+
 # script con la clave real del usuario de solo lectura (no subir al repo)
 docs/usuario-solo-lectura.sql
