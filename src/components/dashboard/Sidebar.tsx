@@ -12,6 +12,7 @@ type MenuSeccion = { titulo: string; emoji: string; items: MenuItem[]; href?: st
 // El menú usa emojis (patrón de kyk-server-web); lucide solo para chevrons.
 const secciones: MenuSeccion[] = [
   { titulo: "Principal", emoji: "📊", href: "/dashboard", items: [] },
+  { titulo: "Artículos", emoji: "📦", href: "/dashboard/articulos", items: [] },
   {
     titulo: "Ventas",
     emoji: "🧾",
@@ -20,19 +21,14 @@ const secciones: MenuSeccion[] = [
       { nombre: "Cotizaciones", emoji: "📝", href: "/dashboard/cotizaciones" },
       { nombre: "Devoluciones", emoji: "↩️", href: "/dashboard/devoluciones" },
       { nombre: "Back Orders", emoji: "📬", href: "/dashboard/backorders" },
-    ],
-  },
-  {
-    titulo: "Análisis de Venta",
-    emoji: "📊",
-    items: [
+      { nombre: "Ventas por Parte", emoji: "🧩", href: "/dashboard/ventas/por-parte" },
+      { nombre: "Ventas por Línea", emoji: "🚗", href: "/dashboard/ventas/por-linea" },
       { nombre: "Tendencias de Venta", emoji: "📈", href: "/dashboard/analisis/tendencias" },
       { nombre: "Mapa de Calor", emoji: "🔥", href: "/dashboard/analisis/mapa-calor" },
       { nombre: "Ventas por Cliente", emoji: "👥", href: "/dashboard/analisis/ventas-cliente" },
       { nombre: "Proyección de Ventas", emoji: "🔮", href: "/dashboard/analisis/proyeccion" },
     ],
   },
-  { titulo: "Artículos", emoji: "📦", href: "/dashboard/articulos", items: [] },
   {
     titulo: "Inventario",
     emoji: "🧮",

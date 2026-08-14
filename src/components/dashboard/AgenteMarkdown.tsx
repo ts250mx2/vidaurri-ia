@@ -35,7 +35,24 @@ export function AgenteMarkdown({ texto }: { texto: string }) {
             }
             return <span className="text-slate-300">{children}</span>;
           },
-          img: () => null,
+          img: ({ src }) => {
+            // Solo se permiten las fotos servidas por el proxy interno del
+            // catálogo (evita cargar imágenes externas desde la respuesta del IA).
+            const ruta = typeof src === "string" ? src : "";
+            if (!ruta.startsWith("/api/articulos/foto")) return null;
+            return (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={ruta}
+                alt="Foto del producto"
+                loading="lazy"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
+                className="my-1.5 h-28 w-28 object-contain rounded-xl border border-white/10 bg-white"
+              />
+            );
+          },
           table: ({ children }) => (
             <div className="overflow-x-auto -mx-1">
               <table className="w-full text-[12px] border-collapse">{children}</table>

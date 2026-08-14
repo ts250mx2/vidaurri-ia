@@ -25,7 +25,18 @@ export const ETIQUETA_HERRAMIENTA: Record<string, string> = {
   listar_tipos_parte: "Revisando tipos de pieza",
 };
 
-export function promptSistema(hoy: string): string {
+export type CanalVendedor = "web" | "whatsapp";
+
+export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp"): string {
+  // En el panel web se pueden mostrar imágenes; en WhatsApp no (llegaría como
+  // texto crudo), así que solo se pide la foto para el canal web.
+  const instruccionFoto =
+    canal === "web"
+      ? `\n- OBLIGATORIO: cada vez que menciones un producto concreto (con su código), DEBAJO de esa línea agrega SIEMPRE su foto en una línea aparte con este formato exacto: ![](/api/articulos/foto?codigo=CODIGO) — reemplaza CODIGO por el código EXACTO que te dio la herramienta. Ejemplo:
+  *Cofre Versa 15-19* (CNVE15) — $1,709.84 c/IVA 📦
+  ![](/api/articulos/foto?codigo=CNVE15)
+  Nunca omitas la foto de un producto que sugieres. Si el artículo no tuviera foto, no se mostrará y no pasa nada, pero igual incluye la línea.`
+      : `\n- AL FINAL de tu respuesta agrega SIEMPRE una última línea técnica con los códigos EXACTOS de los productos que sugeriste, con este formato: [[FOTOS: CODIGO1, CODIGO2]] (máximo 3, usa los códigos EXACTOS que te dio la herramienta). Esa línea es SOLO para el sistema (sirve para enviar las fotos); el cliente no la verá, así que no la comentes ni la expliques. Si no sugeriste ningún producto, no pongas la línea.`;
   return `Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp. Vidaurri vende autopartes de colisión (cofres, defensas, parrillas, faros, tolvas, guías, molduras, etc.) por marca, modelo y rango de años. Hoy es ${hoy}.
 
 Consultas el catálogo real con tus herramientas:
@@ -47,7 +58,7 @@ ESTILO WHATSAPP (muy importante):
 - Puedes usar pocos emojis para dar calidez (👍 🔧 📦 💵), sin exagerar.
 - Si falta un dato para acertar (modelo, año, si es sedán/hatchback, lado izquierdo/derecho), pregúntalo en una línea.
 - El precio que le importa al cliente es el de CON IVA; menciónalo. Solo da el de sin IVA si lo piden.
-- Si no encuentras nada, pide más datos amablemente.
+- Si no encuentras nada, pide más datos amablemente.${instruccionFoto}
 
 Reglas:
 - NUNCA inventes productos, códigos ni precios: solo lo que devuelvan las herramientas.
@@ -410,6 +421,10 @@ export interface OpcionesVendedor {
   pregunta: string;
   historial: MensajeConversacion[];
   modelo: string;
+  /** Canal de la conversación: 'web' muestra fotos, 'whatsapp' no. */
+  canal?: CanalVendedor;
+  /** Recibe los códigos que devolvió cada búsqueda de productos (para fotos). */
+  alCodigos?: (codigos: string[]) => void;
   /** Fragmento de texto en curso (para streaming del canal web). */
   alTexto?: (fragmento: string) => void;
   /** Descarta el borrador porque viene una ronda de herramientas (web). */
@@ -429,7 +444,7 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
   }));
   mensajes.push({ role: "user", content: op.pregunta });
 
-  const sistema = promptSistema(new Date().toLocaleDateString("sv-SE"));
+  const sistema = promptSistema(new Date().toLocaleDateString("sv-SE"), op.canal ?? "whatsapp");
   let textoFinal = "";
 
   for (let ronda = 0; ronda < MAX_ITERACIONES; ronda++) {
@@ -460,11 +475,21 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     const resultados: Anthropic.ToolResultBlockParam[] = [];
     for (const uso of resultado.usos) {
       op.alEstado?.(ETIQUETA_HERRAMIENTA[uso.name] ?? "Consultando el catálogo");
-      resultados.push({
-        type: "tool_result",
-        tool_use_id: uso.id,
-        content: await ejecutarHerramienta(uso),
-      });
+      const contenido = await ejecutarHerramienta(uso);
+      // Reporta los códigos que devolvió una búsqueda de productos (para que el
+      // canal WhatsApp pueda adjuntar las fotos de los que el agente mencione).
+      if (uso.name === "buscar_productos" && op.alCodigos) {
+        try {
+          const datos = JSON.parse(contenido) as { resultados?: Array<{ codigo?: string }> };
+          const codigos = (datos.resultados ?? [])
+            .map((r) => r.codigo)
+            .filter((c): c is string => typeof c === "string" && c.length > 0);
+          if (codigos.length) op.alCodigos(codigos);
+        } catch {
+          // resultado no parseable: se ignora para las fotos
+        }
+      }
+      resultados.push({ type: "tool_result", tool_use_id: uso.id, content: contenido });
     }
     mensajes.push({ role: "user", content: resultados });
   }

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { claveFaltante } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
+import { urlFotoAldo, fotoAldoExiste } from "@/lib/aldo";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
 // la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
@@ -105,14 +106,40 @@ export async function POST(request: Request) {
   }
 
   try {
+    // Códigos que el agente consultó (para adjuntar las fotos que mencione).
+    const codigosConsultados = new Set<string>();
     const respuesta = await correrVendedor({
       pregunta: mensaje,
       historial: historialDe(telefono),
       modelo,
+      alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),
     });
-    const texto = respuesta.trim() || "Disculpa, no te entendí. ¿Qué parte buscas?";
+    // El agente marca los productos sugeridos con [[FOTOS: cod1, cod2]] al final;
+    // se extraen los códigos y se quita esa línea técnica del texto visible.
+    const marcador = respuesta.match(/\[\[FOTOS:\s*([^\]]*)\]\]/i);
+    const texto =
+      respuesta.replace(/\[\[FOTOS:[^\]]*\]\]/gi, "").trim() ||
+      "Disculpa, no te entendí. ¿Qué parte buscas?";
     guardarTurno(telefono, mensaje, texto);
-    return Response.json({ ok: true, respuesta: texto });
+
+    // Solo se aceptan códigos REALES (que el catálogo devolvió) y con foto en S3,
+    // para no mandar enlaces inventados ni rotos por WhatsApp.
+    const reales = new Map(
+      [...codigosConsultados].map((c) => [c.toUpperCase(), c] as const)
+    );
+    const pedidos = (marcador?.[1] ?? "")
+      .split(",")
+      .map((c) => reales.get(c.trim().toUpperCase()))
+      .filter((c): c is string => Boolean(c))
+      .slice(0, 3);
+    const verificadas = await Promise.all(
+      pedidos.map(async (codigo) => ({ codigo, existe: await fotoAldoExiste(codigo) }))
+    );
+    const fotos = verificadas
+      .filter((f) => f.existe)
+      .map((f) => ({ codigo: f.codigo, url: urlFotoAldo(f.codigo) }));
+
+    return Response.json({ ok: true, respuesta: texto, fotos });
   } catch (error) {
     console.error("Error en Vendedor IA (WhatsApp):", error);
     return Response.json(

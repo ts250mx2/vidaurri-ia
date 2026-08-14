@@ -57,9 +57,25 @@ La conversación por teléfono se recuerda **30 minutos** desde el último mensa
 ```json
 {
   "ok": true,
-  "respuesta": "¡Claro! Para tu *Versa 2016* tengo el cofre 👇\n*CNVE15* – Cofre Versa 15-19\n💵 $1,709.84 con IVA\n📦 3 en existencia\n¿Es sedán? Con eso te confirmo que sea el correcto 👍"
+  "respuesta": "¡Claro! Para tu *Versa 2016* tengo el cofre 👇\n*CNVE15* – Cofre Versa 15-19\n💵 $1,709.84 con IVA\n📦 3 en existencia\n¿Es sedán? Con eso te confirmo que sea el correcto 👍",
+  "fotos": [
+    {
+      "codigo": "CNVE15",
+      "url": "https://s3-us-west-2.amazonaws.com/aldoautopartesproductos/CNVE15.jpg"
+    }
+  ]
 }
 ```
+
+| Campo | Descripción |
+|---|---|
+| `respuesta` | Texto listo para enviar al cliente (ya sin marcadores internos). |
+| `fotos` | Lista de las **fotos de los productos sugeridos**, con su `url` pública en **AWS S3**. Solo trae las que existen (verificadas). Puede venir vacía (`[]`) si el agente no sugirió productos o no tienen foto. |
+
+Tu pasarela debe **enviar `respuesta` como mensaje de texto** y, por cada elemento
+de `fotos`, **enviar su `url` como imagen** (todas son URLs públicas HTTPS de
+Amazon, no requieren autenticación). Orden sugerido: primero las imágenes, luego
+el texto (o al revés, según prefieras).
 
 En error: `{ "ok": false, "error": "..." }` con el código HTTP correspondiente
 (`400` datos inválidos, `401` sin autorización, `429` demasiados mensajes,

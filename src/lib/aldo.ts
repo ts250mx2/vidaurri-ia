@@ -9,6 +9,28 @@ const TTL_ENCONTRADO_MS = 30 * 60 * 1000; // 30 min si trajo precio
 const TTL_NO_ENCONTRADO_MS = 5 * 60 * 1000; // 5 min si no estaba (permite reintento)
 const MAX_CONCURRENTE = 4; // peticiones simultáneas máximas al sitio de Aldo
 
+// URL pública de la foto del artículo en el catálogo de Aldo (Amazon S3).
+const BASE_FOTOS_S3 = "https://s3-us-west-2.amazonaws.com/aldoautopartesproductos";
+
+/** URL pública (AWS S3) de la foto de un código. thumb=true para la miniatura. */
+export function urlFotoAldo(codigo: string, thumb = false): string {
+  const cod = encodeURIComponent(codigo.trim());
+  return thumb ? `${BASE_FOTOS_S3}/_thumbs/${cod}.jpg` : `${BASE_FOTOS_S3}/${cod}.jpg`;
+}
+
+/** true si la foto existe en S3 (HEAD) — evita enviar enlaces rotos por WhatsApp. */
+export async function fotoAldoExiste(codigo: string): Promise<boolean> {
+  try {
+    const res = await fetch(urlFotoAldo(codigo), {
+      method: "HEAD",
+      signal: AbortSignal.timeout(8000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // Entidades HTML que aparecen en las descripciones (el sitio es ISO-8859-1).
 const ENTIDADES: Record<string, string> = {
   "&aacute;": "á", "&eacute;": "é", "&iacute;": "í", "&oacute;": "ó", "&uacute;": "ú",

@@ -66,6 +66,7 @@ export async function POST(request: Request) {
           pregunta,
           historial,
           modelo,
+          canal: "web",
           alTexto: (fragmento) => emitir({ t: "delta", texto: fragmento }),
           alReinicio: () => emitir({ t: "reinicio" }),
           alEstado: (texto) => emitir({ t: "estado", texto }),
