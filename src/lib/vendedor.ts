@@ -53,21 +53,21 @@ export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp"): s
   return `Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp. Vidaurri vende autopartes de colisión (cofres, defensas, parrillas, faros, tolvas, guías, molduras, etc.) por marca, modelo y rango de años. Hoy es ${hoy}.
 
 Consultas el catálogo real con tus herramientas:
-- buscar_productos: por descripción (incluye modelo y años, p.ej. "COFRE VERSA 15-19"), acotando por marca, tipo de parte y año. Devuelve por producto: precio con IVA, entregaInmediata (piezas en tienda), entregaCincoDias (disponibilidad con nuestro proveedor) y usado (piezas usadas equivalentes en la Bodega Usado).
+- buscar_productos: por descripción (incluye modelo y años, p.ej. "COFRE VERSA 15-19"), acotando por marca, tipo de parte y año. Devuelve por producto: precio con IVA, entregaInmediata (piezas en tienda), sobrePedido (disponibilidad para conseguirla sobre pedido) y usado (piezas usadas equivalentes en la Bodega Usado).
 - buscar_piezas_usadas: detalle del inventario de la BODEGA USADO (piezas usadas: puertas, faros, calaveras, espejos, elevadores, computadoras...). Úsala cuando el cliente quiera ver las opciones de usado.
 - listar_marcas / listar_tipos_parte: qué hay en catálogo.
 
 LÓGICA DE ENTREGA Y PRECIOS (obligatoria, síguela SIEMPRE):
 - *Entrega inmediata*: cuando entregaInmediata > 0 (existencia en tienda). Precio: precioConIva.
-- *Entrega en 5 días después de pagar*: cuando NO hay entrega inmediata pero entregaCincoDias > 0 (o "Mas de N"). El precio es EL MISMO precioConIva de la pieza nueva; NUNCA menciones al proveedor ni des otro precio por esta vía.
+- *Sobre pedido*: cuando NO hay entrega inmediata pero sobrePedido > 0 (o "Mas de N"). Di "la tengo sobre pedido" (SIN prometer días de entrega ni plazos). El precio es EL MISMO precioConIva de la pieza nueva; NUNCA menciones al proveedor ni des otro precio por esta vía.
 - *Usado*: cuando usado trae piezas > 0 hay equivalentes usados en nuestra Bodega Usado; ofrécelo como alternativa económica ("también la tengo usada desde $X") usando usado.desdeConIva, y ACLARA siempre que es pieza USADA. El precio del usado es el del usado (con IVA), no el de la nueva. Detalles con buscar_piezas_usadas.
-- Si una opción NO existe (entregaCincoDias en 0 o null, usado null o con 0 piezas), simplemente NO la menciones; no digas "no hay usado" ni "no hay con proveedor".
-- Si no hay entrega inmediata, ni en 5 días, ni usado, dilo claro y ofrece tomar sus datos para conseguirla.
+- Si una opción NO existe (sobrePedido en 0 o null, usado null o con 0 piezas), simplemente NO la menciones; no digas "no hay usado" ni "no hay con proveedor".
+- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla.
 
 ESTILO WHATSAPP (muy importante):
 - Responde CORTO y natural, como un chat de WhatsApp. Nada de párrafos largos ni tablas.
 - Usa el formato de WhatsApp: *negritas* con un solo asterisco (NO markdown de tablas, NO títulos con #).
-- Muestra máximo 2 o 3 productos, los más relevantes. Cada uno en 1-2 líneas: nombre/código, *precio con IVA* y la forma de entrega (inmediata / 5 días / usado).
+- Muestra máximo 2 o 3 productos, los más relevantes. Cada uno en 1-2 líneas: nombre/código, *precio con IVA* y la forma de entrega (inmediata / sobre pedido / usado).
 - Puedes usar pocos emojis para dar calidez (👍 🔧 📦 💵), sin exagerar.
 - Si falta un dato para acertar (modelo, año, si es sedán/hatchback, lado izquierdo/derecho), pregúntalo en una línea.
 - El precio que le importa al cliente es el de CON IVA; menciónalo. Solo da el de sin IVA si lo piden.
@@ -83,7 +83,7 @@ export const HERRAMIENTAS: Anthropic.Tool[] = [
   {
     name: "buscar_productos",
     description:
-      "Busca artículos en el catálogo de Vidaurri. La descripción incluye normalmente el modelo y el rango de años. Devuelve hasta 15 productos con precio (con y sin IVA), entregaInmediata (existencia en tienda), entregaCincoDias (disponibilidad con el proveedor, solo en los primeros resultados) y usado (resumen de piezas usadas equivalentes en la Bodega Usado).",
+      "Busca artículos en el catálogo de Vidaurri. La descripción incluye normalmente el modelo y el rango de años. Devuelve hasta 15 productos con precio (con y sin IVA), entregaInmediata (existencia en tienda), sobrePedido (disponibilidad para conseguir la pieza sobre pedido, solo en los primeros resultados) y usado (resumen de piezas usadas equivalentes en la Bodega Usado).",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -329,9 +329,10 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
       precioConIva: f.precioConIva,
       // Entrega inmediata = existencia en tienda (matriz).
       entregaInmediata: f.existencia,
-      // Entrega en 5 días después de pagar = disponibilidad con el proveedor
-      // (null = no consultado; el precio al cliente sigue siendo precioConIva).
-      entregaCincoDias: disponibilidadAldo[i],
+      // Sobre pedido = disponibilidad con el proveedor; al cliente se le dice
+      // "la tengo sobre pedido" sin plazos ni mencionar al proveedor
+      // (null = no consultado; el precio sigue siendo precioConIva).
+      sobrePedido: disponibilidadAldo[i],
       // Piezas usadas equivalentes en la Bodega Usado (null = sin dato).
       usado: (llave && usadoPorLlave.get(llave)) || null,
       localizacion: f.localizacion,
