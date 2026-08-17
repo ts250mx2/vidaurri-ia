@@ -29,8 +29,6 @@ next-env.d.ts
 Dump*.sql
 Dump*.zip
 
-# documentación con credenciales reales (repo público): se comparte por fuera
-docs/AXON-LOGIC.md
-
-# script con la clave real del usuario de solo lectura (no subir al repo)
-docs/usuario-solo-lectura.sql
+# La documentación de docs/ se versiona SIN credenciales reales (el repo es
+# público): usa marcadores tipo TU_API_KEY / TU_PASSWORD_SEGURA. Los valores
+# reales viven únicamente en el .env del servidor.
