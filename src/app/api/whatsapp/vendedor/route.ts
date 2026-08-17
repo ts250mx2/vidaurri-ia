@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { claveFaltante } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
 import { urlFotoAldo, fotoAldoExiste } from "@/lib/aldo";
+import { guardarIntercambio } from "@/lib/db-conversaciones";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
 // la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
@@ -38,6 +39,38 @@ function autorizado(request: Request): boolean {
     : (request.headers.get("x-api-key") ?? "").trim();
   if (!recibida) return false;
   return comparaClaveSegura(recibida, esperada);
+}
+
+// Fotos: se entregan por el proxy propio /api/whatsapp/foto con una marca
+// ÚNICA DENTRO DE LA RUTA. Sin esto, la pasarela de WhatsApp reenviaba la
+// imagen cacheada del producto anterior (con el pie de foto del nuevo); un
+// `?v=` no basta porque hay cachés que solo consideran la ruta.
+const BASES_FOTO = [
+  { prefijo: "https://s3-us-west-2.amazonaws.com/aldoautopartesproductos/", origen: "aldo" },
+  { prefijo: "https://sistema.apvidaurri.com/imagenes_piezas/", origen: "usadas" },
+];
+
+/** Origen público del sistema, para armar URLs absolutas que WhatsApp pueda bajar. */
+function baseUrlPublica(request: Request): string {
+  const configurada = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+  if (configurada) return configurada;
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+  if (!host) return "";
+  // WhatsApp exige HTTPS para los medios; el host público ya redirige a HTTPS.
+  const protocolo = request.headers.get("x-forwarded-proto") ?? "https";
+  return `${protocolo}://${host}`;
+}
+
+/** Convierte la URL original de la foto en una del proxy, con ruta única. */
+function urlFotoWhatsapp(urlOriginal: string, base: string, marca: string): string {
+  if (!base) return urlOriginal; // sin host conocido: se manda la original
+  for (const { prefijo, origen } of BASES_FOTO) {
+    if (urlOriginal.startsWith(prefijo)) {
+      const archivo = decodeURIComponent(urlOriginal.slice(prefijo.length).split("?")[0]);
+      return `${base}/api/whatsapp/foto/${marca}/${origen}/${encodeURIComponent(archivo)}`;
+    }
+  }
+  return urlOriginal;
 }
 
 function excedeLimite(telefono: string): boolean {
@@ -145,9 +178,24 @@ export async function POST(request: Request) {
         return { codigo, url: (await fotoAldoExiste(codigo)) ? urlFotoAldo(codigo) : null };
       })
     );
+    // Marca única por respuesta: evita que la pasarela reenvíe una foto cacheada.
+    const marca = `${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+    const base = baseUrlPublica(request);
     const fotos = verificadas
       .filter((f): f is { codigo: string; url: string } => Boolean(f.url))
-      .map((f) => ({ codigo: f.codigo, url: f.url }));
+      .map((f) => ({ codigo: f.codigo, url: urlFotoWhatsapp(f.url, base, marca) }));
+
+    // Bitácora en BDVidaurriConversaciones (fire-and-forget: si la base de
+    // conversaciones falla, la respuesta al cliente sale de todas formas).
+    void guardarIntercambio({
+      telefono,
+      canal: "whatsapp",
+      mensajeCliente: mensaje,
+      respuestaVendedor: texto,
+      fotos: fotos.map((f) => f.url),
+    }).catch((error) => {
+      console.error("No se pudo guardar la conversación en la bitácora:", error);
+    });
 
     return Response.json({ ok: true, respuesta: texto, fotos });
   } catch (error) {
