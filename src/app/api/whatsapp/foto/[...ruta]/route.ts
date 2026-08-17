@@ -29,7 +29,7 @@ const ARCHIVO_VALIDO = /^[A-Za-z0-9._-]{1,120}\.(jpg|jpeg|png|webp)$/i;
 const CACHE = "public, max-age=604800, immutable";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ ruta: string[] }> }
 ) {
   const { ruta } = await params;
@@ -37,22 +37,33 @@ export async function GET(
   if (!Array.isArray(ruta) || ruta.length !== 3) {
     return new Response("Ruta inválida", { status: 400 });
   }
-  const [, origen, archivo] = ruta;
+  const [marca, origen, archivo] = ruta;
   const base = ORIGENES[origen];
   if (!base || !ARCHIVO_VALIDO.test(archivo)) {
     return new Response("Foto no disponible", { status: 400 });
   }
+
+  // Registro: sirve para comprobar si la pasarela realmente descarga la foto
+  // de este envío. Si un producto se manda por WhatsApp y aquí NO aparece su
+  // archivo, es que la pasarela reenvió una imagen cacheada suya.
+  const quien = (request.headers.get("user-agent") ?? "?").slice(0, 60);
+  console.log(`[foto-whatsapp] ${origen}/${archivo} marca=${marca} ua="${quien}"`);
 
   try {
     const res = await fetch(`${base}/${encodeURIComponent(archivo)}`, {
       signal: AbortSignal.timeout(15000),
       headers: { "User-Agent": "Mozilla/5.0" },
     });
-    if (!res.ok || !res.body) return new Response("Sin foto", { status: 404 });
-    return new Response(res.body, {
+    if (!res.ok) return new Response("Sin foto", { status: 404 });
+    // Se entrega con Content-Length (no "chunked"): el descargador de medios de
+    // WhatsApp/Meta es más estricto y algunas pasarelas descartan la imagen si
+    // no sabe el tamaño de antemano.
+    const bytes = await res.arrayBuffer();
+    return new Response(bytes, {
       status: 200,
       headers: {
         "Content-Type": res.headers.get("content-type") ?? "image/jpeg",
+        "Content-Length": String(bytes.byteLength),
         "Cache-Control": CACHE,
       },
     });
