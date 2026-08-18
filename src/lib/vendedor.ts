@@ -282,19 +282,23 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
 
   const where = condiciones.length > 0 ? condiciones.join(" AND ") : "1";
 
+  // Precio PUBLICO = precio_lista + IVA, el mismo criterio que la web
+  // (vidaurri-page/src/lib/catalogo.ts). `precio_vta` es el precio de mostrador
+  // ya con descuento: si el chat cotizara con ese, el cliente veria un numero
+  // en WhatsApp y otro distinto en la pagina.
   const filas = await consultaBdav<FilaProducto>(
     `SELECT a.codigo, a.descripcion,
             IFNULL(l.linea, '') AS marca, IFNULL(p.parte, '') AS tipoParte,
             a.aini, a.afin,
-            IFNULL(a.precio_vta, 0) AS precioSinIva,
-            ROUND(IFNULL(a.precio_vta, 0) * 1.16, 2) AS precioConIva,
+            IFNULL(a.precio_lista, 0) AS precioSinIva,
+            ROUND(IFNULL(a.precio_lista, 0) * 1.16, 2) AS precioConIva,
             IFNULL(a.existencia, 0) AS existencia,
             a.localizacion
        FROM articulos a
        LEFT JOIN lineas l ON l.id = a.id_linea
        LEFT JOIN partes p ON p.id = a.id_parte
       WHERE ${where}
-      ORDER BY (a.existencia > 0) DESC, a.precio_vta ASC
+      ORDER BY (a.existencia > 0) DESC, a.precio_lista ASC
       LIMIT ${MAX_RESULTADOS}`,
     params
   );
