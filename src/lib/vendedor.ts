@@ -4,6 +4,12 @@ import { consultaUsadas } from "@/lib/db-usadas";
 import { precioAldo } from "@/lib/aldo";
 import { correrTurnoAgente, type UsoHerramienta } from "@/lib/agente-modelo";
 import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
+import {
+  catalogoVacio,
+  cifrasInventadas,
+  registrarResultado,
+  type CifrasInventadas,
+} from "@/lib/vendedor-cifras";
 
 // Núcleo del agente "Vendedor IA": prompt, herramientas de catálogo y el loop
 // del agente. Lo comparten el endpoint web (streaming) y el de WhatsApp (una
@@ -71,6 +77,8 @@ ESTILO WHATSAPP (muy importante):
 - Puedes usar pocos emojis para dar calidez (👍 🔧 📦 💵), sin exagerar.
 - Si falta un dato para acertar (modelo, año, si es sedán/hatchback, lado izquierdo/derecho), pregúntalo en una línea.
 - El precio que le importa al cliente es el de CON IVA; menciónalo. Solo da el de sin IVA si lo piden.
+- NUNCA escribas de memoria un código ni un precio: cópialos carácter por carácter del
+  resultado de la búsqueda. Si el dato no está ahí, no lo inventes — dilo o pregúntalo.
 - ANTES de decir que no hay algo, vuelve a buscar con menos palabras (solo la pieza y el
   modelo, sin año ni lado) y con otra forma de nombrarla. Nunca contestes que no tienes
   una pieza después de una sola búsqueda que salió vacía.
@@ -541,6 +549,17 @@ export interface OpcionesVendedor {
  * Corre el agente Vendedor IA y devuelve el texto final. Si se pasan callbacks,
  * además emite el progreso (para el streaming del canal web).
  */
+function mensajeCorreccion(inventadas: CifrasInventadas): string {
+  const partes: string[] = [];
+  if (inventadas.codigos.length) partes.push(`códigos ${inventadas.codigos.join(", ")}`);
+  if (inventadas.precios.length) partes.push(`precios ${inventadas.precios.join(", ")}`);
+  return (
+    `CORRECCIÓN INTERNA (no menciones esto al cliente): tu respuesta trae ${partes.join(" y ")}, ` +
+    `que NO vienen del catálogo. Vuelve a redactarla copiando exactamente los códigos y ` +
+    `precios que te devolvió la búsqueda. Si un dato no lo tienes, no lo inventes: pregúntalo.`
+  );
+}
+
 export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
   const mensajes: Anthropic.MessageParam[] = op.historial.map((m) => ({
     role: m.rol === "usuario" ? "user" : "assistant",
@@ -550,6 +569,10 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
 
   const sistema = promptSistema(new Date().toLocaleDateString("sv-SE"), op.canal ?? "whatsapp");
   let textoFinal = "";
+  // Lo que devolvieron las búsquedas, para revisar que la respuesta no cite
+  // códigos ni precios que el modelo se haya inventado.
+  const catalogo = catalogoVacio();
+  let yaCorregido = false;
 
   for (let ronda = 0; ronda < MAX_ITERACIONES; ronda++) {
     const ultimaRonda = ronda === MAX_ITERACIONES - 1;
@@ -568,7 +591,17 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     });
 
     if (resultado.usos.length === 0) {
-      textoFinal = textoRonda;
+      textoFinal = textoRonda; // se conserva por si la corrección no alcanza
+      const inventadas = cifrasInventadas(textoRonda, catalogo);
+      const hayInventadas = inventadas.codigos.length > 0 || inventadas.precios.length > 0;
+      if (hayInventadas && !yaCorregido && !ultimaRonda) {
+        yaCorregido = true;
+        console.warn("Vendedor IA citó datos fuera del catálogo:", inventadas);
+        mensajes.push({ role: "assistant", content: textoRonda });
+        mensajes.push({ role: "user", content: mensajeCorreccion(inventadas) });
+        op.alReinicio?.(); // el chat web descarta el texto ya emitido
+        continue;
+      }
       break;
     }
 
@@ -580,6 +613,7 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     for (const uso of resultado.usos) {
       op.alEstado?.(ETIQUETA_HERRAMIENTA[uso.name] ?? "Consultando el catálogo");
       const contenido = await ejecutarHerramienta(uso);
+      registrarResultado(contenido, catalogo);
       // Reporta los códigos que devolvió una búsqueda (para que el canal
       // WhatsApp pueda adjuntar las fotos de los que el agente mencione).
       if (
