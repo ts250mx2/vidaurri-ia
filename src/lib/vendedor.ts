@@ -287,9 +287,19 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
 
   const where = condiciones.length > 0 ? condiciones.join(" AND ") : "1";
 
-  // El lado/frente no filtra (el catálogo a veces no lo captura), pero sí
-  // ordena: si pidió la derecha, primero las que dicen DER.
+  // Orden de la lista, en dos criterios:
+  //  1) que la descripción EMPIECE por la pieza pedida: en bdav siempre arranca
+  //     con ella ("FASCIA DEL AVEO 18-23"), así que esto separa la pieza real de
+  //     sus accesorios ("GUIA FASCIA...", "TAPA FASCIA...");
+  //  2) el lado/frente, que no filtra —el catálogo a veces no lo captura— pero
+  //     sí manda al frente las que dicen DER si pidió la derecha.
   const paramsOrden: unknown[] = [];
+  const esLaPieza = expresionRelevancia(
+    palabras.requeridas,
+    ["a.descripcion"],
+    paramsOrden,
+    "empieza"
+  );
   const coincidePosicion = expresionRelevancia(palabras.opcionales, ["a.descripcion"], paramsOrden);
 
   // Precio PUBLICO = precio_lista + IVA, el mismo criterio que la web
@@ -308,7 +318,8 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
        LEFT JOIN lineas l ON l.id = a.id_linea
        LEFT JOIN partes p ON p.id = a.id_parte
       WHERE ${where}
-      ORDER BY ${coincidePosicion} DESC, (a.existencia > 0) DESC, a.precio_lista ASC
+      ORDER BY ${esLaPieza} DESC, ${coincidePosicion} DESC,
+               (a.existencia > 0) DESC, a.precio_lista ASC
       LIMIT ${MAX_RESULTADOS}`,
     [...params, ...paramsOrden]
   );
@@ -416,8 +427,8 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
       idPieza: number;
       fotoNombre: string | null;
       rn: number;
-      relevanteParte: number;
-      relevantePosicion: number;
+      relevanteParte: number | null;
+      relevantePosicion: number | null;
     }
   >(
     `SELECT * FROM (

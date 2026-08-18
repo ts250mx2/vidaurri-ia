@@ -7,6 +7,13 @@ import { esPalabraDePosicion, variantesBusqueda } from "@/lib/sinonimos";
 // sinónimos por varios campos, así que sin tope la consulta crece de más.
 export const MAX_PALABRAS_BUSQUEDA = 6;
 
+/**
+ * Cómo debe cruzar la palabra para sumar relevancia. "empieza" aprovecha que
+ * la descripción arranca siempre por la pieza ("FASCIA DEL AVEO 18-23"), de
+ * modo que distingue la pieza real de sus accesorios ("GUIA FASCIA DEL AVEO").
+ */
+export type PatronRelevancia = "contiene" | "empieza";
+
 export interface PalabrasBusqueda {
   /** Variantes de las palabras que la pieza SÍ debe traer (pieza, modelo...). */
   requeridas: string[][];
@@ -57,13 +64,17 @@ export function condicionesPorPalabra(
 /**
  * Expresión SQL que cuenta cuántas de esas palabras coincide cada fila, para
  * usarla en el ORDER BY: entre dos puertas de Silverado, primero la que dice
- * "DER" si el cliente pidió la derecha. Devuelve "0" si no hay nada que medir.
- * Empuja sus parámetros a `params`, en el mismo orden en que salen en el SQL.
+ * "DER" si el cliente pidió la derecha. Empuja sus parámetros a `params`, en el
+ * mismo orden en que salen en el SQL.
+ *
+ * Sin nada que medir devuelve `NULL`, no `0`: MySQL lee un número suelto en el
+ * ORDER BY como posición de columna y `ORDER BY 0` es un error.
  */
 export function expresionRelevancia(
   variantesPorPalabra: string[][],
   campos: readonly string[],
-  params: unknown[]
+  params: unknown[],
+  patron: PatronRelevancia = "contiene"
 ): string {
   const terminos: string[] = [];
   for (const variantes of variantesPorPalabra) {
@@ -71,10 +82,10 @@ export function expresionRelevancia(
     for (const variante of variantes) {
       for (const campo of campos) {
         alternativas.push(`${campo} LIKE ?`);
-        params.push(`%${variante}%`);
+        params.push(patron === "empieza" ? `${variante}%` : `%${variante}%`);
       }
     }
     terminos.push(`(CASE WHEN ${alternativas.join(" OR ")} THEN 1 ELSE 0 END)`);
   }
-  return terminos.length > 0 ? terminos.join(" + ") : "0";
+  return terminos.length > 0 ? terminos.join(" + ") : "NULL";
 }

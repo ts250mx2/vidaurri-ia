@@ -1,5 +1,11 @@
 // Utilidades de texto para búsquedas.
 
+// Largo mínimo de la raíz. Con menos, el recorte deja fragmentos que casan con
+// cualquier cosa: "capo" quedaba en "cap" y traía las 751 piezas de CAPTIVA,
+// y "faro" quedaba en "far". Con 4 se siguen cubriendo los casos que importan
+// ("usados"→"usad", "delantera"→"delanter", "derecha"→"derech").
+const LARGO_MINIMO_RAIZ = 4;
+
 /**
  * Raíz de una palabra para búsqueda con LIKE: quita la terminación de género/
  * número ("delantera" → "delanter", "usados" → "usad") para que cruce con
@@ -8,7 +14,7 @@
  */
 export function raizBusqueda(palabra: string): string {
   const raiz = palabra.replace(/(os|as)$/i, "").replace(/[oa]$/i, "");
-  return raiz.length >= 3 ? raiz : palabra;
+  return raiz.length >= LARGO_MINIMO_RAIZ ? raiz : palabra;
 }
 
 /**
