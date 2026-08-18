@@ -3,7 +3,7 @@ import { consultaBdav } from "@/lib/db";
 import { consultaUsadas } from "@/lib/db-usadas";
 import { precioAldo } from "@/lib/aldo";
 import { correrTurnoAgente, type UsoHerramienta } from "@/lib/agente-modelo";
-import { raizBusqueda } from "@/lib/texto";
+import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
 
 // Núcleo del agente "Vendedor IA": prompt, herramientas de catálogo y el loop
 // del agente. Lo comparten el endpoint web (streaming) y el de WhatsApp (una
@@ -71,7 +71,10 @@ ESTILO WHATSAPP (muy importante):
 - Puedes usar pocos emojis para dar calidez (👍 🔧 📦 💵), sin exagerar.
 - Si falta un dato para acertar (modelo, año, si es sedán/hatchback, lado izquierdo/derecho), pregúntalo en una línea.
 - El precio que le importa al cliente es el de CON IVA; menciónalo. Solo da el de sin IVA si lo piden.
-- Si no encuentras nada, pide más datos amablemente.${instruccionFoto}
+- ANTES de decir que no hay algo, vuelve a buscar con menos palabras (solo la pieza y el
+  modelo, sin año ni lado) y con otra forma de nombrarla. Nunca contestes que no tienes
+  una pieza después de una sola búsqueda que salió vacía.
+- Si aun así no encuentras nada, pide más datos amablemente.${instruccionFoto}
 
 Reglas:
 - NUNCA pienses en voz alta ni te corrijas a media frase ("espera...", "déjame ver...", "ah no, mejor..."). Decide ANTES de escribir y manda solo la respuesta final y limpia.
@@ -251,6 +254,12 @@ async function resumenUsadoPorLlave(
   }
 }
 
+// Campos donde puede caer lo que escribe el cliente. Antes solo se miraba
+// descripcion/codigo, asi que "faro nissan" fallaba cuando la marca vive en
+// `lineas` y el tipo de pieza en `partes`.
+const CAMPOS_ARTICULO = ["a.descripcion", "a.codigo", "p.parte", "l.linea"];
+const CAMPOS_USADA = ["p.descripcion", "p.codigo", "pa.parte", "ma.marca", "mo.modelo"];
+
 async function buscarProductos(input: Record<string, unknown>): Promise<string> {
   const descripcion = String(input.descripcion ?? "").trim();
   const marca = String(input.marca ?? "").trim();
@@ -261,11 +270,7 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
   const condiciones: string[] = [];
   const params: unknown[] = [];
 
-  const palabras = descripcion.split(/\s+/).filter(Boolean).slice(0, 6);
-  for (const palabra of palabras) {
-    condiciones.push("(a.descripcion LIKE ? OR a.codigo LIKE ?)");
-    params.push(`%${palabra}%`, `%${palabra}%`);
-  }
+  const palabras = condicionesPorPalabra(descripcion, CAMPOS_ARTICULO, condiciones, params);
   if (marca) {
     condiciones.push("l.linea LIKE ?");
     params.push(`%${marca}%`);
@@ -281,6 +286,11 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
   if (soloConExistencia) condiciones.push("a.existencia > 0");
 
   const where = condiciones.length > 0 ? condiciones.join(" AND ") : "1";
+
+  // El lado/frente no filtra (el catálogo a veces no lo captura), pero sí
+  // ordena: si pidió la derecha, primero las que dicen DER.
+  const paramsOrden: unknown[] = [];
+  const coincidePosicion = expresionRelevancia(palabras.opcionales, ["a.descripcion"], paramsOrden);
 
   // Precio PUBLICO = precio_lista + IVA, el mismo criterio que la web
   // (vidaurri-page/src/lib/catalogo.ts). `precio_vta` es el precio de mostrador
@@ -298,9 +308,9 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
        LEFT JOIN lineas l ON l.id = a.id_linea
        LEFT JOIN partes p ON p.id = a.id_parte
       WHERE ${where}
-      ORDER BY (a.existencia > 0) DESC, a.precio_lista ASC
+      ORDER BY ${coincidePosicion} DESC, (a.existencia > 0) DESC, a.precio_lista ASC
       LIMIT ${MAX_RESULTADOS}`,
-    params
+    [...params, ...paramsOrden]
   );
 
   if (filas.length === 0) {
@@ -373,14 +383,7 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
   // silverado" encuentra parte=PUERTA + modelo=SILVERADO aunque la descripción
   // no traiga el nombre del modelo. Se busca por raíz ("delantera" → "delanter")
   // porque la bodega captura con género variable ("DELANTERO(A)").
-  const palabras = descripcion.split(/\s+/).filter(Boolean).slice(0, 6);
-  for (const palabra of palabras) {
-    condiciones.push(
-      "(p.descripcion LIKE ? OR p.codigo LIKE ? OR pa.parte LIKE ? OR ma.marca LIKE ? OR mo.modelo LIKE ?)"
-    );
-    const like = `%${raizBusqueda(palabra)}%`;
-    params.push(like, like, like, like, like);
-  }
+  const palabras = condicionesPorPalabra(descripcion, CAMPOS_USADA, condiciones, params);
   if (marca) {
     // El modelo a veces manda el MODELO del auto aquí ("Journey"): se acepta
     // contra marca O modelo para no anular la búsqueda por ese error.
@@ -395,19 +398,27 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
     params.push(anio);
   }
 
-  // Relevancia: primero las piezas cuyo TIPO de parte coincide con alguna
-  // palabra. Sin esto, "puerta journey" llena el tope con espejos y
-  // motoventiladores cuya descripción dice "5 PUERTAS" (carrocería).
-  const coincideParte =
-    palabras.length > 0 ? `(${palabras.map(() => "pa.parte LIKE ?").join(" OR ")})` : "0";
-  const paramsOrden = palabras.map((p) => `%${raizBusqueda(p)}%`);
+  // Relevancia en dos criterios independientes, sin inventar pesos:
+  //  1) que el TIPO de parte coincida — sin esto "puerta journey" llena el tope
+  //     con espejos cuya descripción dice "5 PUERTAS" (carrocería);
+  //  2) que coincida el lado pedido, para que la derecha salga antes que la
+  //     izquierda cuando el cliente lo especificó.
+  const paramsOrden: unknown[] = [];
+  const coincideParte = expresionRelevancia(palabras.requeridas, ["pa.parte"], paramsOrden);
+  const coincidePosicion = expresionRelevancia(palabras.opcionales, ["p.descripcion"], paramsOrden);
 
   // Diversidad: máximo 3 piezas por TIPO de parte (ROW_NUMBER por id_parte).
   // Sin esto, una búsqueda como "puerta journey" llena el tope con 15 quintas
   // puertas baratas y la puerta lateral (más cara) nunca aparece.
   // Ojo con el orden de los ?: los de coincideParte van primero (SELECT interno).
   const filas = await consultaUsadas<
-    FilaPiezaUsada & { idPieza: number; fotoNombre: string | null; rn: number; relevante: number }
+    FilaPiezaUsada & {
+      idPieza: number;
+      fotoNombre: string | null;
+      rn: number;
+      relevanteParte: number;
+      relevantePosicion: number;
+    }
   >(
     `SELECT * FROM (
        SELECT p.id_pieza AS idPieza, p.codigo, p.descripcion,
@@ -422,7 +433,8 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
                 WHERE pi.id_pieza = p.id_pieza AND pi.activo = 1
                   AND pi.consecutivo >= 1
                 ORDER BY pi.consecutivo LIMIT 1) AS fotoNombre,
-              ${coincideParte} AS relevante,
+              ${coincideParte} AS relevanteParte,
+              ${coincidePosicion} AS relevantePosicion,
               ROW_NUMBER() OVER (
                 PARTITION BY p.id_parte
                 ORDER BY (p.precio > 0) DESC, p.precio ASC
@@ -436,7 +448,8 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
         WHERE ${condiciones.join(" AND ")}
      ) sub
      WHERE sub.rn <= 3
-     ORDER BY sub.relevante DESC, (sub.precioSinIva > 0) DESC, sub.precioSinIva ASC
+     ORDER BY sub.relevanteParte DESC, sub.relevantePosicion DESC,
+              (sub.precioSinIva > 0) DESC, sub.precioSinIva ASC
      LIMIT ${MAX_RESULTADOS}`,
     [...paramsOrden, ...params]
   );
@@ -449,11 +462,20 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
   }
   // `foto` (proxy interno) es lo que el agente inserta en el chat web;
   // `fotoPublica` la usa el canal WhatsApp para adjuntar la imagen real.
-  const resultados = filas.map(({ idPieza: _id, fotoNombre, rn: _rn, relevante: _rel, ...pieza }) => ({
+  const resultados = filas.map(
+    ({
+      idPieza: _id,
+      fotoNombre,
+      rn: _rn,
+      relevanteParte: _rp,
+      relevantePosicion: _rpos,
+      ...pieza
+    }) => ({
     ...pieza,
-    foto: fotoNombre ? `/api/usadas/foto?n=${encodeURIComponent(fotoNombre)}` : null,
-    fotoPublica: fotoNombre ? urlFotoUsadaPublica(fotoNombre) : null,
-  }));
+      foto: fotoNombre ? `/api/usadas/foto?n=${encodeURIComponent(fotoNombre)}` : null,
+      fotoPublica: fotoNombre ? urlFotoUsadaPublica(fotoNombre) : null,
+    })
+  );
   return JSON.stringify({ total: resultados.length, resultados });
 }
 

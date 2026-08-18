@@ -10,3 +10,15 @@ export function raizBusqueda(palabra: string): string {
   const raiz = palabra.replace(/(os|as)$/i, "").replace(/[oa]$/i, "");
   return raiz.length >= 3 ? raiz : palabra;
 }
+
+/**
+ * Minúsculas y sin acentos, para comparar sin importar cómo se escriba el
+ * cliente ("capó" y "capo" son la misma palabra al buscar).
+ */
+export function normalizarTexto(texto: string): string {
+  return texto
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim();
+}

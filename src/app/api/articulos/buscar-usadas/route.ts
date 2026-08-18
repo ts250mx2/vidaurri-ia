@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { sesionActual } from "@/lib/auth";
 import { consultaUsadas } from "@/lib/db-usadas";
-import { raizBusqueda } from "@/lib/texto";
+import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
 
 // Búsqueda LIBRE en el catálogo de la BODEGA USADO por texto. La usa el
 // catálogo de Artículos como respaldo: cuando la búsqueda no encuentra nada en
@@ -13,7 +13,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const MAX_PIEZAS = 30;
-const MAX_PALABRAS = 6;
 
 interface FilaPiezaUsada {
   codigo: string;
@@ -33,27 +32,31 @@ export async function GET(request: Request) {
   if (!sesion) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
 
   const busqueda = (new URL(request.url).searchParams.get("busqueda") ?? "").trim();
-  const palabras = busqueda.split(/\s+/).filter(Boolean).slice(0, MAX_PALABRAS);
-  if (palabras.length === 0) {
+  if (!busqueda) {
     return NextResponse.json({ encontrado: false, total: 0, piezas: [] });
   }
 
   const condiciones: string[] = ["p.existencia > 0"];
   const params: unknown[] = [];
-  for (const palabra of palabras) {
-    condiciones.push(
-      `(p.descripcion LIKE ? OR p.codigo LIKE ? OR pa.parte LIKE ? OR ma.marca LIKE ? OR mo.modelo LIKE ?)`
-    );
-    // Raíz de la palabra: "delantera" también cruza con "DELANTERO(A)".
-    const like = `%${raizBusqueda(palabra)}%`;
-    params.push(like, like, like, like, like);
-  }
+  // Cada palabra cruza descripción/código/parte/marca/modelo, incluyendo sus
+  // sinónimos y abreviaturas ("facia" encuentra FASCIA, "capó" encuentra COFRE).
+  const palabras = condicionesPorPalabra(
+    busqueda,
+    ["p.descripcion", "p.codigo", "pa.parte", "ma.marca", "mo.modelo"],
+    condiciones,
+    params
+  );
 
-  // Relevancia: primero las piezas cuyo TIPO de parte coincide con alguna
-  // palabra (que "puerta silverado" liste puertas antes que piezas cuya
-  // descripción solo dice "4 puertas").
-  const coincideParte = `(${palabras.map(() => "pa.parte LIKE ?").join(" OR ")})`;
-  const paramsOrden = palabras.map((p) => `%${raizBusqueda(p)}%`);
+  // Relevancia: primero las piezas cuyo TIPO de parte coincide (que "puerta
+  // silverado" liste puertas antes que piezas cuya descripción solo dice
+  // "4 puertas"), y después las del lado que pidió el cliente.
+  const paramsOrden: unknown[] = [];
+  const coincideParte = expresionRelevancia(palabras.requeridas, ["pa.parte"], paramsOrden);
+  const coincidePosicion = expresionRelevancia(
+    palabras.opcionales,
+    ["p.descripcion"],
+    paramsOrden
+  );
 
   try {
     const filas = await consultaUsadas<FilaPiezaUsada & { total: number }>(
@@ -73,7 +76,8 @@ export async function GET(request: Request) {
          LEFT JOIN ubicaciones u ON u.id_ubicacion = p.id_ubicacion
          LEFT JOIN modulos md ON md.id_modulo = u.id_modulo
         WHERE ${condiciones.join(" AND ")}
-        ORDER BY ${coincideParte} DESC, (p.precio > 0) DESC, p.precio ASC
+        ORDER BY ${coincideParte} DESC, ${coincidePosicion} DESC,
+                 (p.precio > 0) DESC, p.precio ASC
         LIMIT ${MAX_PIEZAS}`,
       [...params, ...paramsOrden]
     );

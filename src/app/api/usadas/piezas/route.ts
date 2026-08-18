@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { sesionActual } from "@/lib/auth";
 import { consultaUsadas } from "@/lib/db-usadas";
-import { raizBusqueda } from "@/lib/texto";
+import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
 
 // Catálogo de PIEZAS USADAS (Bodega Usado): listado paginado con filtros.
 // La búsqueda cruza descripción/código/parte/marca/modelo para que
@@ -11,7 +11,6 @@ export const dynamic = "force-dynamic";
 
 const PAGE_SIZE_DEFAULT = 50;
 const PAGE_SIZE_MAX = 20000; // permite exportar el catálogo completo
-const MAX_PALABRAS = 6;
 
 interface FilaPieza {
   idPieza: number;
@@ -54,15 +53,14 @@ export async function GET(request: Request) {
 
   const condiciones: string[] = [];
   const params: unknown[] = [];
-  const palabras = busqueda.split(/\s+/).filter(Boolean).slice(0, MAX_PALABRAS);
-  for (const palabra of palabras) {
-    condiciones.push(
-      "(p.descripcion LIKE ? OR p.codigo LIKE ? OR pa.parte LIKE ? OR ma.marca LIKE ? OR mo.modelo LIKE ?)"
-    );
-    // Raíz de la palabra: "delantera" también cruza con "DELANTERO(A)".
-    const like = `%${raizBusqueda(palabra)}%`;
-    params.push(like, like, like, like, like);
-  }
+  // Cada palabra cruza descripción/código/parte/marca/modelo, incluyendo sus
+  // sinónimos y abreviaturas ("facia" encuentra FASCIA, "capó" encuentra COFRE).
+  const palabras = condicionesPorPalabra(
+    busqueda,
+    ["p.descripcion", "p.codigo", "pa.parte", "ma.marca", "mo.modelo"],
+    condiciones,
+    params
+  );
   if (Number.isInteger(idParte) && idParte > 0) {
     condiciones.push("p.id_parte = ?");
     params.push(idParte);
@@ -73,6 +71,16 @@ export async function GET(request: Request) {
   }
   if (conExistencia) condiciones.push("p.existencia > 0");
   const where = condiciones.length > 0 ? condiciones.join(" AND ") : "1";
+
+  // El lado ("delantera", "derecha") no filtra —el catálogo no siempre lo
+  // captura— pero sí manda al frente las piezas que sí coinciden. Sus
+  // parámetros van aparte: la consulta de total reutiliza `params` sin ORDER BY.
+  const paramsOrden: unknown[] = [];
+  const coincidePosicion = expresionRelevancia(
+    palabras.opcionales,
+    ["p.descripcion"],
+    paramsOrden
+  );
   const offset = (page - 1) * pageSize;
 
   // Los filtros usan marcas vía modelos: los JOIN van también en conteo y resumen
@@ -103,9 +111,9 @@ export async function GET(request: Request) {
            LEFT JOIN ubicaciones u ON u.id_ubicacion = p.id_ubicacion
            LEFT JOIN modulos md ON md.id_modulo = u.id_modulo
           WHERE ${where}
-          ORDER BY (p.existencia > 0) DESC, p.codigo ASC
+          ORDER BY ${coincidePosicion} DESC, (p.existencia > 0) DESC, p.codigo ASC
           LIMIT ${offset}, ${pageSize}`,
-        params
+        [...params, ...paramsOrden]
       ),
       consultaUsadas<{ total: number }>(
         `SELECT COUNT(*) AS total ${joins} WHERE ${where}`,
