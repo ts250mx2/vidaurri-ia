@@ -56,6 +56,21 @@ const POSIBLE_CODIGO = /\b(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9-]{5,}\b/g;
 // Importes escritos como precio: "$1,798.00", "$1798", "$ 1,550".
 const IMPORTE = /\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/g;
 
+/**
+ * Da por buenos los códigos y precios que el agente ya dijo antes en la misma
+ * conversación. El cliente pregunta "¿y la usada?" o "¿me lo repites?" y la
+ * respuesta legítimamente repite cifras de un turno anterior, cuando la
+ * búsqueda que las produjo ya no se vuelve a ejecutar. Sin esto se marcaban
+ * como inventados precios que sí salieron del catálogo.
+ */
+export function registrarRespuestaPrevia(texto: string, catalogo: CatalogoTurno): void {
+  const mayusculas = texto.toUpperCase();
+  for (const [token] of mayusculas.matchAll(POSIBLE_CODIGO)) catalogo.codigos.add(token);
+  for (const [, importe] of texto.matchAll(IMPORTE)) {
+    agregarPrecio(Number(importe.replace(/,/g, "")), catalogo.precios);
+  }
+}
+
 export interface CifrasInventadas {
   codigos: string[];
   precios: string[];

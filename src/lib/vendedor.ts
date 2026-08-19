@@ -7,6 +7,7 @@ import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
 import {
   catalogoVacio,
   cifrasInventadas,
+  registrarRespuestaPrevia,
   registrarResultado,
   type CifrasInventadas,
 } from "@/lib/vendedor-cifras";
@@ -193,11 +194,15 @@ function raizParte(parte: string): string {
 }
 
 /** Llave de cruce con la Bodega por producto (marca + raíz + rango de años). */
+// La llave es el código del artículo, no parte+marca+años: desde que el cruce
+// exige que coincida el MODELO, dos artículos que comparten tipo y marca
+// (CALAVERA AVEO y CALAVERA MALIBU, ambas CHEVROLET) ya no tienen el mismo
+// resultado y no pueden compartir consulta.
 function llaveUsado(f: FilaProducto): string | null {
   const raiz = raizParte(f.tipoParte);
   const marca = f.marca.trim();
   if (!raiz || !marca) return null;
-  return `${raiz}|${marca}|${f.aini ?? ""}|${f.afin ?? ""}`;
+  return f.codigo;
 }
 
 /** Consulta en UNA pasada (UNION ALL por llave) cuántas piezas usadas
@@ -219,11 +224,26 @@ async function resumenUsadoPorLlave(
   for (const [llave, f] of llaves) {
     const condiciones = [
       "p.existencia > 0",
+      // Sin precio no se puede ofrecer como alternativa económica.
+      "p.precio > 0",
       "pa.parte LIKE ?",
       // La marca puede venir compuesta en la Bodega ("DODGE / CHRYSLER").
       "(ma.marca LIKE ? OR ? LIKE CONCAT('%', ma.marca, '%'))",
+      // Y el MODELO tiene que aparecer en la descripción del artículo. Sin esto
+      // una CALAVERA AVEO contaba como equivalentes las 526 calaveras Chevrolet
+      // de Traverse, Silverado y Malibu, y el agente ofrecía una usada "desde
+      // $928" que después no encontraba. Se compara palabra completa (con la
+      // descripción entre espacios) porque hay modelos de una o dos letras
+      // ("2", "3", "G3") que como subcadena casarían con cualquier cosa.
+      "CONCAT(' ', ?, ' ') LIKE CONCAT('% ', mo.modelo, ' %')",
     ];
-    params.push(llave, `${raizParte(f.tipoParte)}%`, `%${f.marca.trim()}%`, f.marca.trim());
+    params.push(
+      llave,
+      `${raizParte(f.tipoParte)}%`,
+      `%${f.marca.trim()}%`,
+      f.marca.trim(),
+      f.descripcion
+    );
     const aini = Number(f.aini);
     const afin = Number(f.afin);
     if (aini > 1900 && afin > 1900) {
@@ -555,9 +575,11 @@ function mensajeCorreccion(inventadas: CifrasInventadas): string {
   if (inventadas.codigos.length) partes.push(`códigos ${inventadas.codigos.join(", ")}`);
   if (inventadas.precios.length) partes.push(`precios ${inventadas.precios.join(", ")}`);
   return (
-    `CORRECCIÓN INTERNA (no menciones esto al cliente): tu respuesta trae ${partes.join(" y ")}, ` +
-    `que NO vienen del catálogo. Vuelve a redactarla copiando exactamente los códigos y ` +
-    `precios que te devolvió la búsqueda. Si un dato no lo tienes, no lo inventes: pregúntalo.`
+    `CORRECCIÓN INTERNA: tu respuesta trae ${partes.join(" y ")}, que NO vienen del catálogo. ` +
+    `El cliente NO vio ese mensaje, así que responde ÚNICAMENTE con el mensaje corregido, tal ` +
+    `cual lo va a leer. No menciones esta corrección ni digas "confirmado", "esos datos son ` +
+    `correctos" o "te lo dejo de nuevo": para el cliente es tu primera respuesta. Copia los ` +
+    `códigos y precios exactamente como los devolvió la búsqueda; lo que no tengas, pregúntalo.`
   );
 }
 
@@ -573,6 +595,9 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
   // Lo que devolvieron las búsquedas, para revisar que la respuesta no cite
   // códigos ni precios que el modelo se haya inventado.
   const catalogo = catalogoVacio();
+  for (const previo of op.historial) {
+    if (previo.rol !== "usuario") registrarRespuestaPrevia(previo.texto, catalogo);
+  }
   let yaCorregido = false;
 
   for (let ronda = 0; ronda < MAX_ITERACIONES; ronda++) {
