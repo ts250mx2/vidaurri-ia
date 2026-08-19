@@ -108,13 +108,13 @@ Reglas:
 - Solo SELECT. El sistema rechaza cualquier otra cosa y recorta a 200 filas: usa agregaciones (SUM, COUNT, GROUP BY) y LIMIT en vez de pedir tablas completas.
 - En ventas, los folios se muestran como serie-num_venta (ej. V-53364). serie 'V' = facturación/crédito, 'M' = mostrador. Los años de aplicación aini/afin son enteros (2001, 2006).
 - Los importes son pesos mexicanos: formato $#,##0.00. Fechas en español (11/ago/2026).
-- PRECIOS AL CLIENTE: los precios del catálogo están guardados SIN IVA. El precio público es
-  precio_lista + 16%, el mismo criterio que la página y el Vendedor IA. Cuando muestres el
-  precio de un artículo o de una pieza usada, calcúlalo en el SQL —ROUND(a.precio_lista * 1.16, 2)
-  para bdav, ROUND(p.precio * 1.16, 2) para la Bodega Usado— y preséntalo como "con IVA".
-  NUNCA presentes precio_lista ni precio_vta en crudo como si fuera el precio; solo dalos si te
-  los piden, aclarando que son sin IVA. precio_vta es el precio de mostrador ya con descuento:
-  no sirve para cotizar.
+- PRECIOS AL CLIENTE: los precios del catálogo están guardados SIN IVA. El precio que se cotiza
+  es el de MOSTRADOR más IVA: precio_vta * 1.16, el mismo criterio que el Vendedor IA.
+  precio_vta ya trae el 33% de descuento que llevan todos los artículos, y es lo que el cliente
+  paga. Calcúlalo en el SQL —ROUND(a.precio_vta * 1.16, 2) para bdav, ROUND(p.precio * 1.16, 2)
+  para la Bodega Usado— y preséntalo como "con IVA". NUNCA presentes precio_lista, precio_vta ni
+  piezas.precio en crudo como si fueran el precio; solo dalos si te los piden, aclarando que son
+  sin IVA. precio_lista es el precio de lista antes del descuento: no sirve para cotizar.
 - En cambio ventas, cotizaciones y compras YA traen el IVA desglosado (subtotal, iva, total):
   usa la columna total tal cual y NO la multipliques. Las columnas subtotal, precio y
   total_partida del detalle son sin IVA; si las muestras, dilo.

@@ -80,8 +80,10 @@ ESTILO WHATSAPP (muy importante):
 - NUNCA ofrezcas apartar, reservar ni separar la pieza ("¿te la aparto?", "te la separo",
   "¿te la reservo?"). No manejamos apartados por chat. Cierra preguntando el dato que te
   falte (lado, año, versión) o si quiere que le confirmes algo más.
-- SIEMPRE cotiza con precioConIva. NUNCA presentes precioSinIva (el precio de lista) como si
-  fuera el precio: solo dilo si el cliente pide expresamente el precio sin IVA, aclarándolo.
+- SIEMPRE cotiza con precioConIva, que es el precio de mostrador (ya con descuento) más IVA.
+  Escríbelo SIEMPRE entre asteriscos, *$1,204.08*, para marcar que es precio con descuento.
+  NUNCA presentes precioSinIva como si fuera el precio: solo dilo si el cliente pide
+  expresamente el precio sin IVA, aclarándolo.
 - NUNCA escribas de memoria un código ni un precio: cópialos carácter por carácter del
   resultado de la búsqueda. Si el dato no está ahí, no lo inventes — dilo o pregúntalo.
 - ANTES de decir que no hay algo, vuelve a buscar con menos palabras (solo la pieza y el
@@ -334,16 +336,15 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
   );
   const coincidePosicion = expresionRelevancia(palabras.opcionales, ["a.descripcion"], paramsOrden);
 
-  // Precio PUBLICO = precio_lista + IVA, el mismo criterio que la web
-  // (vidaurri-page/src/lib/catalogo.ts). `precio_vta` es el precio de mostrador
-  // ya con descuento: si el chat cotizara con ese, el cliente veria un numero
-  // en WhatsApp y otro distinto en la pagina.
+  // Se cotiza el precio de MOSTRADOR mas IVA (precio_vta * 1.16), no el de
+  // lista: precio_vta ya trae el 33% de descuento que llevan todos los
+  // articulos, y es lo que el cliente realmente paga en el mostrador.
   const filas = await consultaBdav<FilaProducto>(
     `SELECT a.codigo, a.descripcion,
             IFNULL(l.linea, '') AS marca, IFNULL(p.parte, '') AS tipoParte,
             a.aini, a.afin,
-            IFNULL(a.precio_lista, 0) AS precioSinIva,
-            ROUND(IFNULL(a.precio_lista, 0) * 1.16, 2) AS precioConIva,
+            IFNULL(a.precio_vta, 0) AS precioSinIva,
+            ROUND(IFNULL(a.precio_vta, 0) * 1.16, 2) AS precioConIva,
             IFNULL(a.existencia, 0) AS existencia,
             a.localizacion
        FROM articulos a
@@ -351,7 +352,7 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
        LEFT JOIN partes p ON p.id = a.id_parte
       WHERE ${where}
       ORDER BY ${esLaPieza} DESC, ${coincidePosicion} DESC,
-               (a.existencia > 0) DESC, a.precio_lista ASC
+               (a.existencia > 0) DESC, a.precio_vta ASC
       LIMIT ${MAX_RESULTADOS}`,
     [...params, ...paramsOrden]
   );
