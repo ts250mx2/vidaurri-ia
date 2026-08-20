@@ -1,3 +1,5 @@
+import { estamparMarca } from "@/lib/marca-agua";
+
 // Proxy PÚBLICO de fotos para WhatsApp, con ruta única por envío.
 //
 // Por qué existe: las pasarelas de WhatsApp reutilizan la imagen que ya
@@ -14,6 +16,12 @@
 // Es público (WhatsApp descarga la imagen sin sesión), pero NO es un proxy
 // abierto: solo resuelve contra dos orígenes fijos y con nombre de archivo
 // validado, así que no puede usarse para traer URLs arbitrarias.
+//
+// Toda foto sale SELLADA con la marca de la casa. Este es el punto donde
+// más importa: la imagen que Vico manda por WhatsApp es la que el cliente
+// reenvía a su mecánico y termina en grupos de compraventa. Sellar no cuesta
+// una arquitectura distinta porque aquí la foto YA se bufferea entera para
+// poder declarar Content-Length.
 
 export const dynamic = "force-dynamic";
 
@@ -58,11 +66,16 @@ export async function GET(
     // Se entrega con Content-Length (no "chunked"): el descargador de medios de
     // WhatsApp/Meta es más estricto y algunas pasarelas descartan la imagen si
     // no sabe el tamaño de antemano.
-    const bytes = await res.arrayBuffer();
-    return new Response(bytes, {
+    const original = Buffer.from(await res.arrayBuffer());
+    // Si el sellado falla se manda el original: una foto sin marca es mejor que
+    // una cotización sin foto. `estamparMarca` deja constancia del fallo.
+    const bytes = (await estamparMarca(original)) ?? original;
+    return new Response(new Uint8Array(bytes), {
       status: 200,
       headers: {
         "Content-Type": res.headers.get("content-type") ?? "image/jpeg",
+        // El largo se recalcula sobre la foto YA sellada: declarar el del
+        // original dejaría a la pasarela esperando bytes que no llegan.
         "Content-Length": String(bytes.byteLength),
         "Cache-Control": CACHE,
       },

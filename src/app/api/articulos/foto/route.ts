@@ -1,4 +1,5 @@
 import { sesionActual } from "@/lib/auth";
+import { estamparMarca } from "@/lib/marca-agua";
 
 export const dynamic = "force-dynamic";
 
@@ -6,6 +7,11 @@ export const dynamic = "force-dynamic";
 // código. El servidor la trae y la re-sirve para: cachearla, evitar exponer la
 // estructura del bucket, y funcionar aunque el cliente no tenga salida directa
 // a internet. Sin foto → 404 y el frontend muestra un marcador.
+
+// Las fotos salen SELLADAS con la marca de la casa: el mostrador las descarga
+// de aqui para mandarlas al cliente, asi que tienen que ir marcadas igual que
+// las que manda Vico. Sellar obliga a bufferear (adios al envio en flujo); la
+// cache de abajo hace que se pague una vez por foto.
 
 const BASE_S3 = "https://s3-us-west-2.amazonaws.com/aldoautopartesproductos";
 // Códigos válidos del catálogo: letras, dígitos y . _ - (los corruptos quedan fuera).
@@ -35,7 +41,9 @@ export async function GET(request: Request) {
     if (!res.ok || !res.body) {
       return new Response("Sin foto", { status: 404 });
     }
-    return new Response(res.body, {
+    const original = Buffer.from(await res.arrayBuffer());
+    const bytes = (await estamparMarca(original)) ?? original;
+    return new Response(new Uint8Array(bytes), {
       status: 200,
       headers: {
         "Content-Type": res.headers.get("content-type") ?? "image/jpeg",

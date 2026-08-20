@@ -1,4 +1,5 @@
 import { sesionActual } from "@/lib/auth";
+import { estamparMarca } from "@/lib/marca-agua";
 
 export const dynamic = "force-dynamic";
 
@@ -6,6 +7,11 @@ export const dynamic = "force-dynamic";
 // sirve en https://sistema.apvidaurri.com/imagenes_piezas/ con el archivo que
 // indica piezas_imagenes.nombre_imagen (se recibe en el parámetro `n`).
 // Cachea, oculta el origen y devuelve 404 limpio cuando no hay foto.
+
+// Las fotos salen SELLADAS con la marca de la casa: el mostrador las descarga
+// de aqui para mandarlas al cliente, asi que tienen que ir marcadas igual que
+// las que manda Vico. Sellar obliga a bufferear (adios al envio en flujo); la
+// cache de abajo hace que se pague una vez por foto.
 
 const BASE_FOTOS = "https://sistema.apvidaurri.com/imagenes_piezas";
 const CACHE = "public, max-age=86400, s-maxage=604800"; // 1 día cliente, 7 días CDN
@@ -30,7 +36,9 @@ export async function GET(request: Request) {
       headers: { "User-Agent": "Mozilla/5.0" },
     });
     if (!res.ok || !res.body) return new Response("Sin foto", { status: 404 });
-    return new Response(res.body, {
+    const original = Buffer.from(await res.arrayBuffer());
+    const bytes = (await estamparMarca(original)) ?? original;
+    return new Response(new Uint8Array(bytes), {
       status: 200,
       headers: {
         "Content-Type": res.headers.get("content-type") ?? "image/jpeg",
