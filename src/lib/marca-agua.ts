@@ -55,6 +55,12 @@ const MOSAICO_GRADOS = -30;
  *  la foto sin proteger nada. Solo cae aquí el muro decorativo del hero. */
 const MINIMO_UTIL = 110;
 
+/** Suelo al que se puede encoger el logo del mosaico para hacerlo caber. Por
+ *  debajo el lockup deja de reconocerse y la trama es sucio, no marca: esa foto
+ *  va mejor solo con el sello de esquina. No es un mínimo para el tamaño
+ *  normal, que en fotos chicas ya sale de por sí pequeño. */
+const MOSAICO_MINIMO = 70;
+
 /** Tope de memoria por foto. El catálogo no tiene originales de este tamaño;
  *  si aparece uno, pasa sin sellar antes que tumbar el proceso. */
 const MAXIMO_BYTES = 12 * 1024 * 1024;
@@ -78,6 +84,17 @@ let marcaOriginal: Promise<Buffer> | null = null;
 function cargarMarca(): Promise<Buffer> {
   marcaOriginal ??= readFile(RUTA_MARCA);
   return marcaOriginal;
+}
+
+/** Relación alto/ancho del PNG del sello. Sirve para saber cuánto va a medir
+ *  de alto antes de armarlo, y así no pedir uno que no quepa en la foto. */
+let relacionMarca: Promise<number> | null = null;
+function relacionSello(): Promise<number> {
+  relacionMarca ??= cargarMarca().then(async (png) => {
+    const { width = 1, height = 1 } = await sharp(png).metadata();
+    return height / Math.max(1, width);
+  });
+  return relacionMarca;
 }
 
 /** Piezas ya preparadas, por ancho en píxeles. Rearmarlas en cada foto de la
@@ -151,6 +168,35 @@ function azulejoMosaico(anchoLogo: number): Promise<Buffer> {
 }
 
 /**
+ * Azulejo del tamaño del logo pedido, pero garantizando que quepa en la foto.
+ *
+ * El logo se dimensiona con el ANCHO de la foto, pero el azulejo lleva dos
+ * logos girados y crece también a lo alto: en una foto apaisada (una moldura,
+ * un estribo) la trama salía más alta que la foto, sharp rechazaba el composite
+ * —"Image to composite must have same dimensions or smaller"— y la foto se
+ * servía sin marca. Se MIDE el azulejo ya armado en vez de predecir cuánto
+ * crece el recuadro al girarlo, y si no cabe se rehace con el logo reducido.
+ *
+ * Devuelve null si ni al mínimo legible cabe: esa foto va solo con el sello de
+ * esquina.
+ */
+async function azulejoQueQuepa(ancho: number, alto: number): Promise<Buffer | null> {
+  let anchoLogo = Math.max(1, Math.round(ancho * MOSAICO_ANCHO));
+  for (let intento = 0; intento < 3; intento++) {
+    const azulejo = await azulejoMosaico(anchoLogo);
+    const { width = 0, height = 0 } = await sharp(azulejo).metadata();
+    if (width > 0 && height > 0 && width <= ancho && height <= alto) return azulejo;
+    // Se reduce por el exceso peor, con holgura para no quedarse a un píxel por
+    // el redondeo de la rotación.
+    const factor = Math.min(ancho / width, alto / height) * 0.98;
+    const reducido = Math.floor(anchoLogo * factor);
+    if (reducido < MOSAICO_MINIMO) return null;
+    anchoLogo = reducido;
+  }
+  return null;
+}
+
+/**
  * Estampa el mosaico y el sello de esquina.
  *
  * Devuelve `null` cuando la foto debe servirse tal cual (no es imagen, es
@@ -177,29 +223,38 @@ export async function estamparMarca(entrada: Buffer): Promise<Buffer | null> {
     // pasa intacto.
     if (format === "gif" || format === "svg") return null;
 
-    const anchoEsquina = Math.round(
-      width * (width < ANCHO_CHICO ? PROPORCION_CHICA : PROPORCION)
-    );
-    const [azulejo, sello] = await Promise.all([
-      azulejoMosaico(Math.round(width * MOSAICO_ANCHO)),
-      selloEsquina(anchoEsquina),
-    ]);
-    const { height: altoSello = 0 } = await sharp(sello).metadata();
-
     const margen = Math.round(width * MARGEN);
-    // Si el sello no cabe a lo alto se ancla en 0 antes que dejar que sharp
-    // reviente por un `top` negativo.
-    const top = Math.max(0, height - altoSello - margen);
-    const left = Math.max(0, width - anchoEsquina - margen);
+    // El sello de esquina se mide por el ancho, pero en una foto apaisada lo que
+    // lo limita es el alto: se acota a lo que quepa dentro de los márgenes.
+    const altoDisponible = Math.max(1, height - 2 * margen);
+    const anchoPorAlto = Math.floor(altoDisponible / Math.max(0.01, await relacionSello()));
+    const anchoEsquina = Math.min(
+      Math.round(width * (width < ANCHO_CHICO ? PROPORCION_CHICA : PROPORCION)),
+      width,
+      anchoPorAlto
+    );
+
+    const [azulejo, sello] = await Promise.all([
+      azulejoQueQuepa(width, height),
+      anchoEsquina >= 1 ? selloEsquina(anchoEsquina) : null,
+    ]);
 
     // Las dos capas en UN composite y en este orden: el mosaico cubre la foto y
     // el sello de esquina va encima, para que no se lo coma la trama.
-    return await foto
-      .composite([
-        { input: azulejo, tile: true, blend: "over" },
-        { input: sello, top, left },
-      ])
-      .toBuffer();
+    const capas: OverlayOptions[] = [];
+    if (azulejo) capas.push({ input: azulejo, tile: true, blend: "over" });
+    if (sello) {
+      const { height: altoSello = 0 } = await sharp(sello).metadata();
+      capas.push({
+        input: sello,
+        top: Math.max(0, height - altoSello - margen),
+        left: Math.max(0, width - anchoEsquina - margen),
+      });
+    }
+    // Ninguna capa cabe: la foto se sirve tal cual, no en blanco.
+    if (capas.length === 0) return null;
+
+    return await foto.composite(capas).toBuffer();
   } catch (error) {
     console.error("[marca-agua] no se pudo sellar la foto:", error);
     return null;
