@@ -1,4 +1,4 @@
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -6,6 +6,13 @@ import { join } from "node:path";
 // manda por WhatsApp y las que el panel sirve al mostrador. Una foto de la
 // bodega circula por grupos de Facebook y cotizadores ajenos en cuestión de
 // horas; con el sello encima sigue diciendo de quién es la pieza.
+//
+// Son DOS capas con oficios distintos:
+//   1. El MOSAICO: el lockup repetido en diagonal por toda la foto, muy tenue.
+//      Es el que hace inservible la foto robada — recortar la esquina no lo
+//      quita, habría que borrarlo pieza por pieza sobre la mercancía misma.
+//   2. La ESQUINA inferior derecha, con cuerpo: la que se lee de un vistazo y
+//      dice de quién es el negocio.
 //
 // El precio de esto es que la foto ya NO puede ir en flujo: hay que tenerla
 // entera en memoria para componerla. Por eso las rutas que lo usan cachean
@@ -17,9 +24,9 @@ import { join } from "node:path";
 
 const RUTA_MARCA = join(process.cwd(), "public", "marca-agua.png");
 
-/** Ancho del sello respecto al de la foto. Abajo del 26% el lockup deja de
- *  leerse en un celular; arriba del 40% empieza a tapar la pieza, que es lo
- *  que el cliente vino a ver. */
+/** Ancho del sello de esquina respecto al de la foto. Abajo del 26% el lockup
+ *  deja de leerse en un celular; arriba del 40% empieza a tapar la pieza, que
+ *  es lo que el cliente vino a ver. */
 const PROPORCION = 0.32;
 /** Igual que arriba pero para fotos chicas: proporcionalmente necesitan más
  *  sello para que "VIDAURRI" siga siendo una palabra y no una mancha gris. */
@@ -29,8 +36,20 @@ const ANCHO_CHICO = 400;
 /** Separación del filo, en proporción al ancho. */
 const MARGEN = 0.03;
 
-/** Opacidad del sello: se tiene que leer sin comerse la pieza. */
+/** Opacidad del sello de esquina: se tiene que leer sin comerse la pieza. */
 const OPACIDAD = 0.74;
+
+/** Ancho de cada logo del mosaico, en proporción al de la foto. Más chico
+ *  entran más, pero por debajo de ~0.18 el lockup deja de reconocerse y la
+ *  trama pasa a ser sucio en vez de marca. */
+const MOSAICO_ANCHO = 0.22;
+/** Aire entre logos del mosaico, en proporción al logo. */
+const MOSAICO_SEPARACION = 0.1;
+/** Muy tenue A PROPÓSITO: tiene que estorbar a quien roba la foto, no a quien
+ *  viene a ver la pieza. Subirlo de ~0.2 y el catálogo empieza a verse sucio. */
+const MOSAICO_OPACIDAD = 0.16;
+/** En diagonal: cuesta más de recortar o de tapar con un parche recto. */
+const MOSAICO_GRADOS = -30;
 
 /** Debajo de esto ni la V se distingue: el sello sería una mancha que ensucia
  *  la foto sin proteger nada. Solo cae aquí el muro decorativo del hero. */
@@ -40,6 +59,20 @@ const MINIMO_UTIL = 110;
  *  si aparece uno, pasa sin sellar antes que tumbar el proceso. */
 const MAXIMO_BYTES = 12 * 1024 * 1024;
 
+const TRANSPARENTE = { r: 0, g: 0, b: 0, alpha: 0 };
+
+/** Capa de alfa uniforme: `dest-in` multiplica el alfa que ya trae el PNG por
+ *  este valor, así el sello se transparenta entero sin perder el degradado del
+ *  oro ni el contorno blanco. */
+function velo(opacidad: number): OverlayOptions {
+  return {
+    input: Buffer.from([0, 0, 0, Math.round(opacidad * 255)]),
+    raw: { width: 1, height: 1, channels: 4 },
+    tile: true,
+    blend: "dest-in",
+  };
+}
+
 /** El PNG del sello se lee del disco una sola vez por proceso. */
 let marcaOriginal: Promise<Buffer> | null = null;
 function cargarMarca(): Promise<Buffer> {
@@ -47,37 +80,78 @@ function cargarMarca(): Promise<Buffer> {
   return marcaOriginal;
 }
 
-/** Sellos ya escalados y con su alfa aplicado, por ancho en píxeles. Escalar el
- *  PNG en cada foto de la parrilla sería repetir el mismo trabajo 24 veces. */
-const escalados = new Map<number, Promise<Buffer>>();
+/** Piezas ya preparadas, por ancho en píxeles. Rearmarlas en cada foto de la
+ *  parrilla sería repetir el mismo trabajo 24 veces. */
+const sellosEsquina = new Map<number, Promise<Buffer>>();
+const azulejos = new Map<number, Promise<Buffer>>();
 
-function marcaEscalada(ancho: number): Promise<Buffer> {
-  const cacheado = escalados.get(ancho);
+function selloEsquina(ancho: number): Promise<Buffer> {
+  const cacheado = sellosEsquina.get(ancho);
   if (cacheado) return cacheado;
 
   const tarea = cargarMarca().then((png) =>
-    sharp(png)
-      .resize({ width: ancho })
-      // `dest-in` multiplica el alfa que ya trae el PNG por este valor uniforme,
-      // así el sello se transparenta entero sin perder el degradado del oro.
-      .composite([
-        {
-          input: Buffer.from([0, 0, 0, Math.round(OPACIDAD * 255)]),
-          raw: { width: 1, height: 1, channels: 4 },
-          tile: true,
-          blend: "dest-in",
-        },
-      ])
-      .png()
-      .toBuffer()
+    sharp(png).resize({ width: ancho }).composite([velo(OPACIDAD)]).png().toBuffer()
   );
-
-  escalados.set(ancho, tarea);
+  sellosEsquina.set(ancho, tarea);
   return tarea;
 }
 
 /**
- * Estampa el sello de la casa en la esquina inferior derecha.
+ * Azulejo del mosaico: lleva DOS logos en diagonal dentro de la celda, de modo
+ * que al repetirse las filas quedan escalonadas como ladrillos. Con un solo
+ * logo por azulejo el patrón sale en rejilla alineada y deja pasillos limpios
+ * entre columnas — justo por donde se recorta una foto para robarla.
+ */
+function azulejoMosaico(anchoLogo: number): Promise<Buffer> {
+  const cacheado = azulejos.get(anchoLogo);
+  if (cacheado) return cacheado;
+
+  const tarea = (async () => {
+    const png = await cargarMarca();
+    // La rotación va sobre un buffer YA cerrado: encadenada al resize, sharp
+    // reordena las operaciones y el giro no siempre se aplica.
+    const chico = await sharp(png).resize({ width: anchoLogo }).png().toBuffer();
+    const logo = await sharp(chico)
+      .rotate(MOSAICO_GRADOS, { background: TRANSPARENTE })
+      .png()
+      .toBuffer();
+
+    const { width = anchoLogo, height = anchoLogo } = await sharp(logo).metadata();
+    const aireX = Math.round(width * MOSAICO_SEPARACION);
+    const aireY = Math.round(height * MOSAICO_SEPARACION);
+    const celdaAncho = width + aireX;
+    const celdaAlto = height + aireY;
+
+    const trama = await sharp({
+      create: {
+        width: celdaAncho * 2,
+        height: celdaAlto * 2,
+        channels: 4,
+        background: TRANSPARENTE,
+      },
+    })
+      .composite([
+        { input: logo, top: Math.round(aireY / 2), left: Math.round(aireX / 2) },
+        {
+          input: logo,
+          top: celdaAlto + Math.round(aireY / 2),
+          left: celdaAncho + Math.round(aireX / 2),
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    // Segunda pasada para el velo: sharp NO acumula composite() encadenados,
+    // el segundo reemplaza al primero y la trama saldría vacía.
+    return sharp(trama).composite([velo(MOSAICO_OPACIDAD)]).png().toBuffer();
+  })();
+
+  azulejos.set(anchoLogo, tarea);
+  return tarea;
+}
+
+/**
+ * Estampa el mosaico y el sello de esquina.
  *
  * Devuelve `null` cuando la foto debe servirse tal cual (no es imagen, es
  * demasiado grande o demasiado chica para que el sello signifique algo) y
@@ -103,21 +177,28 @@ export async function estamparMarca(entrada: Buffer): Promise<Buffer | null> {
     // pasa intacto.
     if (format === "gif" || format === "svg") return null;
 
-    const anchoSello = Math.round(
+    const anchoEsquina = Math.round(
       width * (width < ANCHO_CHICO ? PROPORCION_CHICA : PROPORCION)
     );
-    const sello = await marcaEscalada(anchoSello);
+    const [azulejo, sello] = await Promise.all([
+      azulejoMosaico(Math.round(width * MOSAICO_ANCHO)),
+      selloEsquina(anchoEsquina),
+    ]);
     const { height: altoSello = 0 } = await sharp(sello).metadata();
 
     const margen = Math.round(width * MARGEN);
-    // Si la foto es más ancha que alta por muy poco, el sello podría no caber
-    // a lo alto: se ancla en 0 antes que dejar que sharp reviente por un
-    // `top` negativo.
+    // Si el sello no cabe a lo alto se ancla en 0 antes que dejar que sharp
+    // reviente por un `top` negativo.
     const top = Math.max(0, height - altoSello - margen);
-    const left = Math.max(0, width - anchoSello - margen);
+    const left = Math.max(0, width - anchoEsquina - margen);
 
+    // Las dos capas en UN composite y en este orden: el mosaico cubre la foto y
+    // el sello de esquina va encima, para que no se lo coma la trama.
     return await foto
-      .composite([{ input: sello, top, left }])
+      .composite([
+        { input: azulejo, tile: true, blend: "over" },
+        { input: sello, top, left },
+      ])
       .toBuffer();
   } catch (error) {
     console.error("[marca-agua] no se pudo sellar la foto:", error);
