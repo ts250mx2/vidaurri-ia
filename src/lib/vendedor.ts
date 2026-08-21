@@ -345,16 +345,24 @@ async function buscarProductos(
   // lista: precio_vta ya trae el 33% de descuento que llevan todos los
   // articulos, y es lo que el cliente realmente paga en el mostrador.
   //
-  // Si el telefono corresponde a un cliente del padron con OTRO descuento, se
-  // recalcula desde el precio de lista con el suyo. Cuando su descuento es el
-  // mismo del articulo se usa precio_vta tal cual: es ese mismo calculo pero ya
-  // redondeado como lo hace el punto de venta, y asi el chat no le canta 50
-  // centavos distintos de lo que muestra la pagina.
+  // Si el telefono corresponde a un cliente del padron (clientes_descuento) con
+  // OTRO descuento, se recalcula desde el precio de lista con el suyo. Cuando
+  // su descuento es el mismo del articulo se usa precio_vta tal cual: es ese
+  // mismo calculo pero ya redondeado como lo hace el punto de venta, y asi el
+  // chat no le canta 50 centavos distintos de lo que muestra la pagina.
+  //
+  // El porcentaje va interpolado en el SQL (no se puede parametrizar dentro de
+  // una expresion aritmetica con este driver), asi que antes se exige que sea
+  // un numero finito entre 0 y 100; cualquier otra cosa cotiza de mostrador.
+  const descuento =
+    descuentoCliente !== null && Number.isFinite(descuentoCliente) && descuentoCliente >= 0 && descuentoCliente < 100
+      ? descuentoCliente
+      : null;
   const precioBase =
-    descuentoCliente === null
+    descuento === null
       ? "IFNULL(a.precio_vta, 0)"
-      : `CASE WHEN a.descuento = ${Number(descuentoCliente)} THEN IFNULL(a.precio_vta, 0)
-              ELSE ROUND(IFNULL(a.precio_lista, 0) * ${(100 - Number(descuentoCliente)) / 100}, 2) END`;
+      : `CASE WHEN a.descuento = ${descuento} THEN IFNULL(a.precio_vta, 0)
+              ELSE ROUND(IFNULL(a.precio_lista, 0) * ${(100 - descuento) / 100}, 2) END`;
   const filas = await consultaBdav<FilaProducto>(
     `SELECT a.codigo, a.descripcion,
             IFNULL(l.linea, '') AS marca, IFNULL(p.parte, '') AS tipoParte,

@@ -3,7 +3,8 @@ import { claveFaltante } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
 import { urlFotoAldo, fotoAldoExiste } from "@/lib/aldo";
 import { guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
-import { clientePorTelefono } from "@/lib/cliente-telefono";
+import { obtenerClienteDescuentoPorTelefono } from "@/lib/db-clientes-descuento";
+import { normalizarTelefono } from "@/lib/telefono";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
 // la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
@@ -155,19 +156,25 @@ export async function POST(request: Request) {
     const codigosConsultados = new Set<string>();
     const fotosUsadas = new Map<string, string>();
 
-    // ¿Quién escribe? Si el número está en el padrón se le cotiza con SU
-    // descuento; si no, a precio de mostrador. El chat de la página entra con
-    // una sesión sintética 77…, donde no hay teléfono real que buscar. Un fallo
-    // aquí no puede dejar al cliente sin respuesta: se cae a mostrador.
-    const cliente = ES_SESION_WEB.test(telefono)
-      ? null
-      : await clientePorTelefono(telefono).catch((error) => {
+    // ¿Quién escribe? El padrón es la tabla clientes_descuento de la base de
+    // conversaciones (lo que el personal captura en "Clientes con descuento"):
+    // si el número está ahí se le cotiza con SU descuento; si no, a precio de
+    // mostrador. El catálogo de clientes de bdav NO se consulta para esto. La
+    // llave es el teléfono nacional de 10 dígitos, con la MISMA normalización
+    // que usa el alta del panel: lo que WhatsApp manda como 5218112345678 se
+    // busca como 8112345678. El chat de la página entra con una sesión sintética
+    // 77…, donde no hay teléfono real que buscar. Un fallo aquí no puede dejar
+    // al cliente sin respuesta: se cae a mostrador.
+    const telefonoPadron = ES_SESION_WEB.test(telefono) ? "" : normalizarTelefono(telefono);
+    const cliente = telefonoPadron
+      ? await obtenerClienteDescuentoPorTelefono(telefonoPadron).catch((error) => {
           console.error("No se pudo identificar al cliente por su teléfono:", error);
           return null;
-        });
+        })
+      : null;
     if (cliente) {
       console.log(
-        `[cliente-whatsapp] ${telefono} = ${cliente.nombre} (descuento ${cliente.descuento}%)`
+        `[cliente-whatsapp] ${telefono} = ${cliente.cliente} (descuento ${cliente.descuento}%)`
       );
     }
 

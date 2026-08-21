@@ -45,8 +45,11 @@ punto de venta). Perfiles: Administrador, Operaciones, Ventas.
 - **Back orders**: pedidos especiales de cliente con anticipos.
 - **Vendedor IA**: agente de ventas por chat web y WhatsApp; bitácora de conversaciones y
   padrón de **clientes con descuento** (teléfono → nombre y %; se prellena del catálogo de
-  `bdav` y, si no está, propone `DESCUENTO_DEFAULT` del `.env`, 33 si falta). Ambos viven
-  en la base `BDVidaurriConversaciones`, la única donde la aplicación escribe.
+  `bdav` y, si no está, propone `DESCUENTO_DEFAULT` del `.env`, 33 si falta). Cuando el
+  número que escribe por WhatsApp está en ese padrón, el agente cotiza las piezas nuevas con
+  el descuento del cliente sobre el precio de lista, más IVA; si no está, a precio de
+  mostrador. Ambos viven en la base `BDVidaurriConversaciones`, la única donde la
+  aplicación escribe.
 - **VIDA (agente IA)**: chat que consulta la base de datos en lenguaje natural (solo SELECT).
 
 ## Base de datos
