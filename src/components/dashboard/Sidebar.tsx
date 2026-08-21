@@ -48,7 +48,14 @@ const secciones: MenuSeccion[] = [
       { nombre: "Facturas de Compra", emoji: "🧾", href: "/dashboard/compras/facturas" },
     ],
   },
-  { titulo: "Vendedor IA", emoji: "🛒", href: "/dashboard/vendedor", items: [] },
+  {
+    titulo: "Vendedor IA",
+    emoji: "🛒",
+    items: [
+      { nombre: "Probar el Vendedor", emoji: "🛒", href: "/dashboard/vendedor" },
+      { nombre: "Conversaciones", emoji: "💬", href: "/dashboard/conversaciones" },
+    ],
+  },
   { titulo: "VIDA · Agente IA", emoji: "🤖", href: "/dashboard/vida", items: [] },
 ];
 
