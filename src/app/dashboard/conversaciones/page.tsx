@@ -72,10 +72,11 @@ function etiquetaContacto(c: ConversacionResumen): string {
   return c.telefono;
 }
 
-/** Miniatura de una foto enviada. Las URLs guardadas apuntan al servidor que
- *  respondió en su momento: si la foto ya no carga (otro entorno, marca vieja),
- *  el recuadro vacío se cambia por un enlace legible en vez de quedar mudo. */
-function FotoMensaje({ url }: { url: string }) {
+/** Miniatura de una foto enviada: el clic la abre AMPLIADA en el visor de la
+ *  página. Las URLs guardadas apuntan al servidor que respondió en su momento:
+ *  si la foto ya no carga (otro entorno, marca vieja), el recuadro vacío se
+ *  cambia por un enlace legible — ahí el visor no tendría nada que mostrar. */
+function FotoMensaje({ url, onAmpliar }: { url: string; onAmpliar: () => void }) {
   const [rota, setRota] = useState(false);
   if (rota) {
     return (
@@ -90,16 +91,21 @@ function FotoMensaje({ url }: { url: string }) {
     );
   }
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" className="block">
+    <button
+      type="button"
+      onClick={onAmpliar}
+      aria-label="Ver la foto en grande"
+      className="block cursor-zoom-in rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+    >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={url}
         alt="Foto enviada por el vendedor"
         loading="lazy"
         onError={() => setRota(true)}
-        className="h-24 w-24 object-cover rounded-lg border border-white/10"
+        className="h-24 w-24 object-cover rounded-lg border border-white/10 transition-transform duration-150 hover:scale-[1.03]"
       />
-    </a>
+    </button>
   );
 }
 
@@ -133,6 +139,8 @@ export default function ConversacionesPage() {
 
   const [abierta, setAbierta] = useState<number | null>(null);
   const [detalle, setDetalle] = useState<DetalleConversacion | null>(null);
+  /** Índice (sobre todas las fotos de la conversación) de la foto ampliada. */
+  const [fotoIdx, setFotoIdx] = useState<number | null>(null);
   const [cargandoDetalle, setCargandoDetalle] = useState(false);
   const [errorDetalle, setErrorDetalle] = useState("");
 
@@ -174,6 +182,7 @@ export default function ConversacionesPage() {
 
   // Detalle de la conversación abierta.
   useEffect(() => {
+    setFotoIdx(null); // el visor pertenece a la conversación que se estaba viendo
     if (abierta == null) {
       setDetalle(null);
       return;
@@ -208,15 +217,41 @@ export default function ConversacionesPage() {
     };
   }, [abierta]);
 
-  // Esc cierra el detalle: es la salida esperada de cualquier overlay.
+  // Todas las fotos de la conversación en plano, y el offset de cada mensaje
+  // dentro de esa lista: así el visor puede pasar de una foto a la siguiente
+  // aunque vengan de mensajes distintos.
+  const fotosPlanas = detalle?.mensajes.flatMap((m) => m.fotos) ?? [];
+  const offsetsFotos: number[] = [];
+  {
+    let acumulado = 0;
+    for (const m of detalle?.mensajes ?? []) {
+      offsetsFotos.push(acumulado);
+      acumulado += m.fotos.length;
+    }
+  }
+
+  // Esc cierra lo de más arriba primero (visor, luego detalle), como cualquier
+  // pila de overlays; las flechas navegan el visor.
   useEffect(() => {
     if (abierta == null) return;
     const alTeclear = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setAbierta(null);
+      if (e.key === "Escape") {
+        if (fotoIdx != null) setFotoIdx(null);
+        else setAbierta(null);
+        return;
+      }
+      if (fotoIdx == null || fotosPlanas.length < 2) return;
+      if (e.key === "ArrowRight") {
+        setFotoIdx((i) => (i == null ? i : (i + 1) % fotosPlanas.length));
+      } else if (e.key === "ArrowLeft") {
+        setFotoIdx((i) =>
+          i == null ? i : (i - 1 + fotosPlanas.length) % fotosPlanas.length
+        );
+      }
     };
     window.addEventListener("keydown", alTeclear);
     return () => window.removeEventListener("keydown", alTeclear);
-  }, [abierta]);
+  }, [abierta, fotoIdx, fotosPlanas.length]);
 
   const totalPaginas = datos
     ? Math.max(1, Math.ceil(datos.total / datos.porPagina))
@@ -466,7 +501,7 @@ export default function ConversacionesPage() {
                   {errorDetalle}
                 </div>
               ) : (
-                detalle?.mensajes.map((m) => (
+                detalle?.mensajes.map((m, idxMensaje) => (
                   <div
                     key={m.id}
                     className={cn(
@@ -485,8 +520,14 @@ export default function ConversacionesPage() {
                       <p className="whitespace-pre-wrap break-words">{m.mensaje}</p>
                       {m.fotos.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-2">
-                          {m.fotos.map((url) => (
-                            <FotoMensaje key={url} url={url} />
+                          {m.fotos.map((url, i) => (
+                            <FotoMensaje
+                              key={`${m.id}-${i}`}
+                              url={url}
+                              onAmpliar={() =>
+                                setFotoIdx(offsetsFotos[idxMensaje] + i)
+                              }
+                            />
                           ))}
                         </div>
                       )}
@@ -503,6 +544,75 @@ export default function ConversacionesPage() {
                 ))
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Visor: la foto en grande, por encima del detalle */}
+      {fotoIdx != null && fotosPlanas[fotoIdx] && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Foto ampliada"
+          className="fixed inset-0 z-[90] flex flex-col items-center justify-center bg-black/90 backdrop-blur-sm p-4"
+          onClick={() => setFotoIdx(null)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={fotosPlanas[fotoIdx]}
+            alt="Foto enviada por el vendedor, ampliada"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[82vh] max-w-[94vw] object-contain rounded-xl border border-white/10 shadow-2xl shadow-black/60"
+          />
+
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="mt-3 flex items-center gap-2"
+          >
+            {fotosPlanas.length > 1 && (
+              <button
+                onClick={() =>
+                  setFotoIdx((i) =>
+                    i == null ? i : (i - 1 + fotosPlanas.length) % fotosPlanas.length
+                  )
+                }
+                aria-label="Foto anterior"
+                className="p-2.5 rounded-xl bg-white/[0.08] border border-white/10 text-slate-200 hover:text-amber-300 transition-all"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+            )}
+            {fotosPlanas.length > 1 && (
+              <span className="px-2 text-[11px] font-black text-slate-400 tabular-nums">
+                {entero(fotoIdx + 1)} / {entero(fotosPlanas.length)}
+              </span>
+            )}
+            {fotosPlanas.length > 1 && (
+              <button
+                onClick={() =>
+                  setFotoIdx((i) => (i == null ? i : (i + 1) % fotosPlanas.length))
+                }
+                aria-label="Foto siguiente"
+                className="p-2.5 rounded-xl bg-white/[0.08] border border-white/10 text-slate-200 hover:text-amber-300 transition-all"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            )}
+            <a
+              href={fotosPlanas[fotoIdx]}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3.5 py-2.5 rounded-xl bg-white/[0.08] border border-white/10 text-[11px] font-black uppercase tracking-widest text-slate-200 hover:text-amber-300 transition-all"
+            >
+              Abrir original
+            </a>
+            <button
+              onClick={() => setFotoIdx(null)}
+              aria-label="Cerrar la foto"
+              className="p-2.5 rounded-xl bg-white/[0.08] border border-white/10 text-slate-200 hover:text-white transition-all"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
       )}
