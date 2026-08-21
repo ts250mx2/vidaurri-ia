@@ -3,6 +3,7 @@ import { claveFaltante } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
 import { urlFotoAldo, fotoAldoExiste } from "@/lib/aldo";
 import { guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
+import { clientePorTelefono } from "@/lib/cliente-telefono";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
 // la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
@@ -153,10 +154,28 @@ export async function POST(request: Request) {
     // fotos públicas de las piezas usadas encontradas (código → URL).
     const codigosConsultados = new Set<string>();
     const fotosUsadas = new Map<string, string>();
+
+    // ¿Quién escribe? Si el número está en el padrón se le cotiza con SU
+    // descuento; si no, a precio de mostrador. El chat de la página entra con
+    // una sesión sintética 77…, donde no hay teléfono real que buscar. Un fallo
+    // aquí no puede dejar al cliente sin respuesta: se cae a mostrador.
+    const cliente = ES_SESION_WEB.test(telefono)
+      ? null
+      : await clientePorTelefono(telefono).catch((error) => {
+          console.error("No se pudo identificar al cliente por su teléfono:", error);
+          return null;
+        });
+    if (cliente) {
+      console.log(
+        `[cliente-whatsapp] ${telefono} = ${cliente.nombre} (descuento ${cliente.descuento}%)`
+      );
+    }
+
     const respuesta = await correrVendedor({
       pregunta: mensaje,
       historial: historialDe(telefono),
       modelo,
+      descuentoCliente: cliente?.descuento ?? null,
       alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),
       alFotosUsadas: (fotos) =>
         fotos.forEach((f) => fotosUsadas.set(f.codigo.toUpperCase(), f.url)),

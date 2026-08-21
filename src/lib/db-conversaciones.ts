@@ -8,11 +8,19 @@ import mysql from "mysql2/promise";
 // Modelo (separado por día, como pidió el negocio):
 //   conversaciones          — header: 1 fila por teléfono + fecha + canal
 //   conversacion_mensajes   — detalle: cada mensaje (cliente o vendedor)
+//   clientes_descuento      — padrón teléfono → cliente y % de descuento
+//                             (CRUD en db-clientes-descuento.ts)
 
 const globalConPool = globalThis as unknown as {
   __poolConversaciones?: mysql.Pool;
   __esquemaConversaciones?: Promise<void>;
+  __esquemaConversacionesVersion?: number;
 };
+
+// Súbela al agregar o cambiar tablas en TABLAS. En desarrollo el módulo se
+// recarga pero globalThis persiste: sin este número, un esquema nuevo no se
+// aplicaría hasta reiniciar el servidor.
+const VERSION_ESQUEMA = 2;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -43,7 +51,7 @@ function crearPool(): mysql.Pool {
   });
 }
 
-function poolConversaciones(): mysql.Pool {
+export function poolConversaciones(): mysql.Pool {
   if (!globalConPool.__poolConversaciones) {
     globalConPool.__poolConversaciones = crearPool();
   }
@@ -77,10 +85,28 @@ const TABLAS = [
      CONSTRAINT fk_msj_conversacion FOREIGN KEY (id_conversacion)
        REFERENCES conversaciones (id) ON DELETE CASCADE
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS clientes_descuento (
+     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+     telefono VARCHAR(20) NOT NULL COMMENT 'Solo dígitos; nacional de 10 si es de México',
+     cliente VARCHAR(150) NOT NULL,
+     descuento DECIMAL(5,2) NOT NULL COMMENT 'Porcentaje 0-100',
+     id_cliente_bdav BIGINT UNSIGNED NULL COMMENT 'clientes.id en bdav si se prellenó del catálogo',
+     creado_por VARCHAR(50) NULL,
+     creado_en DATETIME NOT NULL COMMENT 'Fecha de alta (America/Monterrey)',
+     actualizado_por VARCHAR(50) NULL,
+     actualizado_en DATETIME NOT NULL,
+     PRIMARY KEY (id),
+     UNIQUE KEY ux_telefono (telefono),
+     KEY idx_cliente (cliente)
+   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
-function asegurarEsquema(): Promise<void> {
-  if (!globalConPool.__esquemaConversaciones) {
+export function asegurarEsquema(): Promise<void> {
+  if (
+    !globalConPool.__esquemaConversaciones ||
+    globalConPool.__esquemaConversacionesVersion !== VERSION_ESQUEMA
+  ) {
+    globalConPool.__esquemaConversacionesVersion = VERSION_ESQUEMA;
     globalConPool.__esquemaConversaciones = (async () => {
       for (const sql of TABLAS) {
         await poolConversaciones().query(sql);
@@ -96,7 +122,7 @@ function asegurarEsquema(): Promise<void> {
 
 /** Fecha 'AAAA-MM-DD' y hora 'AAAA-MM-DD HH:MM:SS' en horario de Monterrey,
  *  sin depender de la zona horaria del servidor (suele ser UTC). */
-function ahoraMonterrey(): { fecha: string; momento: string } {
+export function ahoraMonterrey(): { fecha: string; momento: string } {
   const ahora = new Date();
   const fecha = ahora.toLocaleDateString("sv-SE", { timeZone: ZONA_HORARIA });
   const momento = ahora.toLocaleString("sv-SE", { timeZone: ZONA_HORARIA });

@@ -54,6 +54,7 @@ const secciones: MenuSeccion[] = [
     items: [
       { nombre: "Probar el Vendedor", emoji: "🛒", href: "/dashboard/vendedor" },
       { nombre: "Conversaciones", emoji: "💬", href: "/dashboard/conversaciones" },
+      { nombre: "Clientes con Descuento", emoji: "🏷️", href: "/dashboard/clientes-descuento" },
     ],
   },
   { titulo: "VIDA · Agente IA", emoji: "🤖", href: "/dashboard/vida", items: [] },

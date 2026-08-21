@@ -296,7 +296,10 @@ async function resumenUsadoPorLlave(
 const CAMPOS_ARTICULO = ["a.descripcion", "a.codigo", "p.parte", "l.linea"];
 const CAMPOS_USADA = ["p.descripcion", "p.codigo", "pa.parte", "ma.marca", "mo.modelo"];
 
-async function buscarProductos(input: Record<string, unknown>): Promise<string> {
+async function buscarProductos(
+  input: Record<string, unknown>,
+  descuentoCliente: number | null
+): Promise<string> {
   const descripcion = String(input.descripcion ?? "").trim();
   const marca = String(input.marca ?? "").trim();
   const tipoParte = String(input.tipoParte ?? "").trim();
@@ -341,12 +344,23 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
   // Se cotiza el precio de MOSTRADOR mas IVA (precio_vta * 1.16), no el de
   // lista: precio_vta ya trae el 33% de descuento que llevan todos los
   // articulos, y es lo que el cliente realmente paga en el mostrador.
+  //
+  // Si el telefono corresponde a un cliente del padron con OTRO descuento, se
+  // recalcula desde el precio de lista con el suyo. Cuando su descuento es el
+  // mismo del articulo se usa precio_vta tal cual: es ese mismo calculo pero ya
+  // redondeado como lo hace el punto de venta, y asi el chat no le canta 50
+  // centavos distintos de lo que muestra la pagina.
+  const precioBase =
+    descuentoCliente === null
+      ? "IFNULL(a.precio_vta, 0)"
+      : `CASE WHEN a.descuento = ${Number(descuentoCliente)} THEN IFNULL(a.precio_vta, 0)
+              ELSE ROUND(IFNULL(a.precio_lista, 0) * ${(100 - Number(descuentoCliente)) / 100}, 2) END`;
   const filas = await consultaBdav<FilaProducto>(
     `SELECT a.codigo, a.descripcion,
             IFNULL(l.linea, '') AS marca, IFNULL(p.parte, '') AS tipoParte,
             a.aini, a.afin,
-            IFNULL(a.precio_vta, 0) AS precioSinIva,
-            ROUND(IFNULL(a.precio_vta, 0) * 1.16, 2) AS precioConIva,
+            ${precioBase} AS precioSinIva,
+            ROUND((${precioBase}) * 1.16, 2) AS precioConIva,
             IFNULL(a.existencia, 0) AS existencia,
             a.localizacion
        FROM articulos a
@@ -529,9 +543,12 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
   return JSON.stringify({ total: resultados.length, resultados });
 }
 
-export async function ejecutarHerramienta(uso: UsoHerramienta): Promise<string> {
+export async function ejecutarHerramienta(
+  uso: UsoHerramienta,
+  descuentoCliente: number | null = null
+): Promise<string> {
   try {
-    if (uso.name === "buscar_productos") return await buscarProductos(uso.input);
+    if (uso.name === "buscar_productos") return await buscarProductos(uso.input, descuentoCliente);
     if (uso.name === "buscar_piezas_usadas") return await buscarPiezasUsadas(uso.input);
     if (uso.name === "listar_marcas") {
       const marcas = await consultaBdav<{ marca: string }>(
@@ -563,6 +580,9 @@ export interface OpcionesVendedor {
   modelo: string;
   /** Canal de la conversación: 'web' muestra fotos, 'whatsapp' no. */
   canal?: CanalVendedor;
+  /** Descuento del cliente identificado por su teléfono, en por ciento. Si es
+   *  null (número desconocido o canal sin teléfono) se cotiza de mostrador. */
+  descuentoCliente?: number | null;
   /** Recibe los códigos que devolvió cada búsqueda de productos (para fotos). */
   alCodigos?: (codigos: string[]) => void;
   /** Recibe código → URL pública de la foto de cada pieza usada encontrada
@@ -648,7 +668,7 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     const resultados: Anthropic.ToolResultBlockParam[] = [];
     for (const uso of resultado.usos) {
       op.alEstado?.(ETIQUETA_HERRAMIENTA[uso.name] ?? "Consultando el catálogo");
-      const contenido = await ejecutarHerramienta(uso);
+      const contenido = await ejecutarHerramienta(uso, op.descuentoCliente ?? null);
       registrarResultado(contenido, catalogo);
       // Reporta los códigos que devolvió una búsqueda (para que el canal
       // WhatsApp pueda adjuntar las fotos de los que el agente mencione).

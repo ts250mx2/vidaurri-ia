@@ -24,6 +24,15 @@ export function conIva(base: number | string | null | undefined): number {
   return n * (1 + IVA);
 }
 
+const fmtPorcentaje = new Intl.NumberFormat("es-MX", { maximumFractionDigits: 2 });
+
+/** 38 → '38%', 33.5 → '33.5%' (hasta dos decimales, sin ceros de relleno). */
+export function porcentaje(valor: number | string | null | undefined): string {
+  const n = typeof valor === "string" ? parseFloat(valor) : valor;
+  if (n == null || Number.isNaN(n)) return "0%";
+  return `${fmtPorcentaje.format(n)}%`;
+}
+
 export function entero(valor: number | string | null | undefined): string {
   const n = typeof valor === "string" ? parseFloat(valor) : valor;
   if (n == null || Number.isNaN(n)) return "0";
