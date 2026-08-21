@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { claveFaltante } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
 import { urlFotoAldo, fotoAldoExiste } from "@/lib/aldo";
-import { guardarIntercambio } from "@/lib/db-conversaciones";
+import { guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
 // la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
@@ -62,14 +62,24 @@ function baseUrlPublica(request: Request): string {
 }
 
 /** Convierte la URL original de la foto en una del proxy, con ruta única. */
+// El proxy es lo que pone la marca de agua: una URL que no pase por él sale del
+// origen tal cual, sin sello. Se sigue mandando —mejor foto sin marca que pieza
+// sin foto—, pero queda registrado: si esto se repite, el catálogo entero se
+// está publicando sin marca y nadie se entera.
 function urlFotoWhatsapp(urlOriginal: string, base: string, marca: string): string {
-  if (!base) return urlOriginal; // sin host conocido: se manda la original
-  for (const { prefijo, origen } of BASES_FOTO) {
-    if (urlOriginal.startsWith(prefijo)) {
-      const archivo = decodeURIComponent(urlOriginal.slice(prefijo.length).split("?")[0]);
-      return `${base}/api/whatsapp/foto/${marca}/${origen}/${encodeURIComponent(archivo)}`;
+  if (base) {
+    for (const { prefijo, origen } of BASES_FOTO) {
+      if (urlOriginal.startsWith(prefijo)) {
+        const archivo = decodeURIComponent(urlOriginal.slice(prefijo.length).split("?")[0]);
+        return `${base}/api/whatsapp/foto/${marca}/${origen}/${encodeURIComponent(archivo)}`;
+      }
     }
   }
+  console.warn(
+    `[foto-whatsapp] se manda SIN marca de agua (no pasa por el proxy): ${
+      base ? "origen desconocido" : "falta PUBLIC_BASE_URL y no hay host en la petición"
+    } -> ${urlOriginal}`
+  );
   return urlOriginal;
 }
 
@@ -189,7 +199,9 @@ export async function POST(request: Request) {
     // conversaciones falla, la respuesta al cliente sale de todas formas).
     void guardarIntercambio({
       telefono,
-      canal: "whatsapp",
+      // El chat de la página entra por este mismo webservice con una sesión
+      // sintética 77…: en la bitácora debe quedar como canal web, no WhatsApp.
+      canal: ES_SESION_WEB.test(telefono) ? "web" : "whatsapp",
       mensajeCliente: mensaje,
       respuestaVendedor: texto,
       fotos: fotos.map((f) => f.url),
