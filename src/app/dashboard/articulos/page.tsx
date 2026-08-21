@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { observacionOrigen } from "@/lib/origen-pieza";
 import { moneda, entero, fechaCorta, hoyISO, conIva } from "@/lib/formato";
 import { FotoArticulo } from "@/components/dashboard/FotoArticulo";
 
@@ -846,6 +847,9 @@ export default function ArticulosPage() {
                     >
                       Bodega Usado
                     </th>
+                    <th rowSpan={2} className={cn(lbl, "px-4 py-2 text-left border-l border-white/10")}>
+                      Observación
+                    </th>
                   </tr>
                   {/* Fila 2: subcolumnas de cada grupo */}
                   <tr>
@@ -936,6 +940,19 @@ export default function ArticulosPage() {
                             <span className="text-slate-600">—</span>
                           )
                         )}
+                      </td>
+
+                      {/* Observación de origen: depende de la existencia de Aldo,
+                          que llega por código y de forma progresiva. */}
+                      <td className="px-4 py-2.5 text-[12px] font-bold text-left border-l border-white/10">
+                        {celdaAldo(a.codigo, (al) => {
+                          const obs = observacionOrigen(a.existencia, al.existencia);
+                          return obs ? (
+                            <span className="text-amber-300">{obs}</span>
+                          ) : (
+                            <span className="text-slate-600">—</span>
+                          );
+                        })}
                       </td>
                     </tr>
                   ))}

@@ -4,6 +4,7 @@ import { consultaUsadas } from "@/lib/db-usadas";
 import { precioAldo } from "@/lib/aldo";
 import { correrTurnoAgente, type UsoHerramienta } from "@/lib/agente-modelo";
 import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
+import { observacionOrigen } from "@/lib/origen-pieza";
 import {
   catalogoVacio,
   cifrasInventadas,
@@ -67,6 +68,7 @@ Consultas el catálogo real con tus herramientas:
 LÓGICA DE ENTREGA Y PRECIOS (obligatoria, síguela SIEMPRE):
 - *Entrega inmediata*: cuando entregaInmediata > 0 (existencia en tienda). Precio: precioConIva.
 - *Sobre pedido*: cuando NO hay entrega inmediata pero sobrePedido > 0 (o "Mas de N"). Di "la tengo sobre pedido" (SIN prometer días de entrega ni plazos). El precio es EL MISMO precioConIva de la pieza nueva; NUNCA menciones al proveedor ni des otro precio por esta vía.
+- *Observación de origen*: si el resultado trae observacion (por ejemplo "Taiwán"), DILA SIEMPRE junto a esa pieza, en la misma línea o la siguiente. Es de dónde viene la refacción y el cliente tiene derecho a saberlo antes de comprar; no la escondas ni la suavices. Si observacion viene null, no comentes nada del origen.
 - *Usado*: cuando usado trae piezas > 0 hay equivalentes usados en nuestra Bodega Usado. Ofrécelo SOLO si usado.desdeConIva es MENOR que el precioConIva de la nueva (el usado se ofrece como alternativa económica: si sale igual o más caro, NO lo menciones, recomienda la nueva y ya). Cuando sí lo ofrezcas, di "también la tengo usada desde $X" con usado.desdeConIva y ACLARA siempre que es pieza USADA. El precio del usado es el del usado (con IVA), no el de la nueva. Detalles con buscar_piezas_usadas.
 - Si una opción NO existe (sobrePedido en 0 o null, usado null o con 0 piezas), simplemente NO la menciones; no digas "no hay usado" ni "no hay con proveedor".
 - Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla.
@@ -394,6 +396,10 @@ async function buscarProductos(input: Record<string, unknown>): Promise<string> 
       sobrePedido: disponibilidadAldo[i],
       // Piezas usadas equivalentes en la Bodega Usado (null = sin dato).
       usado: (llave && usadoPorLlave.get(llave)) || null,
+      // "Taiwán" cuando no hay existencia propia y sí con el proveedor: esa
+      // pieza es de importación y el cliente tiene que saberlo (null = nada
+      // que observar).
+      observacion: observacionOrigen(f.existencia, disponibilidadAldo[i]),
       localizacion: f.localizacion,
     };
   });
