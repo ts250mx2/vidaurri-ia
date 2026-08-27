@@ -157,7 +157,7 @@ function BadgeCanal({ canal }: { canal: string }) {
 export default function ConversacionesPage() {
   const [fechaInicio, setFechaInicio] = useState(diasAtras(30));
   const [fechaFin, setFechaFin] = useState(hoyISO());
-  const [telefono, setTelefono] = useState("");
+  const [busqueda, setBusqueda] = useState("");
   const [canal, setCanal] = useState<"" | "whatsapp" | "web">("");
   const [pagina, setPagina] = useState(1);
 
@@ -181,7 +181,7 @@ export default function ConversacionesPage() {
         hasta: fechaFin,
         pagina: String(pagina),
       });
-      if (telefono.trim()) parametros.set("telefono", telefono.trim());
+      if (busqueda.trim()) parametros.set("busqueda", busqueda.trim());
       if (canal) parametros.set("canal", canal);
 
       const res = await fetch(`/api/conversaciones?${parametros}`);
@@ -202,7 +202,7 @@ export default function ConversacionesPage() {
     } finally {
       setCargando(false);
     }
-  }, [fechaInicio, fechaFin, telefono, canal, pagina]);
+  }, [fechaInicio, fechaFin, busqueda, canal, pagina]);
 
   useEffect(() => {
     void cargar();
@@ -352,18 +352,17 @@ export default function ConversacionesPage() {
             />
           </div>
           <div>
-            <label className={lbl}>Teléfono</label>
+            <label className={lbl}>Teléfono o cliente</label>
             <div className="relative mt-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-600" />
               <input
                 type="search"
-                inputMode="numeric"
-                value={telefono}
+                value={busqueda}
                 onChange={(e) => {
-                  setTelefono(e.target.value);
+                  setBusqueda(e.target.value);
                   setPagina(1);
                 }}
-                placeholder="Buscar por número…"
+                placeholder="Número o nombre del cliente…"
                 className={cn(inputCls, "pl-9")}
               />
             </div>
@@ -376,11 +375,17 @@ export default function ConversacionesPage() {
                 setCanal(e.target.value as "" | "whatsapp" | "web");
                 setPagina(1);
               }}
-              className={cn(inputCls, "mt-1 appearance-none")}
+              className={cn(inputCls, "mt-1 appearance-none [color-scheme:dark]")}
             >
-              <option value="">Todos</option>
-              <option value="whatsapp">WhatsApp</option>
-              <option value="web">Chat web</option>
+              <option value="" className="bg-[#0d1320] text-slate-100">
+                Todos
+              </option>
+              <option value="whatsapp" className="bg-[#0d1320] text-slate-100">
+                WhatsApp
+              </option>
+              <option value="web" className="bg-[#0d1320] text-slate-100">
+                Chat web
+              </option>
             </select>
           </div>
         </div>

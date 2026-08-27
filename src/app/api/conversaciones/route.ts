@@ -29,6 +29,8 @@ export async function GET(request: Request) {
   // El teléfono de búsqueda se reduce a dígitos aquí Y en la capa de datos:
   // la validación de frontera no sustituye a la del que arma el SQL.
   const telefono = (searchParams.get("telefono") ?? "").replace(/\D/g, "").slice(0, 20);
+  // Texto libre: teléfono o nombre del cliente; la capa de datos decide cuál.
+  const busqueda = (searchParams.get("busqueda") ?? "").trim().slice(0, 80);
 
   const pagina = Math.min(
     PAGINA_MAX,
@@ -40,6 +42,7 @@ export async function GET(request: Request) {
       desde,
       hasta,
       telefono: telefono || undefined,
+      busqueda: busqueda || undefined,
       canal,
       pagina,
       porPagina: POR_PAGINA,

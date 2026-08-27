@@ -268,12 +268,19 @@ const CANAL_REAL = `CASE
   ELSE c.canal
 END`;
 
+/** Los comodines de LIKE que teclee el usuario se buscan literales. */
+function escaparLike(texto: string): string {
+  return texto.replace(/[\\%_]/g, "\\$&");
+}
+
 export interface FiltrosConversaciones {
   /** Rango de fechas YYYY-MM-DD (inclusive). */
   desde: string;
   hasta: string;
   /** Búsqueda parcial por teléfono (solo dígitos). */
   telefono?: string;
+  /** Teléfono (si son dígitos) o nombre del cliente en el padrón. */
+  busqueda?: string;
   canal?: "whatsapp" | "web";
   pagina: number;
   porPagina: number;
@@ -315,6 +322,21 @@ function armarCondiciones(filtros: FiltrosConversaciones): CondicionesArmadas {
     condiciones.push("c.telefono LIKE ?");
     parametros.push(`%${filtros.telefono.replace(/\D/g, "")}%`);
   }
+  if (filtros.busqueda) {
+    // Un número (con o sin separadores) busca en el teléfono; cualquier otro
+    // texto busca en el nombre del padrón de clientes con descuento. Así un
+    // dígito dentro de un nombre no empata medio padrón, y un teléfono a
+    // medias no se compara contra nombres.
+    const texto = filtros.busqueda.trim();
+    const digitos = texto.replace(/\D/g, "");
+    if (/^[\d\s\-+().]+$/.test(texto) && digitos) {
+      condiciones.push("c.telefono LIKE ?");
+      parametros.push(`%${digitos}%`);
+    } else {
+      condiciones.push("cd.cliente LIKE ?");
+      parametros.push(`%${escaparLike(texto)}%`);
+    }
+  }
   if (filtros.canal) {
     condiciones.push(`${CANAL_REAL} = ?`);
     parametros.push(filtros.canal);
@@ -349,6 +371,7 @@ export async function listarConversaciones(
             COALESCE(SUM(c.mensajes), 0) AS totalMensajes,
             COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'web' THEN 1 ELSE 0 END), 0) AS web
        FROM conversaciones c
+       ${JOIN_PADRON}
       WHERE ${clausula}`,
     parametros
   );
