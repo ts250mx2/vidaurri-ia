@@ -250,6 +250,19 @@ const PATRON_SESION_WEB = "^77[0-9]{10,17}$";
 /** Gemelo en JS del patrón de arriba, para clasificar al guardar. */
 export const ES_SESION_WEB = /^77\d{10,17}$/;
 
+// Celular nacional de 10 dígitos a partir de cómo lo guarda la bitácora, para
+// cruzarlo con el padrón de clientes con descuento (que guarda 10 dígitos). Las
+// pasarelas de WhatsApp mandan 5218112345678 o +5218112345678, a veces sin el
+// 1; las sesiones del chat web (77…, 17-19 dígitos) no casan con nada, que es
+// lo correcto. Es la misma regla que aplica normalizarTelefono en JS para las
+// formas que llegan por WhatsApp.
+const TELEFONO_NACIONAL = `CASE
+  WHEN c.telefono REGEXP '^[+]?521[0-9]{10}$' THEN RIGHT(c.telefono, 10)
+  WHEN c.telefono REGEXP '^[+]?52[0-9]{10}$' THEN RIGHT(c.telefono, 10)
+  WHEN c.telefono REGEXP '^[0-9]{10}$' THEN c.telefono
+  ELSE NULL END`;
+const JOIN_PADRON = `LEFT JOIN clientes_descuento cd ON cd.telefono = ${TELEFONO_NACIONAL}`;
+
 const CANAL_REAL = `CASE
   WHEN c.canal = 'web' OR c.telefono REGEXP '${PATRON_SESION_WEB}' THEN 'web'
   ELSE c.canal
@@ -269,6 +282,9 @@ export interface FiltrosConversaciones {
 export interface ConversacionResumen {
   id: number;
   telefono: string;
+  /** Nombre del cliente en el padrón de clientes con descuento cuando su
+   *  celular está dado de alta; null = teléfono sin dar de alta (o chat web). */
+  cliente: string | null;
   fecha: string;
   canal: string;
   mensajes: number;
@@ -315,12 +331,13 @@ export async function listarConversaciones(
   const { clausula, parametros } = armarCondiciones(filtros);
 
   const [filas] = await pool.query<mysql.RowDataPacket[]>(
-    `SELECT c.id, c.telefono, c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
+    `SELECT c.id, c.telefono, cd.cliente AS cliente, c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
             c.iniciada_en AS iniciadaEn, c.ultima_en AS ultimaEn,
             (SELECT m.mensaje FROM conversacion_mensajes m
               WHERE m.id_conversacion = c.id AND m.rol = 'cliente'
               ORDER BY m.id LIMIT 1) AS primerMensaje
        FROM conversaciones c
+       ${JOIN_PADRON}
       WHERE ${clausula}
       ORDER BY c.ultima_en DESC, c.id DESC
       LIMIT ? OFFSET ?`,
@@ -365,10 +382,11 @@ export async function obtenerConversacion(id: number): Promise<DetalleConversaci
   const pool = poolConversaciones();
 
   const [cabeceras] = await pool.query<mysql.RowDataPacket[]>(
-    `SELECT c.id, c.telefono, c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
+    `SELECT c.id, c.telefono, cd.cliente AS cliente, c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
             c.iniciada_en AS iniciadaEn, c.ultima_en AS ultimaEn,
             NULL AS primerMensaje
        FROM conversaciones c
+       ${JOIN_PADRON}
       WHERE c.id = ?`,
     [id]
   );

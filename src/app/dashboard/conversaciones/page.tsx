@@ -22,6 +22,8 @@ import { entero, fechaCorta, hoyISO } from "@/lib/formato";
 interface ConversacionResumen {
   id: number;
   telefono: string;
+  /** Nombre en el padrón de clientes con descuento; null = sin dar de alta. */
+  cliente: string | null;
   fecha: string;
   canal: string;
   mensajes: number;
@@ -67,9 +69,35 @@ const hora = (momento: string) => momento.slice(11, 16);
 /** El chat web usa una sesión sintética 77…, no un teléfono marcable. */
 const esVisitaWeb = (c: ConversacionResumen) => c.canal === "web";
 
-function etiquetaContacto(c: ConversacionResumen): string {
-  if (esVisitaWeb(c)) return `Visitante web #${String(c.id).padStart(4, "0")}`;
-  return c.telefono;
+/**
+ * Quién escribe. Si el celular está dado de alta en Clientes con descuento se
+ * muestra el nombre y el teléfono entre paréntesis; si no, el teléfono y la
+ * aclaración de que no está dado de alta. El chat web no tiene teléfono.
+ */
+function Contacto({ c }: { c: ConversacionResumen }) {
+  if (esVisitaWeb(c)) {
+    return (
+      <span className="font-mono text-sm font-bold text-slate-100 tabular-nums">
+        Visitante web #{String(c.id).padStart(4, "0")}
+      </span>
+    );
+  }
+  if (c.cliente) {
+    return (
+      <span className="min-w-0">
+        <span className="text-sm font-black text-slate-100">{c.cliente}</span>{" "}
+        <span className="font-mono text-[12px] font-bold text-slate-400 tabular-nums">
+          ({c.telefono})
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="min-w-0">
+      <span className="font-mono text-sm font-bold text-slate-100 tabular-nums">{c.telefono}</span>{" "}
+      <span className="text-[11px] font-bold text-amber-300/80">(Cliente sin dar de alta)</span>
+    </span>
+  );
 }
 
 /** Miniatura de una foto enviada: el clic la abre AMPLIADA en el visor de la
@@ -402,9 +430,7 @@ export default function ConversacionesPage() {
                   className="w-full text-left px-4 py-3.5 hover:bg-white/[0.03] transition-colors"
                 >
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="font-mono text-sm font-bold text-slate-100 tabular-nums">
-                      {etiquetaContacto(c)}
-                    </span>
+                    <Contacto c={c} />
                     <BadgeCanal canal={c.canal} />
                     <span className="text-[11px] font-bold text-slate-500 tabular-nums">
                       {fechaCorta(c.fecha)} · {hora(c.iniciadaEn)}–{hora(c.ultimaEn)}
@@ -466,8 +492,8 @@ export default function ConversacionesPage() {
               {detalle ? (
                 <>
                   <div className="min-w-0">
-                    <p className="font-mono text-sm font-bold text-slate-100 truncate tabular-nums">
-                      {etiquetaContacto(detalle.conversacion)}
+                    <p className="truncate">
+                      <Contacto c={detalle.conversacion} />
                     </p>
                     <p className="text-[11px] font-bold text-slate-500 tabular-nums">
                       {fechaCorta(detalle.conversacion.fecha)} ·{" "}
