@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { entero, fechaCorta, porcentaje } from "@/lib/formato";
-import type { ClienteDescuento } from "@/lib/clientes-descuento";
+import type { ClienteDescuento, FiltroCelular } from "@/lib/clientes-descuento";
 import {
   FormularioClienteDescuento,
   type ModoFormulario,
@@ -90,6 +90,7 @@ export default function ClientesDescuentoPage() {
   const router = useRouter();
   const [busqueda, setBusqueda] = useState("");
   const [busquedaAplicada, setBusquedaAplicada] = useState("");
+  const [celular, setCelular] = useState<FiltroCelular | "">("");
   const [pagina, setPagina] = useState(1);
   /** Se incrementa para volver a consultar con los mismos filtros. */
   const [version, setVersion] = useState(0);
@@ -106,7 +107,7 @@ export default function ClientesDescuentoPage() {
   const [errorImportacion, setErrorImportacion] = useState("");
   const archivoRef = useRef<HTMLInputElement>(null);
 
-  const clave = `${version}|${pagina}|${busquedaAplicada}`;
+  const clave = `${version}|${pagina}|${busquedaAplicada}|${celular}`;
 
   // La búsqueda se aplica cuando el usuario deja de teclear.
   useEffect(() => {
@@ -129,6 +130,7 @@ export default function ClientesDescuentoPage() {
     let cancelado = false;
     const parametros = new URLSearchParams({ pagina: String(pagina) });
     if (busquedaAplicada) parametros.set("busqueda", busquedaAplicada);
+    if (celular) parametros.set("celular", celular);
 
     (async () => {
       try {
@@ -165,7 +167,7 @@ export default function ClientesDescuentoPage() {
     return () => {
       cancelado = true;
     };
-  }, [clave, pagina, busquedaAplicada, router]);
+  }, [clave, pagina, busquedaAplicada, celular, router]);
 
   const cargando = respuesta?.clave !== clave;
   // Mientras llega la consulta nueva se sigue mostrando la anterior.
@@ -240,6 +242,44 @@ export default function ClientesDescuentoPage() {
       setImportando(false);
       // Permite volver a elegir el mismo archivo.
       if (archivoRef.current) archivoRef.current.value = "";
+    }
+  };
+
+  /** El check de la lista: se refleja al instante y se revierte si el servidor no lo guardó. */
+  const cambiarPermitirPedido = async (registro: ClienteDescuento, permitir: boolean) => {
+    const aplicar = (valor: boolean) =>
+      setRespuesta((actual) =>
+        actual?.datos
+          ? {
+              ...actual,
+              datos: {
+                ...actual.datos,
+                registros: actual.datos.registros.map((r) =>
+                  r.id === registro.id ? { ...r, permitirPedido: valor } : r
+                ),
+              },
+            }
+          : actual
+      );
+    aplicar(permitir);
+    try {
+      const res = await fetch(`/api/clientes-descuento/${registro.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permitirPedido: permitir }),
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const cuerpo = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok || cuerpo?.error) throw new Error(cuerpo?.error ?? "No se pudo guardar");
+    } catch (err: unknown) {
+      aplicar(!permitir);
+      setAviso("");
+      setRespuesta((actual) =>
+        actual ? { ...actual, error: err instanceof Error ? err.message : "Error al guardar" } : actual
+      );
     }
   };
 
@@ -318,21 +358,49 @@ export default function ClientesDescuentoPage() {
         </div>
       </div>
 
-      {/* Búsqueda */}
+      {/* Búsqueda y filtro */}
       <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4">
-        <label htmlFor="cd-busqueda" className={lbl}>
-          Buscar
-        </label>
-        <div className="relative mt-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-600" />
-          <input
-            id="cd-busqueda"
-            type="search"
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Celular, nombre, RFC o email…"
-            className={cn(inputCls, "pl-9")}
-          />
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_200px] gap-3">
+          <div>
+            <label htmlFor="cd-busqueda" className={lbl}>
+              Buscar
+            </label>
+            <div className="relative mt-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-600" />
+              <input
+                id="cd-busqueda"
+                type="search"
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Celular, nombre, RFC o email…"
+                className={cn(inputCls, "pl-9")}
+              />
+            </div>
+          </div>
+          <div>
+            <label htmlFor="cd-celular" className={lbl}>
+              Celular
+            </label>
+            <select
+              id="cd-celular"
+              value={celular}
+              onChange={(e) => {
+                setCelular(e.target.value as FiltroCelular | "");
+                setPagina(1);
+              }}
+              className={cn(inputCls, "mt-1 appearance-none [color-scheme:dark]")}
+            >
+              <option value="" className="bg-[#0d1320] text-slate-100">
+                Todos
+              </option>
+              <option value="con" className="bg-[#0d1320] text-slate-100">
+                Con celular
+              </option>
+              <option value="sin" className="bg-[#0d1320] text-slate-100">
+                Sin celular
+              </option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -392,7 +460,7 @@ export default function ClientesDescuentoPage() {
           </div>
         ) : datos.registros.length === 0 ? (
           <div className="p-10 text-center text-slate-500 text-sm font-bold">
-            {busquedaAplicada
+            {busquedaAplicada || celular
               ? "Ningún cliente coincide con la búsqueda."
               : "Todavía no hay clientes con descuento. Da de alta el primero."}
           </div>
@@ -406,6 +474,7 @@ export default function ClientesDescuentoPage() {
                   <th className={cn(lbl, "px-4 py-2.5 text-left")}>Otros teléfonos</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-left")}>Email</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-right")}>Descuento</th>
+                  <th className={cn(lbl, "px-4 py-2.5 text-center")}>Permitir pedido</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-left")}>Fecha de alta</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-left")}>Capturó</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-right")}>
@@ -417,10 +486,16 @@ export default function ClientesDescuentoPage() {
                 {datos.registros.map((r) => (
                   <tr key={r.id} className="hover:bg-white/[0.02] transition-colors">
                     <td className="px-4 py-2.5 font-mono text-[13px] font-bold text-slate-100 tabular-nums whitespace-nowrap">
-                      {r.telefono ?? (
+                      {r.telefonos.length === 0 ? (
                         <span className="font-sans text-slate-600" title="Sin celular: WhatsApp no lo identifica">
                           —
                         </span>
+                      ) : (
+                        r.telefonos.map((t, i) => (
+                          <div key={t} className={cn(i > 0 && "text-[11px] text-slate-400")}>
+                            {t}
+                          </div>
+                        ))
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 max-w-[320px]">
@@ -458,6 +533,16 @@ export default function ClientesDescuentoPage() {
                       >
                         {porcentaje(r.descuento)}
                       </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      <input
+                        type="checkbox"
+                        checked={r.permitirPedido}
+                        onChange={(e) => void cambiarPermitirPedido(r, e.target.checked)}
+                        aria-label={`Permitir pedido a ${r.cliente}`}
+                        title="Permitir pedido"
+                        className="h-4 w-4 rounded accent-amber-400 cursor-pointer"
+                      />
                     </td>
                     <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 tabular-nums whitespace-nowrap">
                       {fechaCorta(r.creadoEn)} · {hora(r.creadoEn)}

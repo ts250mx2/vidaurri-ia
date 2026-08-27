@@ -9,14 +9,18 @@ export const CLIENTE_MAX = 150;
 export const RFC_MAX = 13;
 export const TELEFONO2_MAX = 60;
 export const EMAIL_MAX = 120;
+/** Celulares de WhatsApp por cliente: suficiente para dueño, taller y familia. */
+export const TELEFONOS_MAX = 10;
 
 /** Registro del padrón tal como se guarda en BDVidaurriConversaciones. */
 export interface ClienteDescuento {
   id: number;
-  /** Celular de WhatsApp: solo dígitos, nacional de 10 si es de México. Es la
-   *  llave con la que el Vendedor IA reconoce al cliente. null = sin celular
-   *  capturado: el cliente existe en el padrón pero WhatsApp no lo identifica. */
+  /** Celular principal: el primero de `telefonos`, o null si no tiene ninguno. */
   telefono: string | null;
+  /** Celulares de WhatsApp con los que el Vendedor IA reconoce al cliente: solo
+   *  dígitos, nacional de 10 si es de México. Vacío = el cliente existe en el
+   *  padrón pero WhatsApp no lo identifica. Un celular pertenece a UN cliente. */
+  telefonos: string[];
   cliente: string;
   /** Porcentaje 0-100. */
   descuento: number;
@@ -28,6 +32,8 @@ export interface ClienteDescuento {
   idClienteApv: number | null;
   /** clientes.id en bdav si el registro se prellenó del catálogo o se ligó por RFC. */
   idClienteBdav: number | null;
+  /** El cliente puede levantar pedidos. */
+  permitirPedido: boolean;
   creadoPor: string | null;
   /** Fecha de alta 'AAAA-MM-DD HH:MM:SS' (America/Monterrey). */
   creadoEn: string;
@@ -37,7 +43,7 @@ export interface ClienteDescuento {
 
 /** Lo que se captura en el formulario (alta y edición), ya normalizado. */
 export interface CapturaClienteDescuento {
-  telefono: string | null;
+  telefonos: string[];
   cliente: string;
   descuento: number;
   rfc: string | null;
@@ -45,6 +51,7 @@ export interface CapturaClienteDescuento {
   email: string | null;
   idClienteApv: number | null;
   idClienteBdav: number | null;
+  permitirPedido: boolean;
 }
 
 export type ResultadoValidacion =
@@ -60,17 +67,21 @@ function escaparLike(texto: string): string {
 const PARECE_TELEFONO = /^[\d\s\-+().]+$/;
 
 export interface CondicionesBusqueda {
-  /** Fragmento WHERE (sin la palabra WHERE) con placeholders ?. */
+  /** Fragmento WHERE (sin la palabra WHERE) con placeholders ?. El padrón va
+   *  con el alias `c`; los celulares se buscan en clientes_descuento_telefonos. */
   clausula: string;
   parametros: string[];
 }
 
+const TIENE_CELULAR_QUE =
+  "EXISTS (SELECT 1 FROM clientes_descuento_telefonos t WHERE t.id_cliente = c.id AND t.telefono LIKE ?)";
+
 /**
- * Búsqueda del padrón: cuando lo tecleado parece un número se busca en el
- * celular y en los otros teléfonos (y en el nombre); en cualquier otro caso por
- * nombre, RFC o email, para que un dígito suelto dentro de un nombre ('Taller 3
- * Hermanos') no empate medio padrón. El número se normaliza igual que al
- * guardar: '5218112345678' encuentra a 8112345678.
+ * Búsqueda del padrón: cuando lo tecleado parece un número se busca en los
+ * celulares y en los otros teléfonos (y en el nombre); en cualquier otro caso
+ * por nombre, RFC o email, para que un dígito suelto dentro de un nombre
+ * ('Taller 3 Hermanos') no empate medio padrón. El número se normaliza igual
+ * que al guardar: '5218112345678' encuentra a 8112345678.
  */
 export function condicionesBusqueda(busqueda: string): CondicionesBusqueda {
   const texto = busqueda.trim();
@@ -79,14 +90,24 @@ export function condicionesBusqueda(busqueda: string): CondicionesBusqueda {
   const digitos = normalizarTelefono(texto);
   if (PARECE_TELEFONO.test(texto) && digitos) {
     return {
-      clausula: "(cliente LIKE ? OR telefono LIKE ? OR telefono2 LIKE ?)",
+      clausula: `(c.cliente LIKE ? OR c.telefono2 LIKE ? OR ${TIENE_CELULAR_QUE})`,
       parametros: [porTexto, `%${digitos}%`, `%${digitos}%`],
     };
   }
   return {
-    clausula: "(cliente LIKE ? OR rfc LIKE ? OR email LIKE ?)",
+    clausula: "(c.cliente LIKE ? OR c.rfc LIKE ? OR c.email LIKE ?)",
     parametros: [porTexto, porTexto, porTexto],
   };
+}
+
+export type FiltroCelular = "con" | "sin";
+
+/** Filtro "con celular / sin celular" del padrón; sin filtro no restringe. */
+export function condicionCelular(filtro: FiltroCelular | undefined): string {
+  const tiene = "EXISTS (SELECT 1 FROM clientes_descuento_telefonos t WHERE t.id_cliente = c.id)";
+  if (filtro === "con") return tiene;
+  if (filtro === "sin") return `NOT ${tiene}`;
+  return "1 = 1";
 }
 
 function leerDescuento(crudo: unknown): number {
@@ -125,6 +146,34 @@ export function normalizarRfc(crudo: string): string {
 /** 12 caracteres (persona moral) o 13 (física): letras, dígitos, Ñ y &. */
 const RFC_VALIDO = /^[A-ZÑ&0-9]{12,13}$/;
 
+type LecturaTelefonos = { ok: true; telefonos: string[] } | { ok: false; error: string };
+
+/**
+ * Celulares del cuerpo: `telefonos` (lista) y, por compatibilidad, `telefono`
+ * (uno solo), que va primero. Son opcionales (la lista APV trae miles de
+ * clientes sin celular), pero cada uno que venga tiene que estar completo:
+ * con menos dígitos no identifica a nadie. Repetidos y vacíos se descartan.
+ */
+function leerTelefonos(cuerpo: Record<string, unknown>): LecturaTelefonos {
+  const crudos: unknown[] = Array.isArray(cuerpo.telefonos) ? [...cuerpo.telefonos] : [];
+  if (cuerpo.telefono != null && cuerpo.telefono !== "") crudos.unshift(cuerpo.telefono);
+
+  const telefonos: string[] = [];
+  for (const crudo of crudos) {
+    const texto = typeof crudo === "string" ? crudo : String(crudo ?? "");
+    const normalizado = normalizarTelefono(texto);
+    if (!normalizado && !texto.trim()) continue;
+    if (!esTelefonoValido(normalizado)) {
+      return { ok: false, error: `El celular "${texto.trim()}" debe tener 10 dígitos` };
+    }
+    if (!telefonos.includes(normalizado)) telefonos.push(normalizado);
+  }
+  if (telefonos.length > TELEFONOS_MAX) {
+    return { ok: false, error: `Un cliente no puede tener más de ${TELEFONOS_MAX} celulares` };
+  }
+  return { ok: true, telefonos };
+}
+
 /** Valida y normaliza el cuerpo que manda el formulario; mensajes para el usuario. */
 export function validarCapturaClienteDescuento(entrada: unknown): ResultadoValidacion {
   if (!entrada || typeof entrada !== "object" || Array.isArray(entrada)) {
@@ -132,13 +181,8 @@ export function validarCapturaClienteDescuento(entrada: unknown): ResultadoValid
   }
   const cuerpo = entrada as Record<string, unknown>;
 
-  // El celular es opcional (la lista APV trae miles de clientes sin él), pero
-  // si viene tiene que estar completo: con menos dígitos no identifica a nadie.
-  const telefonoCrudo = normalizarTelefono(String(cuerpo.telefono ?? ""));
-  if (telefonoCrudo && !esTelefonoValido(telefonoCrudo)) {
-    return { ok: false, error: "El celular debe tener 10 dígitos" };
-  }
-  const telefono = telefonoCrudo || null;
+  const lectura = leerTelefonos(cuerpo);
+  if (!lectura.ok) return lectura;
 
   const cliente = limpiarTexto(String(cuerpo.cliente ?? ""));
   if (!cliente) return { ok: false, error: "Captura el nombre del cliente" };
@@ -181,7 +225,7 @@ export function validarCapturaClienteDescuento(entrada: unknown): ResultadoValid
   return {
     ok: true,
     datos: {
-      telefono,
+      telefonos: lectura.telefonos,
       cliente,
       descuento: Math.round(descuento * 100) / 100,
       rfc: rfc || null,
@@ -189,6 +233,14 @@ export function validarCapturaClienteDescuento(entrada: unknown): ResultadoValid
       email: email || null,
       idClienteApv,
       idClienteBdav,
+      permitirPedido: cuerpo.permitirPedido === true,
     },
   };
+}
+
+/** El cuerpo de "permitir pedido": solo un booleano explícito vale. */
+export function leerPermitirPedido(entrada: unknown): boolean | null {
+  if (!entrada || typeof entrada !== "object" || Array.isArray(entrada)) return null;
+  const valor = (entrada as Record<string, unknown>).permitirPedido;
+  return typeof valor === "boolean" ? valor : null;
 }

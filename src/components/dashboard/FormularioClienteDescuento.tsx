@@ -2,21 +2,22 @@
 
 import { type FormEvent, type MouseEvent, type ReactNode, useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, Info, Loader2, Search, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, Loader2, Plus, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fechaCorta, porcentaje } from "@/lib/formato";
-import type { ClienteDescuento } from "@/lib/clientes-descuento";
+import { TELEFONOS_MAX, type ClienteDescuento } from "@/lib/clientes-descuento";
 import { useDialogo } from "@/components/dashboard/useDialogo";
 
 // Alta y edición de un cliente con descuento del Vendedor IA. El celular es
 // la llave con la que WhatsApp reconoce al cliente, pero es opcional: la lista
-// APV trae miles de clientes sin él. Al capturarlo se busca en el catálogo de
-// clientes de bdav y, si está, se prellenan nombre y descuento; si no, en el
-// alta el nombre queda vacío y el descuento propone el valor por defecto
+// APV trae miles de clientes sin él. Un cliente puede tener varios celulares
+// (dueño, taller, familia): el principal se busca en el catálogo de clientes
+// de bdav y, si está, se prellenan nombre y descuento; si no, en el alta el
+// nombre queda vacío y el descuento propone el valor por defecto
 // (DESCUENTO_DEFAULT del .env). RFC, otros teléfonos y email son datos de
-// contacto sin más validación que su largo. En edición la búsqueda solo sobreescribe si el catálogo sí lo tiene:
-// lo capturado a mano no se pierde. Lo que el usuario teclee mientras la
-// búsqueda está en vuelo tampoco se pisa.
+// contacto sin más validación que su largo. En edición la búsqueda solo
+// sobreescribe si el catálogo sí lo tiene: lo capturado a mano no se pierde.
+// Lo que el usuario teclee mientras la búsqueda está en vuelo tampoco se pisa.
 
 interface ClienteCatalogo {
   id: number;
@@ -48,6 +49,12 @@ interface Conocido {
   digitos: string;
   idClienteBdav: number | null;
   resultado: RespuestaBusqueda | null;
+}
+
+/** Un celular adicional del formulario; el id solo sirve como key estable. */
+interface CelularExtra {
+  id: number;
+  valor: string;
 }
 
 export type ModoFormulario = "alta" | "edicion";
@@ -92,6 +99,14 @@ function Aviso({ tono, icono, children }: { tono: Tono; icono: ReactNode; childr
   );
 }
 
+/** Los celulares del registro que no son el principal, listos para editarse. */
+function extrasIniciales(registro?: ClienteDescuento): CelularExtra[] {
+  if (!registro) return [];
+  return registro.telefonos
+    .filter((t) => t !== registro.telefono)
+    .map((valor, id) => ({ id, valor }));
+}
+
 export function FormularioClienteDescuento({
   modo,
   registro,
@@ -102,18 +117,20 @@ export function FormularioClienteDescuento({
   const esAlta = modo === "alta";
   const router = useRouter();
   const [telefono, setTelefono] = useState(registro?.telefono ?? "");
+  const [extras, setExtras] = useState<CelularExtra[]>(() => extrasIniciales(registro));
   const [cliente, setCliente] = useState(registro?.cliente ?? "");
   const [descuento, setDescuento] = useState(registro ? String(registro.descuento) : "");
   const [rfc, setRfc] = useState(registro?.rfc ?? "");
   const [telefono2, setTelefono2] = useState(registro?.telefono2 ?? "");
   const [email, setEmail] = useState(registro?.email ?? "");
+  const [permitirPedido, setPermitirPedido] = useState(registro?.permitirPedido ?? false);
   const [idClienteBdav, setIdClienteBdav] = useState<number | null>(
     registro?.idClienteBdav ?? null
   );
   const [buscando, setBuscando] = useState(false);
   const [resultado, setResultado] = useState<RespuestaBusqueda | null>(null);
   const [errorBusqueda, setErrorBusqueda] = useState("");
-  /** El servidor rechazó el alta/edición porque el teléfono ya existe. */
+  /** El servidor rechazó el alta/edición porque un celular ya es de otro cliente. */
   const [duplicado, setDuplicado] = useState<ClienteDescuento | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
@@ -136,6 +153,8 @@ export function FormularioClienteDescuento({
   const enVueloRef = useRef<string | null>(null);
   /** El clic en el fondo solo cierra si el mouse también se PRESIONÓ en el fondo. */
   const presionEnFondoRef = useRef(false);
+  /** Siguiente key para un celular adicional. */
+  const siguienteExtraRef = useRef(extras.length);
   const dialogoRef = useRef<HTMLDivElement>(null);
   const telefonoRef = useRef<HTMLInputElement>(null);
 
@@ -244,6 +263,18 @@ export function FormularioClienteDescuento({
     }
   };
 
+  const agregarExtra = () => {
+    const id = siguienteExtraRef.current++;
+    setExtras((lista) => [...lista, { id, valor: "" }]);
+  };
+  const cambiarExtra = (id: number, valor: string) => {
+    setDuplicado(null);
+    setExtras((lista) => lista.map((e) => (e.id === id ? { ...e, valor } : e)));
+  };
+  const quitarExtra = (id: number) => {
+    setExtras((lista) => lista.filter((e) => e.id !== id));
+  };
+
   const cambiarCliente = (valor: string) => {
     clienteActualRef.current = valor;
     setCliente(valor);
@@ -266,9 +297,10 @@ export function FormularioClienteDescuento({
   const guardar = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
-    const digitosCelular = soloDigitos(telefono);
-    if (digitosCelular && digitosCelular.length < DIGITOS_MINIMOS) {
-      setError("El celular debe tener 10 dígitos");
+    const celulares = [telefono, ...extras.map((x) => x.valor)].filter((v) => v.trim() !== "");
+    const incompleto = celulares.find((v) => soloDigitos(v).length < DIGITOS_MINIMOS);
+    if (incompleto !== undefined) {
+      setError(`El celular "${incompleto.trim()}" debe tener 10 dígitos`);
       return;
     }
     if (!cliente.trim()) {
@@ -289,7 +321,7 @@ export function FormularioClienteDescuento({
         method: esAlta ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          telefono,
+          telefonos: celulares,
           cliente: cliente.trim(),
           descuento: numero,
           rfc: rfc.trim(),
@@ -297,6 +329,7 @@ export function FormularioClienteDescuento({
           email: email.trim(),
           idClienteApv: registro?.idClienteApv ?? null,
           idClienteBdav,
+          permitirPedido,
         }),
       });
       if (res.status === 401) {
@@ -331,6 +364,8 @@ export function FormularioClienteDescuento({
     resultado?.registrado && resultado.registrado.id !== registro?.id
       ? resultado.registrado
       : duplicado;
+
+  const puedeAgregarExtra = extras.length + 1 < TELEFONOS_MAX;
 
   return (
     <div
@@ -415,7 +450,7 @@ export function FormularioClienteDescuento({
 
             {yaRegistrado ? (
               <Aviso tono="ambar" icono={<AlertTriangle className="h-4 w-4" />}>
-                Este teléfono ya está registrado: <b>{yaRegistrado.cliente}</b> con{" "}
+                Ese celular ya es de <b>{yaRegistrado.cliente}</b> con{" "}
                 {porcentaje(yaRegistrado.descuento)}.{" "}
                 <button
                   type="button"
@@ -448,6 +483,53 @@ export function FormularioClienteDescuento({
               </Aviso>
             ) : null}
 
+            {/* Celulares adicionales: el mismo cliente escribe desde varios números */}
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <span className={lbl}>Otros celulares de WhatsApp</span>
+                <button
+                  type="button"
+                  onClick={agregarExtra}
+                  disabled={!puedeAgregarExtra}
+                  className="flex items-center gap-1 text-[11px] font-black uppercase tracking-widest text-amber-300 hover:text-white transition-colors disabled:opacity-40"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Agregar celular
+                </button>
+              </div>
+              {extras.length === 0 ? (
+                <p className="mt-1 text-[11px] font-bold text-slate-600">
+                  Todos los celulares del cliente lo identifican en WhatsApp.
+                </p>
+              ) : (
+                <div className="mt-1 space-y-2">
+                  {extras.map((extra, i) => (
+                    <div key={extra.id} className="flex gap-2">
+                      <input
+                        type="tel"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        aria-label={`Celular adicional ${i + 1}`}
+                        value={extra.valor}
+                        onChange={(e) => cambiarExtra(extra.id, e.target.value)}
+                        placeholder="10 dígitos"
+                        className={cn(inputCls, "font-mono tabular-nums")}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => quitarExtra(extra.id)}
+                        aria-label={`Quitar el celular adicional ${i + 1}`}
+                        title="Quitar"
+                        className="shrink-0 p-2.5 rounded-xl border border-white/10 text-slate-400 hover:text-rose-300 hover:bg-white/[0.06] transition-all"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div>
               <label htmlFor="cd-cliente" className={lbl}>
                 Cliente
@@ -464,26 +546,37 @@ export function FormularioClienteDescuento({
               />
             </div>
 
-            <div>
-              <label htmlFor="cd-descuento" className={lbl}>
-                Descuento
-              </label>
-              <div className="relative mt-1 w-40">
-                <input
-                  id="cd-descuento"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={100}
-                  step={0.01}
-                  value={descuento}
-                  onChange={(e) => cambiarDescuento(e.target.value)}
-                  className={cn(inputCls, "pr-9 tabular-nums")}
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-black text-slate-500">
-                  %
-                </span>
+            <div className="flex flex-wrap items-end gap-6">
+              <div>
+                <label htmlFor="cd-descuento" className={lbl}>
+                  Descuento
+                </label>
+                <div className="relative mt-1 w-40">
+                  <input
+                    id="cd-descuento"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={100}
+                    step={0.01}
+                    value={descuento}
+                    onChange={(e) => cambiarDescuento(e.target.value)}
+                    className={cn(inputCls, "pr-9 tabular-nums")}
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-black text-slate-500">
+                    %
+                  </span>
+                </div>
               </div>
+              <label className="flex items-center gap-2.5 pb-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={permitirPedido}
+                  onChange={(e) => setPermitirPedido(e.target.checked)}
+                  className="h-4 w-4 rounded accent-amber-400"
+                />
+                <span className="text-sm font-bold text-slate-200">Permitir pedido</span>
+              </label>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

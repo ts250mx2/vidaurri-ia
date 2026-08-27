@@ -32,6 +32,15 @@ export async function GET(request: Request) {
   // Texto libre: teléfono o nombre del cliente; la capa de datos decide cuál.
   const busqueda = (searchParams.get("busqueda") ?? "").trim().slice(0, 80);
 
+  // Un contacto exacto, con la clave que da /api/conversaciones/contactos:
+  // 'c<id>' = cliente del padrón (todos sus celulares), 't<telefono>' = un número.
+  const contacto = searchParams.get("contacto") ?? "";
+  const idCliente = /^c\d{1,15}$/.test(contacto) ? Number(contacto.slice(1)) : undefined;
+  const telefonoExacto = /^t\+?\d{1,20}$/.test(contacto) ? contacto.slice(1) : undefined;
+  if (contacto && idCliente === undefined && telefonoExacto === undefined) {
+    return NextResponse.json({ error: "Contacto inválido" }, { status: 400 });
+  }
+
   const pagina = Math.min(
     PAGINA_MAX,
     Math.max(1, Number.parseInt(searchParams.get("pagina") ?? "1", 10) || 1)
@@ -43,6 +52,8 @@ export async function GET(request: Request) {
       hasta,
       telefono: telefono || undefined,
       busqueda: busqueda || undefined,
+      idCliente,
+      telefonoExacto,
       canal,
       pagina,
       porPagina: POR_PAGINA,

@@ -20,7 +20,7 @@ const globalConPool = globalThis as unknown as {
 // Súbela al agregar o cambiar tablas en TABLAS. En desarrollo el módulo se
 // recarga pero globalThis persiste: sin este número, un esquema nuevo no se
 // aplicaría hasta reiniciar el servidor.
-const VERSION_ESQUEMA = 3;
+const VERSION_ESQUEMA = 4;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -95,15 +95,30 @@ const TABLAS = [
      email VARCHAR(120) NULL,
      id_cliente_apv INT UNSIGNED NULL COMMENT 'ID CLIENTE de la lista de clientes APV',
      id_cliente_bdav BIGINT UNSIGNED NULL COMMENT 'clientes.id en bdav si se prellenó del catálogo o se ligó por RFC',
+     permitir_pedido TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = el cliente puede levantar pedidos',
      creado_por VARCHAR(50) NULL,
      creado_en DATETIME NOT NULL COMMENT 'Fecha de alta (America/Monterrey)',
      actualizado_por VARCHAR(50) NULL,
      actualizado_en DATETIME NOT NULL,
      PRIMARY KEY (id),
-     UNIQUE KEY ux_telefono (telefono),
      UNIQUE KEY ux_id_apv (id_cliente_apv),
+     KEY idx_telefono (telefono),
      KEY idx_cliente (cliente),
      KEY idx_rfc (rfc)
+   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  // Un cliente puede tener varios celulares de WhatsApp. Esta tabla es la
+  // llave única del padrón (un celular pertenece a UN cliente);
+  // clientes_descuento.telefono es solo el principal, copia del primero.
+  `CREATE TABLE IF NOT EXISTS clientes_descuento_telefonos (
+     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+     id_cliente BIGINT UNSIGNED NOT NULL,
+     telefono VARCHAR(20) NOT NULL COMMENT 'Solo dígitos; nacional de 10 si es de México',
+     creado_en DATETIME NOT NULL,
+     PRIMARY KEY (id),
+     UNIQUE KEY ux_telefono (telefono),
+     KEY idx_cliente (id_cliente),
+     CONSTRAINT fk_tel_cliente FOREIGN KEY (id_cliente)
+       REFERENCES clientes_descuento (id) ON DELETE CASCADE
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
@@ -131,6 +146,11 @@ const COLUMNAS_NUEVAS_CLIENTES_DESCUENTO: Array<{ columna: string; alter: string
     alter:
       "ALTER TABLE clientes_descuento ADD COLUMN id_cliente_apv INT UNSIGNED NULL COMMENT 'ID CLIENTE de la lista de clientes APV' AFTER email, ADD UNIQUE KEY ux_id_apv (id_cliente_apv)",
   },
+  {
+    columna: "permitir_pedido",
+    alter:
+      "ALTER TABLE clientes_descuento ADD COLUMN permitir_pedido TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = el cliente puede levantar pedidos' AFTER id_cliente_bdav",
+  },
 ];
 
 async function migrarClientesDescuento(pool: mysql.Pool): Promise<void> {
@@ -151,6 +171,33 @@ async function migrarClientesDescuento(pool: mysql.Pool): Promise<void> {
   }
   for (const { columna, alter } of COLUMNAS_NUEVAS_CLIENTES_DESCUENTO) {
     if (!existentes.has(columna)) await pool.query(alter);
+  }
+
+  // Los celulares pasaron a clientes_descuento_telefonos. Se siembran desde el
+  // principal los que falten, en cada arranque: es barato y se auto-repara si
+  // el código anterior (que solo escribe el principal) dio de alta alguno
+  // antes del despliegue.
+  await pool.query(
+    `INSERT IGNORE INTO clientes_descuento_telefonos (id_cliente, telefono, creado_en)
+     SELECT c.id, c.telefono, c.creado_en
+       FROM clientes_descuento c
+      WHERE c.telefono IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM clientes_descuento_telefonos t
+                         WHERE t.id_cliente = c.id AND t.telefono = c.telefono)`
+  );
+
+  // La unicidad del celular ya la garantiza la tabla de celulares; en el
+  // principal estorba (al mover un celular de un cliente a otro chocaría con
+  // la copia vieja). Queda un índice normal para las búsquedas.
+  const [indices] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT 1 FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'clientes_descuento'
+        AND INDEX_NAME = 'ux_telefono' LIMIT 1`
+  );
+  if (indices.length > 0) {
+    await pool.query(
+      "ALTER TABLE clientes_descuento DROP INDEX ux_telefono, ADD KEY idx_telefono (telefono)"
+    );
   }
 }
 
@@ -261,7 +308,12 @@ const TELEFONO_NACIONAL = `CASE
   WHEN c.telefono REGEXP '^[+]?52[0-9]{10}$' THEN RIGHT(c.telefono, 10)
   WHEN c.telefono REGEXP '^[0-9]{10}$' THEN c.telefono
   ELSE NULL END`;
-const JOIN_PADRON = `LEFT JOIN clientes_descuento cd ON cd.telefono = ${TELEFONO_NACIONAL}`;
+const JOIN_PADRON = `LEFT JOIN clientes_descuento_telefonos ct ON ct.telefono = ${TELEFONO_NACIONAL}
+       LEFT JOIN clientes_descuento cd ON cd.id = ct.id_cliente`;
+
+/** Con quién se habló: el cliente del padrón (todos sus celulares juntos) o,
+ *  si no está dado de alta, el teléfono tal cual. */
+const CLAVE_CONTACTO = `IFNULL(CONCAT('c', cd.id), CONCAT('t', c.telefono))`;
 
 const CANAL_REAL = `CASE
   WHEN c.canal = 'web' OR c.telefono REGEXP '${PATRON_SESION_WEB}' THEN 'web'
@@ -281,6 +333,10 @@ export interface FiltrosConversaciones {
   telefono?: string;
   /** Teléfono (si son dígitos) o nombre del cliente en el padrón. */
   busqueda?: string;
+  /** Todas las conversaciones de un cliente del padrón (todos sus celulares). */
+  idCliente?: number;
+  /** Un teléfono exacto, tal como está en la bitácora. */
+  telefonoExacto?: string;
   canal?: "whatsapp" | "web";
   pagina: number;
   porPagina: number;
@@ -292,6 +348,7 @@ export interface ConversacionResumen {
   /** Nombre del cliente en el padrón de clientes con descuento cuando su
    *  celular está dado de alta; null = teléfono sin dar de alta (o chat web). */
   cliente: string | null;
+  idCliente: number | null;
   fecha: string;
   canal: string;
   mensajes: number;
@@ -337,6 +394,14 @@ function armarCondiciones(filtros: FiltrosConversaciones): CondicionesArmadas {
       parametros.push(`%${escaparLike(texto)}%`);
     }
   }
+  if (filtros.idCliente != null) {
+    condiciones.push("cd.id = ?");
+    parametros.push(filtros.idCliente);
+  }
+  if (filtros.telefonoExacto) {
+    condiciones.push("c.telefono = ?");
+    parametros.push(filtros.telefonoExacto);
+  }
   if (filtros.canal) {
     condiciones.push(`${CANAL_REAL} = ?`);
     parametros.push(filtros.canal);
@@ -353,7 +418,8 @@ export async function listarConversaciones(
   const { clausula, parametros } = armarCondiciones(filtros);
 
   const [filas] = await pool.query<mysql.RowDataPacket[]>(
-    `SELECT c.id, c.telefono, cd.cliente AS cliente, c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
+    `SELECT c.id, c.telefono, cd.cliente AS cliente, cd.id AS idCliente,
+            c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
             c.iniciada_en AS iniciadaEn, c.ultima_en AS ultimaEn,
             (SELECT m.mensaje FROM conversacion_mensajes m
               WHERE m.id_conversacion = c.id AND m.rol = 'cliente'
@@ -386,6 +452,86 @@ export async function listarConversaciones(
   };
 }
 
+export interface FiltrosContactos {
+  desde: string;
+  hasta: string;
+  busqueda?: string;
+  pagina: number;
+  porPagina: number;
+}
+
+/** Con quién se habló por WhatsApp en el rango: un cliente del padrón (con
+ *  todos sus celulares) o un teléfono sin dar de alta. */
+export interface ContactoResumen {
+  /** 'c<id>' para un cliente del padrón, 't<telefono>' para un teléfono suelto. */
+  clave: string;
+  idCliente: number | null;
+  cliente: string | null;
+  /** Teléfonos tal como están en la bitácora. */
+  telefonos: string[];
+  conversaciones: number;
+  mensajes: number;
+  primeraEn: string;
+  ultimaEn: string;
+}
+
+export interface PaginaContactos {
+  contactos: ContactoResumen[];
+  total: number;
+  conversaciones: number;
+  mensajes: number;
+  /** Cuántos de los contactos están dados de alta en el padrón. */
+  clientes: number;
+}
+
+/** Conversaciones de WhatsApp agrupadas por contacto, las más recientes primero. */
+export async function listarContactos(filtros: FiltrosContactos): Promise<PaginaContactos> {
+  await asegurarEsquema();
+  const pool = poolConversaciones();
+  const { clausula, parametros } = armarCondiciones({ ...filtros, canal: "whatsapp" });
+
+  const [filas] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT ${CLAVE_CONTACTO} AS clave, cd.id AS idCliente, cd.cliente AS cliente,
+            GROUP_CONCAT(DISTINCT c.telefono ORDER BY c.telefono SEPARATOR ',') AS telefonos,
+            COUNT(*) AS conversaciones, COALESCE(SUM(c.mensajes), 0) AS mensajes,
+            MIN(c.iniciada_en) AS primeraEn, MAX(c.ultima_en) AS ultimaEn
+       FROM conversaciones c
+       ${JOIN_PADRON}
+      WHERE ${clausula}
+      GROUP BY clave, cd.id, cd.cliente
+      ORDER BY ultimaEn DESC
+      LIMIT ? OFFSET ?`,
+    [...parametros, filtros.porPagina, (filtros.pagina - 1) * filtros.porPagina]
+  );
+  const [totales] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT COUNT(DISTINCT ${CLAVE_CONTACTO}) AS total,
+            COUNT(*) AS conversaciones,
+            COALESCE(SUM(c.mensajes), 0) AS mensajes,
+            COUNT(DISTINCT cd.id) AS clientes
+       FROM conversaciones c
+       ${JOIN_PADRON}
+      WHERE ${clausula}`,
+    parametros
+  );
+
+  return {
+    contactos: filas.map((f) => ({
+      clave: String(f.clave),
+      idCliente: f.idCliente == null ? null : Number(f.idCliente),
+      cliente: f.cliente == null ? null : String(f.cliente),
+      telefonos: String(f.telefonos ?? "").split(",").filter(Boolean),
+      conversaciones: Number(f.conversaciones),
+      mensajes: Number(f.mensajes),
+      primeraEn: String(f.primeraEn),
+      ultimaEn: String(f.ultimaEn),
+    })),
+    total: Number(totales[0]?.total ?? 0),
+    conversaciones: Number(totales[0]?.conversaciones ?? 0),
+    mensajes: Number(totales[0]?.mensajes ?? 0),
+    clientes: Number(totales[0]?.clientes ?? 0),
+  };
+}
+
 export interface MensajeConversacionGuardado {
   id: number;
   rol: "cliente" | "vendedor";
@@ -405,7 +551,8 @@ export async function obtenerConversacion(id: number): Promise<DetalleConversaci
   const pool = poolConversaciones();
 
   const [cabeceras] = await pool.query<mysql.RowDataPacket[]>(
-    `SELECT c.id, c.telefono, cd.cliente AS cliente, c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
+    `SELECT c.id, c.telefono, cd.cliente AS cliente, cd.id AS idCliente,
+            c.fecha, ${CANAL_REAL} AS canal, c.mensajes,
             c.iniciada_en AS iniciadaEn, c.ultima_en AS ultimaEn,
             NULL AS primerMensaje
        FROM conversaciones c

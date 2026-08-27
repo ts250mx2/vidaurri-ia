@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   CLIENTE_MAX,
+  condicionCelular,
   condicionesBusqueda,
+  leerPermitirPedido,
   normalizarRfc,
   validarCapturaClienteDescuento,
 } from "./clientes-descuento";
+
+const BUSCA_CELULAR =
+  "EXISTS (SELECT 1 FROM clientes_descuento_telefonos t WHERE t.id_cliente = c.id AND t.telefono LIKE ?)";
 
 describe("condicionesBusqueda", () => {
   it("sin texto no filtra", () => {
@@ -12,22 +17,22 @@ describe("condicionesBusqueda", () => {
     expect(condicionesBusqueda("   ")).toEqual({ clausula: "1 = 1", parametros: [] });
   });
 
-  it("un número (con o sin separadores) busca en celular, otros teléfonos y nombre", () => {
+  it("un número (con o sin separadores) busca en los celulares, otros teléfonos y nombre", () => {
     expect(condicionesBusqueda("8112")).toEqual({
-      clausula: "(cliente LIKE ? OR telefono LIKE ? OR telefono2 LIKE ?)",
+      clausula: `(c.cliente LIKE ? OR c.telefono2 LIKE ? OR ${BUSCA_CELULAR})`,
       parametros: ["%8112%", "%8112%", "%8112%"],
     });
     expect(condicionesBusqueda("+52 81 12-34").parametros[1]).toBe("%52811234%");
   });
 
   it("un número en formato WhatsApp se normaliza como al guardar", () => {
-    expect(condicionesBusqueda("5218112345678").parametros[1]).toBe("%8112345678%");
-    expect(condicionesBusqueda("+52 81 1234 5678").parametros[1]).toBe("%8112345678%");
+    expect(condicionesBusqueda("5218112345678").parametros[2]).toBe("%8112345678%");
+    expect(condicionesBusqueda("+52 81 1234 5678").parametros[2]).toBe("%8112345678%");
   });
 
   it("un texto busca por nombre, RFC o email, nunca por teléfono", () => {
     expect(condicionesBusqueda("Taller 3 Hermanos")).toEqual({
-      clausula: "(cliente LIKE ? OR rfc LIKE ? OR email LIKE ?)",
+      clausula: "(c.cliente LIKE ? OR c.rfc LIKE ? OR c.email LIKE ?)",
       parametros: ["%Taller 3 Hermanos%", "%Taller 3 Hermanos%", "%Taller 3 Hermanos%"],
     });
     expect(condicionesBusqueda("HETJ840501").parametros).toHaveLength(3);
@@ -36,6 +41,18 @@ describe("condicionesBusqueda", () => {
   it("escapa los comodines de LIKE que teclee el usuario", () => {
     expect(condicionesBusqueda("%").parametros[0]).toBe("%\\%%");
     expect(condicionesBusqueda("a_b\\c").parametros[0]).toBe("%a\\_b\\\\c%");
+  });
+});
+
+describe("condicionCelular", () => {
+  it("con / sin celular miran la tabla de celulares; sin filtro no restringe", () => {
+    expect(condicionCelular(undefined)).toBe("1 = 1");
+    expect(condicionCelular("con")).toBe(
+      "EXISTS (SELECT 1 FROM clientes_descuento_telefonos t WHERE t.id_cliente = c.id)"
+    );
+    expect(condicionCelular("sin")).toBe(
+      "NOT EXISTS (SELECT 1 FROM clientes_descuento_telefonos t WHERE t.id_cliente = c.id)"
+    );
   });
 });
 
@@ -48,7 +65,7 @@ describe("normalizarRfc", () => {
 
 const valido = { telefono: "81 1234 5678", cliente: "  Juan   Pérez ", descuento: 38 };
 const datosMinimos = {
-  telefono: "8112345678",
+  telefonos: ["8112345678"],
   cliente: "Juan Pérez",
   descuento: 38,
   rfc: null,
@@ -56,6 +73,7 @@ const datosMinimos = {
   email: null,
   idClienteApv: null,
   idClienteBdav: null,
+  permitirPedido: false,
 };
 
 describe("validarCapturaClienteDescuento", () => {
@@ -74,6 +92,35 @@ describe("validarCapturaClienteDescuento", () => {
       ok: true,
       datos: { ...datosMinimos, cliente: "Taller López", descuento: 33.5, idClienteBdav: 5713 },
     });
+  });
+
+  it("un cliente puede tener varios celulares: se normalizan y no se repiten", () => {
+    const r = validarCapturaClienteDescuento({
+      ...valido,
+      telefonos: ["+52 1 81 1234 5679", "8112345678", " 8112345680 "],
+    });
+    expect(r).toEqual({
+      ok: true,
+      datos: { ...datosMinimos, telefonos: ["8112345678", "8112345679", "8112345680"] },
+    });
+  });
+
+  it("los celulares extra vacíos se ignoran; los incompletos dicen cuál falla", () => {
+    expect(validarCapturaClienteDescuento({ ...valido, telefonos: ["", "  "] })).toEqual({
+      ok: true,
+      datos: datosMinimos,
+    });
+    expect(validarCapturaClienteDescuento({ ...valido, telefonos: ["83 74 95 95"] })).toEqual({
+      ok: false,
+      error: 'El celular "83 74 95 95" debe tener 10 dígitos',
+    });
+  });
+
+  it("acota cuántos celulares puede tener un cliente", () => {
+    const muchos = Array.from({ length: 11 }, (_, i) => `81123456${String(i).padStart(2, "0")}`);
+    expect(validarCapturaClienteDescuento({ ...valido, telefono: "", telefonos: muchos }).ok).toBe(
+      false
+    );
   });
 
   it("normaliza y guarda los datos de contacto: RFC, otros teléfonos, email, ID APV", () => {
@@ -96,18 +143,29 @@ describe("validarCapturaClienteDescuento", () => {
     });
   });
 
-  it("el celular es opcional: vacío se guarda como null", () => {
+  it("el celular es opcional: sin ninguno la lista queda vacía", () => {
     for (const sinCelular of [undefined, "", "   "]) {
       const r = validarCapturaClienteDescuento({ ...valido, telefono: sinCelular });
-      expect(r).toEqual({ ok: true, datos: { ...datosMinimos, telefono: null } });
+      expect(r).toEqual({ ok: true, datos: { ...datosMinimos, telefonos: [] } });
     }
   });
 
   it("pero si viene, tiene que estar completo", () => {
     expect(validarCapturaClienteDescuento({ ...valido, telefono: "8374 9595" })).toEqual({
       ok: false,
-      error: "El celular debe tener 10 dígitos",
+      error: 'El celular "8374 9595" debe tener 10 dígitos',
     });
+  });
+
+  it("permitir pedido solo se activa con un true explícito", () => {
+    expect(validarCapturaClienteDescuento({ ...valido, permitirPedido: true })).toEqual({
+      ok: true,
+      datos: { ...datosMinimos, permitirPedido: true },
+    });
+    for (const raro of ["true", 1, "1", null]) {
+      const r = validarCapturaClienteDescuento({ ...valido, permitirPedido: raro });
+      expect(r.ok && r.datos.permitirPedido).toBe(false);
+    }
   });
 
   it("rechaza un RFC que no sea de 12 o 13 caracteres", () => {
@@ -192,5 +250,16 @@ describe("validarCapturaClienteDescuento", () => {
     });
     expect(r.ok && r.datos.cliente).toBe("Juan Pérez García");
     expect(validarCapturaClienteDescuento({ ...valido, cliente: "​‍" }).ok).toBe(false);
+  });
+});
+
+describe("leerPermitirPedido", () => {
+  it("solo acepta un booleano explícito", () => {
+    expect(leerPermitirPedido({ permitirPedido: true })).toBe(true);
+    expect(leerPermitirPedido({ permitirPedido: false })).toBe(false);
+    expect(leerPermitirPedido({ permitirPedido: "true" })).toBeNull();
+    expect(leerPermitirPedido({})).toBeNull();
+    expect(leerPermitirPedido(null)).toBeNull();
+    expect(leerPermitirPedido([])).toBeNull();
   });
 });

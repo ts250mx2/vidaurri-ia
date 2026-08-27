@@ -209,7 +209,7 @@ export function leerListaApv(texto: string): LecturaLista {
     }
 
     const resultado = validarCapturaClienteDescuento({
-      telefono,
+      telefonos: telefono ? [telefono] : [],
       cliente: celda(fila, "nombre"),
       descuento: celda(fila, "descuento"),
       rfc,
@@ -217,6 +217,7 @@ export function leerListaApv(texto: string): LecturaLista {
       email: limpiarTexto(celda(fila, "email")).slice(0, EMAIL_MAX),
       idClienteApv,
       idClienteBdav: null,
+      permitirPedido: false,
     });
     if (!resultado.ok) {
       omitidas.push({ linea, motivo: resultado.error });

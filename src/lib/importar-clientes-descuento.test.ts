@@ -34,22 +34,23 @@ describe("leerListaApv", () => {
       {
         linea: 2,
         idClienteApv: 5,
-        telefono: "8118124542",
+        telefonos: ["8118124542"],
         cliente: "HERNANDEZ TORRES JUAN CARLOS",
         descuento: 33,
         rfc: "HETJ840501U98",
         telefono2: "83630777 - 8118124542",
         email: "JCARLOSH84@GMAIL.COM",
         idClienteBdav: null,
+        permitirPedido: false,
       },
     ]);
   });
 
-  it("un cliente sin celular entra igual, con el celular en null", () => {
+  it("un cliente sin celular entra igual, con la lista de celulares vacía", () => {
     const { filas } = leerListaApv(
       `${ENCABEZADO}\n4,COM101213PX9,LA CORNETA DE ORO MG,,83537476 - 83549915,CORNETA@PRODIGY.NET.MX,33`
     );
-    expect(filas[0].telefono).toBeNull();
+    expect(filas[0].telefonos).toEqual([]);
     expect(filas[0].telefono2).toBe("83537476 - 83549915");
   });
 
@@ -57,7 +58,7 @@ describe("leerListaApv", () => {
     const { filas, advertencias } = leerListaApv(
       `${ENCABEZADO}\n9,GAP930520IZ6,GARZ AUTO PARTES,83553600,24620233,g@x.com,33`
     );
-    expect(filas[0].telefono).toBeNull();
+    expect(filas[0].telefonos).toEqual([]);
     expect(filas[0].telefono2).toBe("83553600 / 24620233");
     expect(advertencias).toEqual([
       { linea: 2, motivo: '"83553600" no es un celular de 10 dígitos: se guardó en otros teléfonos' },
@@ -66,7 +67,7 @@ describe("leerListaApv", () => {
 
   it("acepta el celular con lada de país y con separadores", () => {
     const { filas } = leerListaApv(`${ENCABEZADO}\n1,X,Uno,+52 81 1234 5678,,,33\n2,X,Dos,5218112345679,,,33`);
-    expect(filas.map((f) => f.telefono)).toEqual(["8112345678", "8112345679"]);
+    expect(filas.map((f) => f.telefonos[0])).toEqual(["8112345678", "8112345679"]);
   });
 
   it("omite filas sin ID válido, sin nombre o con ID repetido, diciendo por qué", () => {

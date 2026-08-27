@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { sesionActual } from "@/lib/auth";
-import { validarCapturaClienteDescuento } from "@/lib/clientes-descuento";
+import { validarCapturaClienteDescuento, type FiltroCelular } from "@/lib/clientes-descuento";
 import {
   crearClienteDescuento,
   listarClientesDescuento,
@@ -24,13 +24,21 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const busqueda = (searchParams.get("busqueda") ?? "").trim().slice(0, BUSQUEDA_MAX);
+  const celularCrudo = searchParams.get("celular");
+  const celular: FiltroCelular | undefined =
+    celularCrudo === "con" || celularCrudo === "sin" ? celularCrudo : undefined;
   const pagina = Math.min(
     PAGINA_MAX,
     Math.max(1, Number.parseInt(searchParams.get("pagina") ?? "1", 10) || 1)
   );
 
   try {
-    const datos = await listarClientesDescuento({ busqueda, pagina, porPagina: POR_PAGINA });
+    const datos = await listarClientesDescuento({
+      busqueda,
+      celular,
+      pagina,
+      porPagina: POR_PAGINA,
+    });
     return NextResponse.json({
       ...datos,
       porPagina: POR_PAGINA,
@@ -64,7 +72,7 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof TelefonoDuplicadoError) {
       return NextResponse.json(
-        { error: error.message, existente: error.existente },
+        { error: error.message, telefono: error.telefono, existente: error.existente },
         { status: 409 }
       );
     }
