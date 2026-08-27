@@ -4,6 +4,7 @@ import { validarCapturaClienteDescuento } from "@/lib/clientes-descuento";
 import {
   actualizarClienteDescuento,
   eliminarClienteDescuento,
+  ReferenciaApvDuplicadaError,
   TelefonoDuplicadoError,
 } from "@/lib/db-clientes-descuento";
 
@@ -47,6 +48,9 @@ export async function PUT(request: Request, contexto: Contexto) {
         { error: error.message, existente: error.existente },
         { status: 409 }
       );
+    }
+    if (error instanceof ReferenciaApvDuplicadaError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     console.error(`Error actualizando el cliente con descuento ${id}:`, error);
     return NextResponse.json(

@@ -70,3 +70,28 @@ export async function buscarClienteBdavPorTelefono(
     coincidencias: filas.length,
   };
 }
+
+/**
+ * RFC → clientes.id de bdav, solo para los RFC que tiene UN solo cliente: el
+ * genérico XAXX010101000 y cualquier RFC repetido no identifican a nadie y se
+ * dejan fuera. Sirve para ligar la lista importada con el catálogo. SOLO LECTURA.
+ */
+export async function idsBdavPorRfc(rfcs: string[]): Promise<Map<string, number>> {
+  const unicos = [...new Set(rfcs.map((r) => r.trim().toUpperCase()).filter(Boolean))];
+  const mapa = new Map<string, number>();
+  if (unicos.length === 0) return mapa;
+
+  // Placeholders explícitos: así funciona igual con query() y con execute().
+  const marcadores = unicos.map(() => "?").join(", ");
+  const filas = await consultaBdav<{ rfc: string; cuantos: number; id: number }>(
+    `SELECT UPPER(TRIM(rfc)) AS rfc, COUNT(*) AS cuantos, MIN(id) AS id
+       FROM clientes
+      WHERE UPPER(TRIM(rfc)) IN (${marcadores})
+      GROUP BY UPPER(TRIM(rfc))`,
+    unicos
+  );
+  for (const fila of filas) {
+    if (Number(fila.cuantos) === 1) mapa.set(String(fila.rfc), Number(fila.id));
+  }
+  return mapa;
+}

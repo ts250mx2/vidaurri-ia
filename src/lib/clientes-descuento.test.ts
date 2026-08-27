@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLIENTE_MAX,
   condicionesBusqueda,
+  normalizarRfc,
   validarCapturaClienteDescuento,
 } from "./clientes-descuento";
 
@@ -11,10 +12,10 @@ describe("condicionesBusqueda", () => {
     expect(condicionesBusqueda("   ")).toEqual({ clausula: "1 = 1", parametros: [] });
   });
 
-  it("un número (con o sin separadores) busca por teléfono y por nombre", () => {
+  it("un número (con o sin separadores) busca en celular, otros teléfonos y nombre", () => {
     expect(condicionesBusqueda("8112")).toEqual({
-      clausula: "(cliente LIKE ? OR telefono LIKE ?)",
-      parametros: ["%8112%", "%8112%"],
+      clausula: "(cliente LIKE ? OR telefono LIKE ? OR telefono2 LIKE ?)",
+      parametros: ["%8112%", "%8112%", "%8112%"],
     });
     expect(condicionesBusqueda("+52 81 12-34").parametros[1]).toBe("%52811234%");
   });
@@ -24,32 +25,42 @@ describe("condicionesBusqueda", () => {
     expect(condicionesBusqueda("+52 81 1234 5678").parametros[1]).toBe("%8112345678%");
   });
 
-  it("un nombre con dígitos busca SOLO por nombre", () => {
+  it("un texto busca por nombre, RFC o email, nunca por teléfono", () => {
     expect(condicionesBusqueda("Taller 3 Hermanos")).toEqual({
-      clausula: "cliente LIKE ?",
-      parametros: ["%Taller 3 Hermanos%"],
+      clausula: "(cliente LIKE ? OR rfc LIKE ? OR email LIKE ?)",
+      parametros: ["%Taller 3 Hermanos%", "%Taller 3 Hermanos%", "%Taller 3 Hermanos%"],
     });
-    expect(condicionesBusqueda("Juan")).toEqual({
-      clausula: "cliente LIKE ?",
-      parametros: ["%Juan%"],
-    });
+    expect(condicionesBusqueda("HETJ840501").parametros).toHaveLength(3);
   });
 
   it("escapa los comodines de LIKE que teclee el usuario", () => {
-    expect(condicionesBusqueda("%").parametros).toEqual(["%\\%%"]);
-    expect(condicionesBusqueda("a_b\\c").parametros).toEqual(["%a\\_b\\\\c%"]);
+    expect(condicionesBusqueda("%").parametros[0]).toBe("%\\%%");
+    expect(condicionesBusqueda("a_b\\c").parametros[0]).toBe("%a\\_b\\\\c%");
+  });
+});
+
+describe("normalizarRfc", () => {
+  it("mayúsculas y sin separadores", () => {
+    expect(normalizarRfc(" hetj 840501-u98 ")).toBe("HETJ840501U98");
+    expect(normalizarRfc("")).toBe("");
   });
 });
 
 const valido = { telefono: "81 1234 5678", cliente: "  Juan   Pérez ", descuento: 38 };
+const datosMinimos = {
+  telefono: "8112345678",
+  cliente: "Juan Pérez",
+  descuento: 38,
+  rfc: null,
+  telefono2: null,
+  email: null,
+  idClienteApv: null,
+  idClienteBdav: null,
+};
 
 describe("validarCapturaClienteDescuento", () => {
   it("normaliza teléfono y nombre de una captura correcta", () => {
-    const r = validarCapturaClienteDescuento(valido);
-    expect(r).toEqual({
-      ok: true,
-      datos: { telefono: "8112345678", cliente: "Juan Pérez", descuento: 38, idClienteBdav: null },
-    });
+    expect(validarCapturaClienteDescuento(valido)).toEqual({ ok: true, datos: datosMinimos });
   });
 
   it("acepta el teléfono como lo manda WhatsApp y el descuento como texto", () => {
@@ -61,8 +72,57 @@ describe("validarCapturaClienteDescuento", () => {
     });
     expect(r).toEqual({
       ok: true,
-      datos: { telefono: "8112345678", cliente: "Taller López", descuento: 33.5, idClienteBdav: 5713 },
+      datos: { ...datosMinimos, cliente: "Taller López", descuento: 33.5, idClienteBdav: 5713 },
     });
+  });
+
+  it("normaliza y guarda los datos de contacto: RFC, otros teléfonos, email, ID APV", () => {
+    const r = validarCapturaClienteDescuento({
+      ...valido,
+      rfc: " hetj840501u98",
+      telefono2: "  83630777 -   8118124542 ",
+      email: " JCARLOSH84@GMAIL.COM ",
+      idClienteApv: "5",
+    });
+    expect(r).toEqual({
+      ok: true,
+      datos: {
+        ...datosMinimos,
+        rfc: "HETJ840501U98",
+        telefono2: "83630777 - 8118124542",
+        email: "JCARLOSH84@GMAIL.COM",
+        idClienteApv: 5,
+      },
+    });
+  });
+
+  it("el celular es opcional: vacío se guarda como null", () => {
+    for (const sinCelular of [undefined, "", "   "]) {
+      const r = validarCapturaClienteDescuento({ ...valido, telefono: sinCelular });
+      expect(r).toEqual({ ok: true, datos: { ...datosMinimos, telefono: null } });
+    }
+  });
+
+  it("pero si viene, tiene que estar completo", () => {
+    expect(validarCapturaClienteDescuento({ ...valido, telefono: "8374 9595" })).toEqual({
+      ok: false,
+      error: "El celular debe tener 10 dígitos",
+    });
+  });
+
+  it("rechaza un RFC que no sea de 12 o 13 caracteres", () => {
+    expect(validarCapturaClienteDescuento({ ...valido, rfc: "ABC" })).toEqual({
+      ok: false,
+      error: "El RFC debe tener 12 o 13 caracteres",
+    });
+    expect(validarCapturaClienteDescuento({ ...valido, rfc: "COM101213PX9" }).ok).toBe(true);
+    expect(validarCapturaClienteDescuento({ ...valido, rfc: "ÑAM&850101AB1" }).ok).toBe(true);
+  });
+
+  it("acota el largo de otros teléfonos y del email", () => {
+    expect(validarCapturaClienteDescuento({ ...valido, telefono2: "1".repeat(61) }).ok).toBe(false);
+    expect(validarCapturaClienteDescuento({ ...valido, email: "a".repeat(121) }).ok).toBe(false);
+    expect(validarCapturaClienteDescuento({ ...valido, email: "ROSSY_9@LIVE" }).ok).toBe(true);
   });
 
   it("redondea el descuento a dos decimales", () => {
@@ -74,14 +134,6 @@ describe("validarCapturaClienteDescuento", () => {
     expect(validarCapturaClienteDescuento(null)).toEqual({ ok: false, error: "Petición inválida" });
     expect(validarCapturaClienteDescuento("x").ok).toBe(false);
     expect(validarCapturaClienteDescuento([]).ok).toBe(false);
-  });
-
-  it("rechaza teléfonos incompletos", () => {
-    expect(validarCapturaClienteDescuento({ ...valido, telefono: "8374 9595" })).toEqual({
-      ok: false,
-      error: "El teléfono debe tener 10 dígitos",
-    });
-    expect(validarCapturaClienteDescuento({ ...valido, telefono: undefined }).ok).toBe(false);
   });
 
   it("exige el nombre del cliente y acota su largo", () => {
@@ -112,14 +164,17 @@ describe("validarCapturaClienteDescuento", () => {
     expect(r.ok && r.datos.descuento).toBe(0);
   });
 
-  it("valida la referencia opcional al cliente de bdav", () => {
+  it("valida las referencias opcionales (bdav y lista APV)", () => {
     expect(validarCapturaClienteDescuento({ ...valido, idClienteBdav: "" }).ok).toBe(true);
     expect(validarCapturaClienteDescuento({ ...valido, idClienteBdav: 0 })).toEqual({
       ok: false,
       error: "Referencia de cliente inválida",
     });
     expect(validarCapturaClienteDescuento({ ...valido, idClienteBdav: 1.5 }).ok).toBe(false);
-    expect(validarCapturaClienteDescuento({ ...valido, idClienteBdav: "abc" }).ok).toBe(false);
+    expect(validarCapturaClienteDescuento({ ...valido, idClienteApv: "abc" })).toEqual({
+      ok: false,
+      error: "ID de cliente APV inválido",
+    });
   });
 
   it("solo acepta referencias enteras seguras escritas en decimal", () => {
@@ -133,7 +188,7 @@ describe("validarCapturaClienteDescuento", () => {
   it("quita caracteres de control y de formato invisibles del nombre", () => {
     const r = validarCapturaClienteDescuento({
       ...valido,
-      cliente: "Juan​​Pérez‮ ⁦García",
+      cliente: "Juan​​Pérez‮ ⁦García",
     });
     expect(r.ok && r.datos.cliente).toBe("Juan Pérez García");
     expect(validarCapturaClienteDescuento({ ...valido, cliente: "​‍" }).ok).toBe(false);

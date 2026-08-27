@@ -44,8 +44,9 @@ punto de venta). Perfiles: Administrador, Operaciones, Ventas.
 - **Devoluciones**: notas de salida y sus partidas.
 - **Back orders**: pedidos especiales de cliente con anticipos.
 - **Vendedor IA**: agente de ventas por chat web y WhatsApp; bitácora de conversaciones y
-  padrón de **clientes con descuento** (teléfono → nombre y %; se prellena del catálogo de
-  `bdav` y, si no está, propone `DESCUENTO_DEFAULT` del `.env`, 33 si falta). Cuando el
+  padrón de **clientes con descuento** (celular → nombre y %, más RFC, otros teléfonos y
+  email; se prellena del catálogo de `bdav` y, si no está, propone `DESCUENTO_DEFAULT` del
+  `.env`, 33 si falta; se puede cargar completo desde el CSV de la lista APV). Cuando el
   número que escribe por WhatsApp está en ese padrón, el agente cotiza las piezas nuevas con
   el descuento del cliente sobre el precio de lista, más IVA; si no está, a precio de
   mostrador. Ambos viven en la base `BDVidaurriConversaciones`, la única donde la

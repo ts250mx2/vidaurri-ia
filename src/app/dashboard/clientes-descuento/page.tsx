@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,9 +25,11 @@ import {
 } from "@/components/dashboard/FormularioClienteDescuento";
 import { useDialogo } from "@/components/dashboard/useDialogo";
 
-// Padrón de clientes con descuento del Vendedor IA: teléfono → nombre y % de
-// descuento, con fecha de alta. Vive en BDVidaurriConversaciones (no toca
-// bdav). Detrás del login del panel: son teléfonos y nombres reales.
+// Padrón de clientes con descuento del Vendedor IA: celular → nombre y % de
+// descuento, más RFC, otros teléfonos y email, con fecha de alta. Se captura a
+// mano o se carga completo desde el CSV de la lista de clientes APV. Vive en
+// BDVidaurriConversaciones (no toca bdav). Detrás del login del panel: son
+// teléfonos y nombres reales.
 
 interface PaginaClientesDescuento {
   registros: ClienteDescuento[];
@@ -35,6 +38,28 @@ interface PaginaClientesDescuento {
   altasMes: number;
   porPagina: number;
   descuentoDefault: number;
+}
+
+interface Incidencia {
+  linea: number;
+  motivo: string;
+}
+
+interface ResumenImportacion {
+  total: number;
+  insertados: number;
+  actualizados: number;
+  sinCelular: number;
+  ligadosBdav: number;
+  celularRepetido: Array<{
+    linea: number;
+    idClienteApv: number;
+    cliente: string;
+    telefono: string;
+    asignadoA: string;
+  }>;
+  omitidas: Incidencia[];
+  advertencias: Incidencia[];
 }
 
 /** Última respuesta del servidor, etiquetada con la consulta que la produjo:
@@ -75,6 +100,11 @@ export default function ClientesDescuentoPage() {
   const [porEliminar, setPorEliminar] = useState<ClienteDescuento | null>(null);
   const [eliminando, setEliminando] = useState(false);
   const [errorEliminar, setErrorEliminar] = useState("");
+
+  const [importando, setImportando] = useState(false);
+  const [resumenImportacion, setResumenImportacion] = useState<ResumenImportacion | null>(null);
+  const [errorImportacion, setErrorImportacion] = useState("");
+  const archivoRef = useRef<HTMLInputElement>(null);
 
   const clave = `${version}|${pagina}|${busquedaAplicada}`;
 
@@ -180,6 +210,39 @@ export default function ClientesDescuentoPage() {
     }
   };
 
+  /** Sube el CSV de la lista APV y muestra el resumen de lo que entró. */
+  const importar = async (archivo: File) => {
+    setImportando(true);
+    setErrorImportacion("");
+    setResumenImportacion(null);
+    try {
+      const cuerpoPeticion = new FormData();
+      cuerpoPeticion.append("archivo", archivo);
+      const res = await fetch("/api/clientes-descuento/importar", {
+        method: "POST",
+        body: cuerpoPeticion,
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const cuerpo = (await res.json().catch(() => null)) as
+        | (ResumenImportacion & { error?: string })
+        | null;
+      if (!res.ok || !cuerpo || cuerpo.error) {
+        throw new Error(cuerpo?.error ?? "No se pudo importar la lista");
+      }
+      setResumenImportacion(cuerpo);
+      recargar();
+    } catch (err: unknown) {
+      setErrorImportacion(err instanceof Error ? err.message : "Error al importar");
+    } finally {
+      setImportando(false);
+      // Permite volver a elegir el mismo archivo.
+      if (archivoRef.current) archivoRef.current.value = "";
+    }
+  };
+
   const totalPaginas = datos ? Math.max(1, Math.ceil(datos.total / datos.porPagina)) : 1;
 
   const tarjetas = datos
@@ -222,6 +285,29 @@ export default function ClientesDescuentoPage() {
             )}
             Actualizar
           </button>
+          <input
+            ref={archivoRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(e) => {
+              const archivo = e.target.files?.[0];
+              if (archivo) void importar(archivo);
+            }}
+          />
+          <button
+            onClick={() => archivoRef.current?.click()}
+            disabled={importando}
+            title="Cargar la lista de clientes APV (CSV)"
+            className={btnSecundario}
+          >
+            {importando ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Upload className="h-3.5 w-3.5" />
+            )}
+            Importar CSV
+          </button>
           <button
             onClick={() => setFormulario({ modo: "alta" })}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-[11px] font-black uppercase tracking-widest hover:brightness-110 transition-all"
@@ -244,7 +330,7 @@ export default function ClientesDescuentoPage() {
             type="search"
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Teléfono o nombre del cliente…"
+            placeholder="Celular, nombre, RFC o email…"
             className={cn(inputCls, "pl-9")}
           />
         </div>
@@ -279,6 +365,20 @@ export default function ClientesDescuentoPage() {
         </div>
       )}
 
+      {errorImportacion && (
+        <div className="flex items-center gap-2 bg-rose-500/10 border border-rose-500/25 rounded-2xl p-4 text-rose-300 text-sm font-bold">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {errorImportacion}
+        </div>
+      )}
+
+      {resumenImportacion && (
+        <ResumenDeImportacion
+          resumen={resumenImportacion}
+          onCerrar={() => setResumenImportacion(null)}
+        />
+      )}
+
       {/* Tabla */}
       <div className="bg-white/[0.02] border border-white/10 rounded-2xl overflow-hidden">
         {cargando && !datos ? (
@@ -301,8 +401,10 @@ export default function ClientesDescuentoPage() {
             <table className="w-full">
               <thead className="bg-[#10151f] shadow-[0_1px_0_rgba(255,255,255,0.08)]">
                 <tr>
-                  <th className={cn(lbl, "px-4 py-2.5 text-left")}>Teléfono</th>
+                  <th className={cn(lbl, "px-4 py-2.5 text-left")}>Celular</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-left")}>Cliente</th>
+                  <th className={cn(lbl, "px-4 py-2.5 text-left")}>Otros teléfonos</th>
+                  <th className={cn(lbl, "px-4 py-2.5 text-left")}>Email</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-right")}>Descuento</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-left")}>Fecha de alta</th>
                   <th className={cn(lbl, "px-4 py-2.5 text-left")}>Capturó</th>
@@ -315,18 +417,35 @@ export default function ClientesDescuentoPage() {
                 {datos.registros.map((r) => (
                   <tr key={r.id} className="hover:bg-white/[0.02] transition-colors">
                     <td className="px-4 py-2.5 font-mono text-[13px] font-bold text-slate-100 tabular-nums whitespace-nowrap">
-                      {r.telefono}
-                    </td>
-                    <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 max-w-[320px] truncate">
-                      {r.cliente}
-                      {r.idClienteBdav != null && (
-                        <span
-                          className="ml-2 text-[9px] font-black uppercase tracking-widest text-slate-500"
-                          title={`Cliente #${r.idClienteBdav} del catálogo de bdav`}
-                        >
-                          catálogo
+                      {r.telefono ?? (
+                        <span className="font-sans text-slate-600" title="Sin celular: WhatsApp no lo identifica">
+                          —
                         </span>
                       )}
+                    </td>
+                    <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 max-w-[320px]">
+                      <div className="truncate">
+                        {r.cliente}
+                        {r.idClienteBdav != null && (
+                          <span
+                            className="ml-2 text-[9px] font-black uppercase tracking-widest text-slate-500"
+                            title={`Cliente #${r.idClienteBdav} del catálogo de bdav`}
+                          >
+                            catálogo
+                          </span>
+                        )}
+                      </div>
+                      {r.rfc && (
+                        <div className="font-mono text-[10px] font-bold tracking-wide text-slate-500">
+                          {r.rfc}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 max-w-[200px] truncate">
+                      {r.telefono2 ?? <span className="text-slate-600">—</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-[12px] font-bold text-slate-400 max-w-[220px] truncate">
+                      {r.email ?? <span className="text-slate-600">—</span>}
                     </td>
                     <td className="px-4 py-2.5 text-right">
                       <span
@@ -474,7 +593,7 @@ function DialogoBaja({
         <div className="px-5 py-4 space-y-3">
           <p id="cd-eliminar-texto" className="text-sm text-slate-300 leading-relaxed">
             Se quitará del padrón a <b className="text-white">{registro.cliente}</b> (
-            <span className="font-mono tabular-nums">{registro.telefono}</span>,{" "}
+            <span className="font-mono tabular-nums">{registro.telefono ?? "sin celular"}</span>,{" "}
             {porcentaje(registro.descuento)}). Esta acción no se puede deshacer.
           </p>
           {error && (
@@ -507,6 +626,78 @@ function DialogoBaja({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Lo que se muestra de cada lista de incidencias antes de "y N más". */
+const INCIDENCIAS_VISIBLES = 40;
+
+function ListaIncidencias({ titulo, lineas }: { titulo: string; lineas: string[] }) {
+  if (lineas.length === 0) return null;
+  const visibles = lineas.slice(0, INCIDENCIAS_VISIBLES);
+  return (
+    <details className="text-[12px]">
+      <summary className="cursor-pointer font-black text-cyan-200/90 hover:text-white">
+        {titulo} ({entero(lineas.length)})
+      </summary>
+      <ul className="mt-2 max-h-56 overflow-y-auto space-y-0.5 pl-4 list-disc text-cyan-100/80">
+        {visibles.map((linea, i) => (
+          <li key={i}>{linea}</li>
+        ))}
+        {lineas.length > visibles.length && (
+          <li className="list-none text-cyan-200/60">
+            … y {entero(lineas.length - visibles.length)} más
+          </li>
+        )}
+      </ul>
+    </details>
+  );
+}
+
+function ResumenDeImportacion({
+  resumen,
+  onCerrar,
+}: {
+  resumen: ResumenImportacion;
+  onCerrar: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      className="bg-cyan-500/10 border border-cyan-500/25 rounded-2xl p-4 text-sm text-cyan-100 space-y-3"
+    >
+      <div className="flex items-start gap-3">
+        <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-cyan-300" />
+        <p className="font-bold leading-relaxed">
+          Lista importada: {entero(resumen.insertados)} clientes nuevos y{" "}
+          {entero(resumen.actualizados)} actualizados de {entero(resumen.total)}.{" "}
+          {entero(resumen.sinCelular)} quedaron sin celular (WhatsApp no los identifica hasta
+          que se les capture uno) y {entero(resumen.ligadosBdav)} se ligaron al catálogo de bdav
+          por su RFC.
+        </p>
+        <button
+          onClick={onCerrar}
+          aria-label="Cerrar"
+          className="ml-auto p-1.5 rounded-lg text-cyan-200/70 hover:text-white hover:bg-white/[0.06] transition-all"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <ListaIncidencias
+        titulo="Celulares que ya eran de otro cliente: entraron sin celular, revisa a quién pertenece"
+        lineas={resumen.celularRepetido.map(
+          (c) => `Línea ${c.linea} · ID ${c.idClienteApv} ${c.cliente}: ${c.telefono} ya es de ${c.asignadoA}`
+        )}
+      />
+      <ListaIncidencias
+        titulo="Filas que no entraron"
+        lineas={resumen.omitidas.map((o) => `Línea ${o.linea}: ${o.motivo}`)}
+      />
+      <ListaIncidencias
+        titulo="Filas que entraron con algún dato movido"
+        lineas={resumen.advertencias.map((a) => `Línea ${a.linea}: ${a.motivo}`)}
+      />
     </div>
   );
 }

@@ -8,11 +8,13 @@ import { fechaCorta, porcentaje } from "@/lib/formato";
 import type { ClienteDescuento } from "@/lib/clientes-descuento";
 import { useDialogo } from "@/components/dashboard/useDialogo";
 
-// Alta y edición de un cliente con descuento del Vendedor IA. El teléfono es
-// la llave: al capturarlo se busca en el catálogo de clientes de bdav y, si
-// está, se prellenan nombre y descuento; si no, en el alta el nombre queda
-// vacío y el descuento propone el valor por defecto (DESCUENTO_DEFAULT del
-// .env). En edición la búsqueda solo sobreescribe si el catálogo sí lo tiene:
+// Alta y edición de un cliente con descuento del Vendedor IA. El celular es
+// la llave con la que WhatsApp reconoce al cliente, pero es opcional: la lista
+// APV trae miles de clientes sin él. Al capturarlo se busca en el catálogo de
+// clientes de bdav y, si está, se prellenan nombre y descuento; si no, en el
+// alta el nombre queda vacío y el descuento propone el valor por defecto
+// (DESCUENTO_DEFAULT del .env). RFC, otros teléfonos y email son datos de
+// contacto sin más validación que su largo. En edición la búsqueda solo sobreescribe si el catálogo sí lo tiene:
 // lo capturado a mano no se pierde. Lo que el usuario teclee mientras la
 // búsqueda está en vuelo tampoco se pisa.
 
@@ -102,6 +104,9 @@ export function FormularioClienteDescuento({
   const [telefono, setTelefono] = useState(registro?.telefono ?? "");
   const [cliente, setCliente] = useState(registro?.cliente ?? "");
   const [descuento, setDescuento] = useState(registro ? String(registro.descuento) : "");
+  const [rfc, setRfc] = useState(registro?.rfc ?? "");
+  const [telefono2, setTelefono2] = useState(registro?.telefono2 ?? "");
+  const [email, setEmail] = useState(registro?.email ?? "");
   const [idClienteBdav, setIdClienteBdav] = useState<number | null>(
     registro?.idClienteBdav ?? null
   );
@@ -261,8 +266,9 @@ export function FormularioClienteDescuento({
   const guardar = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
-    if (soloDigitos(telefono).length < DIGITOS_MINIMOS) {
-      setError("Captura los 10 dígitos del teléfono");
+    const digitosCelular = soloDigitos(telefono);
+    if (digitosCelular && digitosCelular.length < DIGITOS_MINIMOS) {
+      setError("El celular debe tener 10 dígitos");
       return;
     }
     if (!cliente.trim()) {
@@ -282,7 +288,16 @@ export function FormularioClienteDescuento({
       const res = await fetch(url, {
         method: esAlta ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ telefono, cliente: cliente.trim(), descuento: numero, idClienteBdav }),
+        body: JSON.stringify({
+          telefono,
+          cliente: cliente.trim(),
+          descuento: numero,
+          rfc: rfc.trim(),
+          telefono2: telefono2.trim(),
+          email: email.trim(),
+          idClienteApv: registro?.idClienteApv ?? null,
+          idClienteBdav,
+        }),
       });
       if (res.status === 401) {
         router.push("/login");
@@ -339,8 +354,8 @@ export function FormularioClienteDescuento({
               </h2>
               <p className={cn(lbl, "mt-0.5")}>
                 {esAlta
-                  ? "Captura el teléfono y búscalo en el catálogo"
-                  : `Alta: ${fechaCorta(registro?.creadoEn)}${registro?.creadoPor ? ` · ${registro.creadoPor}` : ""}`}
+                  ? "Captura el celular y búscalo en el catálogo; lo demás es opcional"
+                  : `Alta: ${fechaCorta(registro?.creadoEn)}${registro?.creadoPor ? ` · ${registro.creadoPor}` : ""}${registro?.idClienteApv != null ? ` · ID APV ${registro.idClienteApv}` : ""}`}
               </p>
             </div>
             <button
@@ -358,7 +373,7 @@ export function FormularioClienteDescuento({
           <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
             <div>
               <label htmlFor="cd-telefono" className={lbl}>
-                Teléfono
+                Celular (WhatsApp)
               </label>
               <div className="mt-1 flex gap-2">
                 <input
@@ -376,7 +391,7 @@ export function FormularioClienteDescuento({
                       void buscar(true);
                     }
                   }}
-                  placeholder="10 dígitos"
+                  placeholder="10 dígitos · opcional"
                   className={cn(inputCls, "font-mono tabular-nums")}
                 />
                 <button
@@ -469,6 +484,56 @@ export function FormularioClienteDescuento({
                   %
                 </span>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="cd-rfc" className={lbl}>
+                  RFC
+                </label>
+                <input
+                  id="cd-rfc"
+                  type="text"
+                  maxLength={13}
+                  autoComplete="off"
+                  value={rfc}
+                  onChange={(e) => setRfc(e.target.value.toUpperCase())}
+                  placeholder="12 o 13 caracteres"
+                  className={cn(inputCls, "mt-1 font-mono uppercase")}
+                />
+              </div>
+              <div>
+                <label htmlFor="cd-telefono2" className={lbl}>
+                  Otros teléfonos
+                </label>
+                <input
+                  id="cd-telefono2"
+                  type="text"
+                  maxLength={60}
+                  autoComplete="off"
+                  value={telefono2}
+                  onChange={(e) => setTelefono2(e.target.value)}
+                  placeholder="Fijo, oficina…"
+                  className={cn(inputCls, "mt-1")}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="cd-email" className={lbl}>
+                Email
+              </label>
+              <input
+                id="cd-email"
+                type="text"
+                inputMode="email"
+                maxLength={120}
+                autoComplete="off"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="correo@dominio.com"
+                className={cn(inputCls, "mt-1")}
+              />
             </div>
 
             {error && (

@@ -4,6 +4,7 @@ import { validarCapturaClienteDescuento } from "@/lib/clientes-descuento";
 import {
   crearClienteDescuento,
   listarClientesDescuento,
+  ReferenciaApvDuplicadaError,
   TelefonoDuplicadoError,
 } from "@/lib/db-clientes-descuento";
 import { descuentoPorDefecto } from "@/lib/descuento-default";
@@ -66,6 +67,9 @@ export async function POST(request: Request) {
         { error: error.message, existente: error.existente },
         { status: 409 }
       );
+    }
+    if (error instanceof ReferenciaApvDuplicadaError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     console.error("Error dando de alta un cliente con descuento:", error);
     return NextResponse.json(

@@ -20,7 +20,7 @@ const globalConPool = globalThis as unknown as {
 // Súbela al agregar o cambiar tablas en TABLAS. En desarrollo el módulo se
 // recarga pero globalThis persiste: sin este número, un esquema nuevo no se
 // aplicaría hasta reiniciar el servidor.
-const VERSION_ESQUEMA = 2;
+const VERSION_ESQUEMA = 3;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -87,19 +87,72 @@ const TABLAS = [
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   `CREATE TABLE IF NOT EXISTS clientes_descuento (
      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-     telefono VARCHAR(20) NOT NULL COMMENT 'Solo dígitos; nacional de 10 si es de México',
+     telefono VARCHAR(20) NULL COMMENT 'Celular de WhatsApp: solo dígitos, nacional de 10 si es de México; NULL = sin celular',
      cliente VARCHAR(150) NOT NULL,
      descuento DECIMAL(5,2) NOT NULL COMMENT 'Porcentaje 0-100',
-     id_cliente_bdav BIGINT UNSIGNED NULL COMMENT 'clientes.id en bdav si se prellenó del catálogo',
+     rfc VARCHAR(13) NULL,
+     telefono2 VARCHAR(60) NULL COMMENT 'Otros teléfonos, texto libre',
+     email VARCHAR(120) NULL,
+     id_cliente_apv INT UNSIGNED NULL COMMENT 'ID CLIENTE de la lista de clientes APV',
+     id_cliente_bdav BIGINT UNSIGNED NULL COMMENT 'clientes.id en bdav si se prellenó del catálogo o se ligó por RFC',
      creado_por VARCHAR(50) NULL,
      creado_en DATETIME NOT NULL COMMENT 'Fecha de alta (America/Monterrey)',
      actualizado_por VARCHAR(50) NULL,
      actualizado_en DATETIME NOT NULL,
      PRIMARY KEY (id),
      UNIQUE KEY ux_telefono (telefono),
-     KEY idx_cliente (cliente)
+     UNIQUE KEY ux_id_apv (id_cliente_apv),
+     KEY idx_cliente (cliente),
+     KEY idx_rfc (rfc)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
+
+// Cambios a clientes_descuento posteriores a su primera versión. CREATE TABLE IF
+// NOT EXISTS no toca una tabla que ya existe, así que se revisa
+// information_schema y se aplica solo lo que falte. Es MySQL 8: no hay ADD
+// COLUMN IF NOT EXISTS, por eso la revisión va aparte del ALTER.
+const COLUMNAS_NUEVAS_CLIENTES_DESCUENTO: Array<{ columna: string; alter: string }> = [
+  {
+    columna: "rfc",
+    alter:
+      "ALTER TABLE clientes_descuento ADD COLUMN rfc VARCHAR(13) NULL AFTER descuento, ADD KEY idx_rfc (rfc)",
+  },
+  {
+    columna: "telefono2",
+    alter:
+      "ALTER TABLE clientes_descuento ADD COLUMN telefono2 VARCHAR(60) NULL COMMENT 'Otros teléfonos, texto libre' AFTER rfc",
+  },
+  {
+    columna: "email",
+    alter: "ALTER TABLE clientes_descuento ADD COLUMN email VARCHAR(120) NULL AFTER telefono2",
+  },
+  {
+    columna: "id_cliente_apv",
+    alter:
+      "ALTER TABLE clientes_descuento ADD COLUMN id_cliente_apv INT UNSIGNED NULL COMMENT 'ID CLIENTE de la lista de clientes APV' AFTER email, ADD UNIQUE KEY ux_id_apv (id_cliente_apv)",
+  },
+];
+
+async function migrarClientesDescuento(pool: mysql.Pool): Promise<void> {
+  const [filas] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT COLUMN_NAME AS columna, IS_NULLABLE AS anulable
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'clientes_descuento'`
+  );
+  const existentes = new Map(filas.map((f) => [String(f.columna), String(f.anulable)]));
+
+  // El celular dejó de ser obligatorio: la lista APV trae miles de clientes sin
+  // él y tienen que estar en el padrón aunque WhatsApp no los identifique.
+  // UNIQUE admite varios NULL: la llave sigue valiendo para los que sí lo tienen.
+  if (existentes.get("telefono") === "NO") {
+    await pool.query(
+      "ALTER TABLE clientes_descuento MODIFY telefono VARCHAR(20) NULL COMMENT 'Celular de WhatsApp: solo dígitos, nacional de 10 si es de México; NULL = sin celular'"
+    );
+  }
+  for (const { columna, alter } of COLUMNAS_NUEVAS_CLIENTES_DESCUENTO) {
+    if (!existentes.has(columna)) await pool.query(alter);
+  }
+}
 
 export function asegurarEsquema(): Promise<void> {
   if (
@@ -111,6 +164,7 @@ export function asegurarEsquema(): Promise<void> {
       for (const sql of TABLAS) {
         await poolConversaciones().query(sql);
       }
+      await migrarClientesDescuento(poolConversaciones());
     })().catch((error) => {
       // Si falló, se permite reintentar en la siguiente llamada.
       globalConPool.__esquemaConversaciones = undefined;
