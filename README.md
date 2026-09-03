@@ -50,8 +50,14 @@ punto de venta). Perfiles: Administrador, Operaciones, Ventas.
   número que escribe por WhatsApp está en ese padrón, el agente cotiza las piezas nuevas con
   el descuento del cliente sobre el precio de lista, más IVA; si no está, a precio de
   mostrador. Ambos viven en la base `BDVidaurriConversaciones`, la única donde la
-  aplicación escribe.
+  aplicación escribe. Al dar de alta un cliente con celular, el sistema le manda la
+  bienvenida por WhatsApp a través de Axon Logic (`AXON_API_KEY` del `.env`; ver
+  [docs/AXON-LOGIC.md](docs/AXON-LOGIC.md)). **Créditos WhatsApp** (`/dashboard/axon`):
+  saldo de tokens de la cuenta en Axon Logic (un token = una conversación de 24 h) y
+  compra de packs vía Stripe; el encabezado del panel lleva un chip con el saldo.
 - **VIDA (agente IA)**: chat que consulta la base de datos en lenguaje natural (solo SELECT).
+  Cada respuesta se puede exportar a PDF con la pregunta que la originó y su formato
+  (tablas, listas, negritas, código).
 
 ## Base de datos
 

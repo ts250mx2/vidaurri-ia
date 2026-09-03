@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, RotateCcw, Send, Square } from "lucide-react";
+import { FileDown, Loader2, RotateCcw, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { preguntarVida, SesionExpiradaError } from "@/lib/agente-cliente";
 import { AgenteMarkdown } from "@/components/dashboard/AgenteMarkdown";
@@ -33,6 +33,8 @@ export default function VidaPage() {
   const [pensando, setPensando] = useState(false);
   const [error, setError] = useState("");
   const [modelo, setModelo] = useState(MODELOS_VIDA[0].id);
+  /** Índice de la respuesta que se está exportando a PDF. */
+  const [exportando, setExportando] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Espejo del texto en curso: el catch de abort lee el acumulado real, no el
   // valor capturado por el closure del render en que se hizo clic.
@@ -55,6 +57,26 @@ export default function VidaPage() {
     }
   }, []);
 
+  /** PDF de una respuesta junto con la pregunta que la originó (el mensaje anterior). */
+  const exportarPdf = async (indice: number) => {
+    const respuesta = mensajes[indice];
+    const anterior = mensajes[indice - 1];
+    if (!respuesta || respuesta.rol !== "agente") return;
+    setExportando(indice);
+    setError("");
+    try {
+      const { exportarRespuestaPdf } = await import("@/lib/pdf-respuesta");
+      await exportarRespuestaPdf({
+        pregunta: anterior?.rol === "usuario" ? anterior.texto : "",
+        respuesta: respuesta.texto,
+      });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "No se pudo generar el PDF");
+    } finally {
+      setExportando(null);
+    }
+  };
+
   const cambiarModelo = (id: string) => {
     setModelo(id);
     try {
@@ -64,6 +86,11 @@ export default function VidaPage() {
     }
   };
   useEffect(() => {
+    // Con la lista vacía no se escribe: en el primer render (y en la doble
+    // corrida de efectos de StrictMode en desarrollo) pisaría con [] la
+    // conversación guardada antes de que el efecto de arriba la restaure.
+    // "Nueva" borra la clave explícitamente.
+    if (mensajes.length === 0) return;
     try {
       sessionStorage.setItem(CLAVE_STORAGE, JSON.stringify(mensajes.slice(-30)));
     } catch {
@@ -230,7 +257,29 @@ export default function VidaPage() {
                       : "bg-white/[0.05] border-white/10 rounded-bl-md"
                   )}
                 >
-                  {m.rol === "usuario" ? m.texto : <AgenteMarkdown texto={m.texto} />}
+                  {m.rol === "usuario" ? (
+                    m.texto
+                  ) : (
+                    <>
+                      <AgenteMarkdown texto={m.texto} />
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          onClick={() => void exportarPdf(i)}
+                          disabled={exportando !== null}
+                          title="Exportar esta respuesta a PDF"
+                          aria-label="Exportar esta respuesta a PDF"
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-transparent text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-amber-300 hover:bg-white/[0.06] hover:border-white/10 transition-colors disabled:opacity-40"
+                        >
+                          {exportando === i ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <FileDown className="h-3.5 w-3.5" />
+                          )}
+                          PDF
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
