@@ -3,6 +3,7 @@ import {
   CLIENTE_MAX,
   condicionCelular,
   condicionesBusqueda,
+  leerIdRuta,
   leerPermitirPedido,
   normalizarRfc,
   validarCapturaClienteDescuento,
@@ -261,5 +262,19 @@ describe("leerPermitirPedido", () => {
     expect(leerPermitirPedido({})).toBeNull();
     expect(leerPermitirPedido(null)).toBeNull();
     expect(leerPermitirPedido([])).toBeNull();
+  });
+});
+
+describe("leerIdRuta", () => {
+  it("acepta solo un entero positivo escrito tal cual", () => {
+    expect(leerIdRuta("12")).toBe(12);
+    expect(leerIdRuta("5746")).toBe(5746);
+    expect(leerIdRuta("0")).toBeNull();
+    expect(leerIdRuta("-3")).toBeNull();
+    expect(leerIdRuta("012")).toBeNull();
+    expect(leerIdRuta("1e1")).toBeNull();
+    expect(leerIdRuta("12abc")).toBeNull();
+    expect(leerIdRuta("abc")).toBeNull();
+    expect(leerIdRuta("")).toBeNull();
   });
 });

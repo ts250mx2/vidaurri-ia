@@ -1,5 +1,10 @@
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
-import { ahoraMonterrey, asegurarEsquema, poolConversaciones } from "./db-conversaciones";
+import {
+  ahoraMonterrey,
+  asegurarEsquema,
+  enTransaccion,
+  poolConversaciones,
+} from "@/lib/db-conversaciones";
 import {
   condicionCelular,
   condicionesBusqueda,
@@ -135,22 +140,6 @@ async function sincronizarTelefonos(
       "INSERT INTO clientes_descuento_telefonos (id_cliente, telefono, creado_en) VALUES ?",
       [faltan.map((t) => [idCliente, t, momento])]
     );
-  }
-}
-
-/** Escritura atómica: o entran el registro y sus celulares, o nada. */
-async function enTransaccion<T>(trabajo: (conexion: PoolConnection) => Promise<T>): Promise<T> {
-  const conexion = await poolConversaciones().getConnection();
-  try {
-    await conexion.beginTransaction();
-    const resultado = await trabajo(conexion);
-    await conexion.commit();
-    return resultado;
-  } catch (error) {
-    await conexion.rollback();
-    throw error;
-  } finally {
-    conexion.release();
   }
 }
 

@@ -26,19 +26,39 @@ interface FilaHerramienta {
   usado?: { desdeConIva?: unknown } | null;
 }
 
+/**
+ * Lo que una herramienta devuelve en su JSON, en lo que toca al contraste.
+ * Las búsquedas traen `resultados`; las tools de pedido (ver_pedido,
+ * confirmar_pedido...) traen además el folio y los totales del pedido.
+ */
+interface DatosHerramienta {
+  resultados?: FilaHerramienta[];
+  /** Folios de pedido ("P-000131"). */
+  folios?: unknown;
+  /** Subtotal, IVA, total e importes por partida, ya con IVA. */
+  importes?: unknown;
+}
+
 function agregarPrecio(valor: unknown, precios: Set<number>): void {
   const numero = Number(valor);
   if (Number.isFinite(numero) && numero > 0) precios.add(Math.round(numero * 100) / 100);
 }
 
+// Las tools construyen estos campos en el servidor, pero el contraste no debe
+// tronar un turno entero si algún día llega algo que no es lista.
+function comoLista(valor: unknown): unknown[] {
+  return Array.isArray(valor) ? valor : [];
+}
+
 /** Apunta lo que devolvió una búsqueda para poder contrastar la respuesta. */
 export function registrarResultado(contenido: string, catalogo: CatalogoTurno): void {
-  let datos: { resultados?: FilaHerramienta[] };
+  let datos: DatosHerramienta;
   try {
-    datos = JSON.parse(contenido) as { resultados?: FilaHerramienta[] };
+    datos = JSON.parse(contenido) as DatosHerramienta;
   } catch {
     return; // resultado no parseable: no hay nada que registrar
   }
+  if (!datos || typeof datos !== "object") return; // JSON válido pero sin forma de objeto
   for (const fila of datos.resultados ?? []) {
     if (typeof fila.codigo === "string" && fila.codigo) catalogo.codigos.add(fila.codigo.toUpperCase());
     if (typeof fila.descripcion === "string") catalogo.descripciones.push(fila.descripcion.toUpperCase());
@@ -46,6 +66,13 @@ export function registrarResultado(contenido: string, catalogo: CatalogoTurno): 
     agregarPrecio(fila.precioSinIva, catalogo.precios);
     agregarPrecio(fila.usado?.desdeConIva, catalogo.precios);
   }
+  // El folio del pedido ("P-000131") mezcla letra y dígitos igual que un código
+  // de artículo, y el total ("$5,858.00") se lee como un precio: si no se
+  // apuntan aquí, el agente que los cita tal cual sale marcado como inventado.
+  for (const folio of comoLista(datos.folios)) {
+    if (typeof folio === "string" && folio) catalogo.codigos.add(folio.toUpperCase());
+  }
+  for (const importe of comoLista(datos.importes)) agregarPrecio(importe, catalogo.precios);
 }
 
 // Un código de artículo mezcla letras y dígitos ("DDDAI15", "GTCAE18R",

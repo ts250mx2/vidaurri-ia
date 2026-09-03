@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ChevronLeft, ChevronRight, Globe, Loader2, MessageCircle, X } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Globe, Loader2, MessageCircle, Store, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { entero, fechaCorta } from "@/lib/formato";
 
@@ -74,19 +74,29 @@ export function Contacto({ c }: { c: ConversacionResumen }) {
   );
 }
 
+const ESTILO_CANAL: Record<string, { etiqueta: string; clase: string; Icono: typeof Globe }> = {
+  web: { etiqueta: "Chat web", clase: "text-cyan-300 bg-cyan-500/10 border-cyan-500/25", Icono: Globe },
+  whatsapp: {
+    etiqueta: "WhatsApp",
+    clase: "text-emerald-300 bg-emerald-500/10 border-emerald-500/25",
+    Icono: MessageCircle,
+  },
+  // Vico en modo vendedor desde /mostrador de vidaurri-page: neutro, para que
+  // no se confunda con un chat de cliente por WhatsApp.
+  mostrador: { etiqueta: "Mostrador", clase: "text-slate-300 bg-white/[0.06] border-white/15", Icono: Store },
+};
+
 export function BadgeCanal({ canal }: { canal: string }) {
-  const esWeb = canal === "web";
+  const { etiqueta, clase, Icono } = ESTILO_CANAL[canal] ?? ESTILO_CANAL.whatsapp;
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border",
-        esWeb
-          ? "text-cyan-300 bg-cyan-500/10 border-cyan-500/25"
-          : "text-emerald-300 bg-emerald-500/10 border-emerald-500/25"
+        clase
       )}
     >
-      {esWeb ? <Globe className="h-3 w-3" /> : <MessageCircle className="h-3 w-3" />}
-      {esWeb ? "Chat web" : "WhatsApp"}
+      <Icono className="h-3 w-3" />
+      {etiqueta}
     </span>
   );
 }

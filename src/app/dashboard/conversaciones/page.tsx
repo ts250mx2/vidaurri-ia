@@ -33,7 +33,7 @@ interface PaginaConversaciones {
   conversaciones: ConversacionResumen[];
   total: number;
   totalMensajes: number;
-  porCanal: { whatsapp: number; web: number };
+  porCanal: { whatsapp: number; web: number; mostrador: number };
   porPagina: number;
 }
 

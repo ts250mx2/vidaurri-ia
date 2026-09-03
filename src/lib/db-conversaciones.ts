@@ -10,6 +10,9 @@ import mysql from "mysql2/promise";
 //   conversacion_mensajes   — detalle: cada mensaje (cliente o vendedor)
 //   clientes_descuento      — padrón teléfono → cliente y % de descuento
 //                             (CRUD en db-clientes-descuento.ts)
+//   pedidos_mostrador       — pedidos para recoger en sucursal (mostrador,
+//                             WhatsApp o web) con sus partidas y bitácora de
+//                             eventos (capa de datos en db-pedidos.ts)
 
 const globalConPool = globalThis as unknown as {
   __poolConversaciones?: mysql.Pool;
@@ -20,7 +23,9 @@ const globalConPool = globalThis as unknown as {
 // Súbela al agregar o cambiar tablas en TABLAS. En desarrollo el módulo se
 // recarga pero globalThis persiste: sin este número, un esquema nuevo no se
 // aplicaría hasta reiniciar el servidor.
-const VERSION_ESQUEMA = 4;
+// v5: pedidos_mostrador, pedidos_mostrador_partidas y pedidos_mostrador_eventos
+// (módulo de pedidos, fase 1).
+const VERSION_ESQUEMA = 5;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -120,6 +125,79 @@ const TABLAS = [
      CONSTRAINT fk_tel_cliente FOREIGN KEY (id_cliente)
        REFERENCES clientes_descuento (id) ON DELETE CASCADE
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  // Pedidos para recoger en sucursal. Van DESPUÉS de clientes_descuento porque
+  // la FK del cliente exige que esa tabla ya exista. El folio se asigna al
+  // pasar de borrador a enviado; mientras es borrador, clave_borrador dice de
+  // quién es (v:<usuario> del POS o c:<telefono> del cliente).
+  `CREATE TABLE IF NOT EXISTS pedidos_mostrador (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  folio VARCHAR(12) NULL COMMENT 'P-000131; se asigna al pasar de borrador a enviado',
+  estatus VARCHAR(12) NOT NULL DEFAULT 'borrador' COMMENT 'borrador | enviado | confirmado | listo | entregado | cancelado',
+  canal VARCHAR(10) NOT NULL COMMENT 'mostrador | whatsapp | web',
+  clave_borrador VARCHAR(40) NULL COMMENT 'v:<usuario> (vendedor) o c:<telefono> (cliente) mientras es borrador; NULL después',
+  id_cliente BIGINT UNSIGNED NULL COMMENT 'clientes_descuento.id; NULL = público general',
+  cliente VARCHAR(150) NOT NULL COMMENT 'Nombre del cliente al momento del pedido (snapshot)',
+  telefono VARCHAR(20) NULL COMMENT 'Celular del cliente, nacional 10 dígitos, si se conoce',
+  descuento_pct DECIMAL(5,2) NOT NULL DEFAULT 0 COMMENT 'Descuento del padrón aplicado a las partidas nuevas',
+  sucursal VARCHAR(10) NOT NULL DEFAULT 'matriz' COMMENT 'matriz | fierro (dónde recoge)',
+  capturado_por VARCHAR(50) NULL COMMENT 'usuario del POS si lo capturó un vendedor; NULL si lo capturó el cliente',
+  atendido_por VARCHAR(50) NULL COMMENT 'último usuario que cambió el estatus',
+  subtotal DECIMAL(11,2) NOT NULL DEFAULT 0,
+  iva DECIMAL(11,2) NOT NULL DEFAULT 0,
+  total DECIMAL(11,2) NOT NULL DEFAULT 0 COMMENT 'IVA incluido; suma de importes',
+  observaciones VARCHAR(500) NULL,
+  folio_venta_pos VARCHAR(20) NULL COMMENT 'Folio de la venta en el POS al entregar (referencia, solo lectura)',
+  motivo_cancelacion VARCHAR(200) NULL,
+  creado_en DATETIME NOT NULL COMMENT 'America/Monterrey',
+  enviado_en DATETIME NULL,
+  confirmado_en DATETIME NULL,
+  listo_en DATETIME NULL,
+  entregado_en DATETIME NULL,
+  cancelado_en DATETIME NULL,
+  actualizado_en DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY ux_folio (folio),
+  KEY idx_estatus (estatus),
+  KEY idx_cliente (id_cliente),
+  KEY idx_borrador (clave_borrador),
+  KEY idx_creado (creado_en),
+  CONSTRAINT fk_ped_cliente FOREIGN KEY (id_cliente) REFERENCES clientes_descuento (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS pedidos_mostrador_partidas (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id_pedido BIGINT UNSIGNED NOT NULL,
+  partida INT NOT NULL COMMENT 'Renglón 1..n',
+  origen VARCHAR(12) NOT NULL COMMENT 'nueva | usada | sobre_pedido',
+  codigo VARCHAR(20) NULL COMMENT 'articulos.codigo de bdav (nueva / sobre_pedido)',
+  id_pieza_usada BIGINT UNSIGNED NULL COMMENT 'piezas.id_pieza de la Bodega Usado (usada)',
+  descripcion VARCHAR(200) NOT NULL,
+  cantidad INT NOT NULL,
+  precio_unitario DECIMAL(11,2) NOT NULL COMMENT 'IVA incluido, ya con el descuento del cliente',
+  importe DECIMAL(11,2) NOT NULL COMMENT 'cantidad * precio_unitario',
+  existencia_al_pedir INT NULL COMMENT 'existencia en bdav/usadas al agregar',
+  estatus_partida VARCHAR(16) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | confirmada | sin_existencia | sobre_pedido',
+  dias_entrega SMALLINT NULL COMMENT 'Solo sobre_pedido: días que promete el mostrador',
+  nota VARCHAR(200) NULL COMMENT 'Nota del vendedor al confirmar',
+  creado_en DATETIME NOT NULL,
+  actualizado_en DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_pedido (id_pedido),
+  CONSTRAINT fk_part_pedido FOREIGN KEY (id_pedido) REFERENCES pedidos_mostrador (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS pedidos_mostrador_eventos (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id_pedido BIGINT UNSIGNED NOT NULL,
+  evento VARCHAR(30) NOT NULL COMMENT 'creado | partida_agregada | partida_quitada | enviado | confirmado | listo | entregado | cancelado | nota',
+  estatus_anterior VARCHAR(12) NULL,
+  estatus_nuevo VARCHAR(12) NULL,
+  detalle VARCHAR(500) NULL,
+  usuario VARCHAR(50) NULL COMMENT 'usuario del POS o "cliente"',
+  canal VARCHAR(10) NOT NULL COMMENT 'mostrador | whatsapp | web',
+  creado_en DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_pedido (id_pedido),
+  CONSTRAINT fk_ev_pedido FOREIGN KEY (id_pedido) REFERENCES pedidos_mostrador (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 // Cambios a clientes_descuento posteriores a su primera versión. CREATE TABLE IF
@@ -221,6 +299,26 @@ export function asegurarEsquema(): Promise<void> {
   return globalConPool.__esquemaConversaciones;
 }
 
+/** Escritura atómica sobre BDVidaurriConversaciones: o entra todo el trabajo,
+ *  o nada. Vive aquí porque la comparten el padrón de clientes con descuento y
+ *  los pedidos de mostrador. */
+export async function enTransaccion<T>(
+  trabajo: (conexion: mysql.PoolConnection) => Promise<T>
+): Promise<T> {
+  const conexion = await poolConversaciones().getConnection();
+  try {
+    await conexion.beginTransaction();
+    const resultado = await trabajo(conexion);
+    await conexion.commit();
+    return resultado;
+  } catch (error) {
+    await conexion.rollback();
+    throw error;
+  } finally {
+    conexion.release();
+  }
+}
+
 /** Fecha 'AAAA-MM-DD' y hora 'AAAA-MM-DD HH:MM:SS' en horario de Monterrey,
  *  sin depender de la zona horaria del servidor (suele ser UTC). */
 export function ahoraMonterrey(): { fecha: string; momento: string } {
@@ -230,9 +328,13 @@ export function ahoraMonterrey(): { fecha: string; momento: string } {
   return { fecha, momento };
 }
 
+/** Por dónde entró la conversación. 'mostrador' = Vico en modo vendedor desde
+ *  el POS de vidaurri-page (el "teléfono" es m:<usuario>). */
+export type CanalConversacion = "whatsapp" | "web" | "mostrador";
+
 export interface IntercambioConversacion {
   telefono: string;
-  canal?: "whatsapp" | "web";
+  canal?: CanalConversacion;
   mensajeCliente: string;
   respuestaVendedor: string;
   /** URLs de las fotos que se adjuntaron a la respuesta (si hubo). */
@@ -337,7 +439,7 @@ export interface FiltrosConversaciones {
   idCliente?: number;
   /** Un teléfono exacto, tal como está en la bitácora. */
   telefonoExacto?: string;
-  canal?: "whatsapp" | "web";
+  canal?: CanalConversacion;
   pagina: number;
   porPagina: number;
 }
@@ -362,7 +464,7 @@ export interface PaginaConversaciones {
   conversaciones: ConversacionResumen[];
   total: number;
   totalMensajes: number;
-  porCanal: { whatsapp: number; web: number };
+  porCanal: { whatsapp: number; web: number; mostrador: number };
 }
 
 interface CondicionesArmadas {
@@ -435,7 +537,8 @@ export async function listarConversaciones(
   const [totales] = await pool.query<mysql.RowDataPacket[]>(
     `SELECT COUNT(*) AS total,
             COALESCE(SUM(c.mensajes), 0) AS totalMensajes,
-            COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'web' THEN 1 ELSE 0 END), 0) AS web
+            COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'web' THEN 1 ELSE 0 END), 0) AS web,
+            COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'mostrador' THEN 1 ELSE 0 END), 0) AS mostrador
        FROM conversaciones c
        ${JOIN_PADRON}
       WHERE ${clausula}`,
@@ -444,11 +547,14 @@ export async function listarConversaciones(
 
   const total = Number(totales[0]?.total ?? 0);
   const web = Number(totales[0]?.web ?? 0);
+  const mostrador = Number(totales[0]?.mostrador ?? 0);
+  // WhatsApp es el resto: las filas viejas de la web quedaron con canal
+  // 'whatsapp' y CANAL_REAL las reclasifica, así que no se cuenta por columna.
   return {
     conversaciones: filas as ConversacionResumen[],
     total,
     totalMensajes: Number(totales[0]?.totalMensajes ?? 0),
-    porCanal: { whatsapp: total - web, web },
+    porCanal: { whatsapp: total - web - mostrador, web, mostrador },
   };
 }
 

@@ -1,10 +1,13 @@
 import crypto from "node:crypto";
 import { claveFaltante } from "@/lib/agente-modelo";
-import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
-import { urlFotoAldo, fotoAldoExiste } from "@/lib/aldo";
+import { correrVendedor } from "@/lib/vendedor";
+import type { ActorVendedor } from "@/lib/vendedor-pedidos";
 import { guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
 import { obtenerClienteDescuentoPorTelefono } from "@/lib/db-clientes-descuento";
+import { fotosDeRespuesta, separarMarcadorFotos } from "@/lib/fotos-respuesta";
+import { crearMemoriaConversacion } from "@/lib/memoria-conversacion";
 import { normalizarTelefono } from "@/lib/telefono";
+import { baseUrlPublica } from "@/lib/url-publica";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
 // la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
@@ -16,12 +19,11 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 const MAX_MENSAJE = 2000;
-const MAX_HISTORIAL = 12; // mensajes recordados por conversación
-const TTL_CONVERSACION_MS = 30 * 60 * 1000; // 30 min de inactividad
 const LIMITE_POR_MINUTO = 20;
 
-// Memoria de conversación por número de teléfono (para que el chat tenga contexto).
-const conversaciones = new Map<string, { mensajes: MensajeConversacion[]; expira: number }>();
+// Memoria de conversación por número de teléfono (para que el chat tenga
+// contexto): 30 min de inactividad y 12 mensajes (memoria-conversacion.ts).
+const memoria = crearMemoriaConversacion();
 // Rate limit por teléfono.
 const ventanas = new Map<string, number[]>();
 
@@ -43,47 +45,8 @@ function autorizado(request: Request): boolean {
   return comparaClaveSegura(recibida, esperada);
 }
 
-// Fotos: se entregan por el proxy propio /api/whatsapp/foto con una marca
-// ÚNICA DENTRO DE LA RUTA. Sin esto, la pasarela de WhatsApp reenviaba la
-// imagen cacheada del producto anterior (con el pie de foto del nuevo); un
-// `?v=` no basta porque hay cachés que solo consideran la ruta.
-const BASES_FOTO = [
-  { prefijo: "https://s3-us-west-2.amazonaws.com/aldoautopartesproductos/", origen: "aldo" },
-  { prefijo: "https://sistema.apvidaurri.com/imagenes_piezas/", origen: "usadas" },
-];
-
-/** Origen público del sistema, para armar URLs absolutas que WhatsApp pueda bajar. */
-function baseUrlPublica(request: Request): string {
-  const configurada = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
-  if (configurada) return configurada;
-  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
-  if (!host) return "";
-  // WhatsApp exige HTTPS para los medios; el host público ya redirige a HTTPS.
-  const protocolo = request.headers.get("x-forwarded-proto") ?? "https";
-  return `${protocolo}://${host}`;
-}
-
-/** Convierte la URL original de la foto en una del proxy, con ruta única. */
-// El proxy es lo que pone la marca de agua: una URL que no pase por él sale del
-// origen tal cual, sin sello. Se sigue mandando —mejor foto sin marca que pieza
-// sin foto—, pero queda registrado: si esto se repite, el catálogo entero se
-// está publicando sin marca y nadie se entera.
-function urlFotoWhatsapp(urlOriginal: string, base: string, marca: string): string {
-  if (base) {
-    for (const { prefijo, origen } of BASES_FOTO) {
-      if (urlOriginal.startsWith(prefijo)) {
-        const archivo = decodeURIComponent(urlOriginal.slice(prefijo.length).split("?")[0]);
-        return `${base}/api/whatsapp/foto/${marca}/${origen}/${encodeURIComponent(archivo)}`;
-      }
-    }
-  }
-  console.warn(
-    `[foto-whatsapp] se manda SIN marca de agua (no pasa por el proxy): ${
-      base ? "origen desconocido" : "falta PUBLIC_BASE_URL y no hay host en la petición"
-    } -> ${urlOriginal}`
-  );
-  return urlOriginal;
-}
+// Las fotos se entregan por el proxy sellado /api/whatsapp/foto con marca
+// única en la ruta (fotos-respuesta.ts, compartido con el mostrador).
 
 function excedeLimite(telefono: string): boolean {
   const ahora = Date.now();
@@ -92,22 +55,6 @@ function excedeLimite(telefono: string): boolean {
   ventana.push(ahora);
   ventanas.set(telefono, ventana);
   return false;
-}
-
-function historialDe(telefono: string): MensajeConversacion[] {
-  const conv = conversaciones.get(telefono);
-  if (!conv || conv.expira < Date.now()) return [];
-  return conv.mensajes;
-}
-
-function guardarTurno(telefono: string, pregunta: string, respuesta: string): void {
-  const previos = historialDe(telefono);
-  const mensajes = [
-    ...previos,
-    { rol: "usuario" as const, texto: pregunta },
-    { rol: "agente" as const, texto: respuesta },
-  ].slice(-MAX_HISTORIAL);
-  conversaciones.set(telefono, { mensajes, expira: Date.now() + TTL_CONVERSACION_MS });
 }
 
 /** Salud del webservice (sin exponer datos). Útil para probar conectividad. */
@@ -139,7 +86,7 @@ export async function POST(request: Request) {
   const telefono = String(cuerpo.telefono ?? "").replace(/[^\d+]/g, "").slice(0, 20) || "anon";
   const mensaje = String(cuerpo.mensaje ?? "").trim().slice(0, MAX_MENSAJE);
 
-  if (cuerpo.reiniciar) conversaciones.delete(telefono);
+  if (cuerpo.reiniciar) memoria.olvidar(telefono);
   if (!mensaje) {
     return Response.json({ ok: false, error: "Falta el mensaje" }, { status: 400 });
   }
@@ -178,48 +125,44 @@ export async function POST(request: Request) {
       );
     }
 
+    // Quién habla, para las herramientas de pedido: el cliente del padrón (que
+    // solo puede pedir si el padrón lo autoriza) o un anónimo, que nunca puede.
+    // Las sesiones sintéticas 77… del chat de la página siguen siendo anónimas.
+    const actor: ActorVendedor = cliente
+      ? {
+          tipo: "cliente",
+          idCliente: cliente.id,
+          nombre: cliente.cliente,
+          telefono: telefonoPadron,
+          descuento: cliente.descuento,
+          permitirPedido: cliente.permitirPedido,
+        }
+      : { tipo: "anonimo" };
+
     const respuesta = await correrVendedor({
       pregunta: mensaje,
-      historial: historialDe(telefono),
+      historial: memoria.historialDe(telefono),
       modelo,
       descuentoCliente: cliente?.descuento ?? null,
+      actor,
       alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),
       alFotosUsadas: (fotos) =>
         fotos.forEach((f) => fotosUsadas.set(f.codigo.toUpperCase(), f.url)),
     });
     // El agente marca los productos sugeridos con [[FOTOS: cod1, cod2]] al final;
     // se extraen los códigos y se quita esa línea técnica del texto visible.
-    const marcador = respuesta.match(/\[\[FOTOS:\s*([^\]]*)\]\]/i);
-    const texto =
-      respuesta.replace(/\[\[FOTOS:[^\]]*\]\]/gi, "").trim() ||
-      "Disculpa, no te entendí. ¿Qué parte buscas?";
-    guardarTurno(telefono, mensaje, texto);
+    const { texto: limpio, codigosMarcados } = separarMarcadorFotos(respuesta);
+    const texto = limpio || "Disculpa, no te entendí. ¿Qué parte buscas?";
+    memoria.guardarTurno(telefono, mensaje, texto);
 
-    // Solo se aceptan códigos REALES (que el catálogo devolvió) y con foto en S3,
-    // para no mandar enlaces inventados ni rotos por WhatsApp.
-    const reales = new Map(
-      [...codigosConsultados].map((c) => [c.toUpperCase(), c] as const)
-    );
-    const pedidos = (marcador?.[1] ?? "")
-      .split(",")
-      .map((c) => reales.get(c.trim().toUpperCase()))
-      .filter((c): c is string => Boolean(c))
-      .slice(0, 3);
-    // Pieza usada: su foto ya viene con URL pública de la bodega. Producto
-    // nuevo: se verifica que exista en el S3 de Aldo antes de adjuntarla.
-    const verificadas = await Promise.all(
-      pedidos.map(async (codigo) => {
-        const urlUsada = fotosUsadas.get(codigo.toUpperCase());
-        if (urlUsada) return { codigo, url: urlUsada };
-        return { codigo, url: (await fotoAldoExiste(codigo)) ? urlFotoAldo(codigo) : null };
-      })
-    );
-    // Marca única por respuesta: evita que la pasarela reenvíe una foto cacheada.
-    const marca = `${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
-    const base = baseUrlPublica(request);
-    const fotos = verificadas
-      .filter((f): f is { codigo: string; url: string } => Boolean(f.url))
-      .map((f) => ({ codigo: f.codigo, url: urlFotoWhatsapp(f.url, base, marca) }));
+    // Solo se aceptan códigos REALES (que el catálogo devolvió) y con foto, ya
+    // con la URL del proxy sellado (fotos-respuesta.ts).
+    const fotos = await fotosDeRespuesta({
+      codigosMarcados,
+      codigosConsultados,
+      fotosUsadas,
+      base: baseUrlPublica(request),
+    });
 
     // Bitácora en BDVidaurriConversaciones (fire-and-forget: si la base de
     // conversaciones falla, la respuesta al cliente sale de todas formas).

@@ -12,10 +12,19 @@ import {
   registrarResultado,
   type CifrasInventadas,
 } from "@/lib/vendedor-cifras";
+import {
+  ejecutarHerramientaPedido,
+  esHerramientaPedido,
+  herramientasPedidoPara,
+  puedePedir,
+  type ActorVendedor,
+} from "@/lib/vendedor-pedidos";
 
 // Núcleo del agente "Vendedor IA": prompt, herramientas de catálogo y el loop
-// del agente. Lo comparten el endpoint web (streaming) y el de WhatsApp (una
-// sola respuesta), para no duplicar el comportamiento.
+// del agente. Lo comparten el endpoint web (streaming), el de WhatsApp (una
+// sola respuesta) y el del mostrador, para no duplicar el comportamiento. Las
+// herramientas de PEDIDO viven en vendedor-pedidos.ts y solo entran cuando el
+// actor puede pedir.
 
 const MAX_ITERACIONES = 6;
 const MAX_TOKENS = 1500; // respuestas cortas estilo chat de WhatsApp
@@ -32,6 +41,13 @@ export const ETIQUETA_HERRAMIENTA: Record<string, string> = {
   buscar_piezas_usadas: "Buscando piezas usadas",
   listar_marcas: "Revisando marcas",
   listar_tipos_parte: "Revisando tipos de pieza",
+  seleccionar_cliente: "Buscando al cliente",
+  agregar_al_pedido: "Agregando al pedido",
+  ver_pedido: "Revisando el pedido",
+  quitar_del_pedido: "Quitando del pedido",
+  cambiar_sucursal: "Cambiando la sucursal",
+  confirmar_pedido: "Enviando el pedido",
+  cancelar_pedido: "Cancelando el pedido",
 };
 
 export type CanalVendedor = "web" | "whatsapp";
@@ -44,7 +60,58 @@ export function urlFotoUsadaPublica(nombreImagen: string): string {
   return `${BASE_FOTOS_USADAS}/${encodeURIComponent(nombreImagen)}`;
 }
 
-export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp"): string {
+/**
+ * Sección PEDIDOS del prompt: solo existe cuando el actor puede pedir. Le dice
+ * al modelo qué es un pedido (NO un apartado), de dónde salen los códigos que
+ * agrega, que confirme solo con un sí explícito, y a quién tiene enfrente: al
+ * vendedor del mostrador (con el cliente que atiende y su descuento) o al
+ * cliente del padrón que pide para sí mismo.
+ */
+function seccionPedidos(actor: ActorVendedor | undefined): string {
+  if (!puedePedir(actor)) return "";
+  const esVendedor = actor.tipo === "vendedor";
+  const quien = esVendedor ? "el vendedor" : "el cliente";
+  let contexto: string;
+  if (!esVendedor) {
+    contexto = `- El cliente es ${actor.nombre}, del padrón, con ${actor.descuento}% de descuento: los precios que devuelven las herramientas YA lo llevan. Solo puede pedir para sí mismo.`;
+  } else if (actor.idCliente === null) {
+    contexto = `- Hablas con ${actor.nombre}, vendedor del mostrador: háblale de tú y ayúdale a capturar rápido. Está atendiendo a PÚBLICO GENERAL (sin descuento de padrón): los precios que devuelven las herramientas son los de mostrador.`;
+  } else {
+    contexto = `- Hablas con ${actor.nombre}, vendedor del mostrador: háblale de tú y ayúdale a capturar rápido. Está atendiendo a ${actor.clienteNombre} con ${actor.descuento}% de descuento del padrón: los precios que devuelven las herramientas YA lo llevan, no lo vuelvas a aplicar ni lo menciones como si faltara.`;
+  }
+  const cambioCliente = esVendedor
+    ? `\n- Para atender a otro cliente usa seleccionar_cliente: devuelve candidatos del padrón, pero la selección la fija el vendedor EN PANTALLA. Pídele que lo elija ahí y no cotices ni pidas como si ya hubiera cambiado.`
+    : "";
+  return `PEDIDOS (puedes levantar pedidos):
+${contexto}${cambioCliente}
+- Puedes levantar un PEDIDO para recoger en sucursal: Matriz o Sucursal Fierro (por defecto Matriz; cámbiala con cambiar_sucursal si ${quien} lo pide). Queda SUJETO A CONFIRMACIÓN de existencia por el mostrador: NUNCA lo llames apartado ni digas que la pieza está guardada, separada o reservada hasta que el mostrador lo marque Listo.
+- Agrega piezas con agregar_al_pedido usando el código EXACTO que devolvió buscar_productos (o el idPieza de buscar_piezas_usadas para una usada). Si ${quien} pide agregar una pieza que no has buscado en esta conversación, búscala primero. Nunca agregues nada que ${quien} no haya pedido.
+- Antes de confirmar muestra el resumen con ver_pedido (piezas, cantidades, sucursal y total con IVA) y pregunta si está bien. Llama confirmar_pedido SOLO cuando ${quien} diga que sí de forma explícita ("confírmalo", "sí, mándalo"); nunca por tu cuenta.
+- Al confirmar, da el folio (por ejemplo P-000131) EXACTAMENTE como lo devolvió la herramienta y recuerda que el mostrador confirma existencia y avisa cuando esté listo para recoger.
+- Los precios, importes y totales de las herramientas de pedido se citan tal cual (ya son con IVA y con el descuento que corresponde). Escríbelos entre asteriscos como cualquier precio.
+- quitar_del_pedido quita una pieza; cancelar_pedido cancela el pedido en captura. Si una herramienta devuelve error, dilo en una línea y pregunta cómo seguir; no lo disfraces de éxito.`;
+}
+
+export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp", actor?: ActorVendedor): string {
+  // Sin permiso de pedidos (anónimo, cliente fuera del padrón o sin
+  // autorización) el prompt es EXACTAMENTE el de siempre: los segmentos de
+  // abajo solo cambian cuando puedePedir. Hay un test que lo comprueba por hash.
+  const conPedidos = puedePedir(actor);
+  const apertura =
+    conPedidos && actor.tipo === "vendedor"
+      ? `Eres Vico, el asistente de ventas de AUTO PARTES VIDAURRI, y en este chat apoyas a ${actor.nombre} (vendedor del mostrador) mientras atiende a un cliente en persona.`
+      : "Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp.";
+  const sinOpciones = conPedidos
+    ? "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla; esa pieza NO se agrega al pedido."
+    : "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla.";
+  const reglaApartado = conPedidos
+    ? `- NUNCA digas "apartar", "reservar" ni "separar": lo que levantas es un PEDIDO sujeto a
+  confirmación del mostrador (ver PEDIDOS). Cierra preguntando el dato que te falte (lado,
+  año, versión) o si quiere agregar la pieza al pedido.`
+    : `- NUNCA ofrezcas apartar, reservar ni separar la pieza ("¿te la aparto?", "te la separo",
+  "¿te la reservo?"). No manejamos apartados por chat. Cierra preguntando el dato que te
+  falte (lado, año, versión) o si quiere que le confirmes algo más.`;
+  const pedidos = conPedidos ? `\n\n${seccionPedidos(actor)}` : "";
   // En el panel web se pueden mostrar imágenes; en WhatsApp no (llegaría como
   // texto crudo), así que solo se pide la foto para el canal web.
   const instruccionFoto =
@@ -58,7 +125,7 @@ export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp"): s
 - Si el cliente pide fotos (o vuelves a mencionar productos de turnos anteriores), NO respondas de memoria: el campo foto SOLO viene en resultados de herramientas de ESTE turno, así que DEBES volver a buscar esos productos con la herramienta y entonces incluir sus ![](...). PROHIBIDO decir "aquí las fotos" sin incluir las imágenes.`
       : `\n- AL FINAL de tu respuesta agrega SIEMPRE una última línea técnica con los códigos EXACTOS de los productos que sugeriste (nuevos o usados), con este formato: [[FOTOS: CODIGO1, CODIGO2]] (máximo 3, usa los códigos EXACTOS que te dio la herramienta). Esa línea es SOLO para el sistema (sirve para enviar las fotos); el cliente no la verá, así que no la comentes ni la expliques. Si no sugeriste ningún producto, no pongas la línea.
 - Si el cliente pide fotos (o vuelves a mencionar productos de turnos anteriores), DEBES volver a buscarlos con la herramienta en ESTE turno: las fotos solo se pueden enviar de productos consultados en este turno.`;
-  return `Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp. Vidaurri vende autopartes de colisión (cofres, defensas, parrillas, faros, tolvas, guías, molduras, etc.) por marca, modelo y rango de años. Hoy es ${hoy}.
+  return `${apertura} Vidaurri vende autopartes de colisión (cofres, defensas, parrillas, faros, tolvas, guías, molduras, etc.) por marca, modelo y rango de años. Hoy es ${hoy}.
 
 Consultas el catálogo real con tus herramientas:
 - buscar_productos: por descripción (incluye modelo y años, p.ej. "COFRE VERSA 15-19"), acotando por marca, tipo de parte y año. Devuelve por producto: precio con IVA, entregaInmediata (piezas en tienda), sobrePedido (disponibilidad para conseguirla sobre pedido) y usado (piezas usadas equivalentes en la Bodega Usado).
@@ -71,7 +138,7 @@ LÓGICA DE ENTREGA Y PRECIOS (obligatoria, síguela SIEMPRE):
 - *Observación de origen*: si el resultado trae observacion (por ejemplo "Taiwán"), DILA SIEMPRE junto a esa pieza, en la misma línea o la siguiente. Es de dónde viene la refacción y el cliente tiene derecho a saberlo antes de comprar; no la escondas ni la suavices. Si observacion viene null, no comentes nada del origen.
 - *Usado*: cuando usado trae piezas > 0 hay equivalentes usados en nuestra Bodega Usado. Ofrécelo SOLO si usado.desdeConIva es MENOR que el precioConIva de la nueva (el usado se ofrece como alternativa económica: si sale igual o más caro, NO lo menciones, recomienda la nueva y ya). Cuando sí lo ofrezcas, di "también la tengo usada desde $X" con usado.desdeConIva y ACLARA siempre que es pieza USADA. El precio del usado es el del usado (con IVA), no el de la nueva. Detalles con buscar_piezas_usadas.
 - Si una opción NO existe (sobrePedido en 0 o null, usado null o con 0 piezas), simplemente NO la menciones; no digas "no hay usado" ni "no hay con proveedor".
-- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla.
+${sinOpciones}
 
 ESTILO WHATSAPP (muy importante):
 - Responde CORTO y natural, como un chat de WhatsApp. Nada de párrafos largos ni tablas.
@@ -79,9 +146,7 @@ ESTILO WHATSAPP (muy importante):
 - Muestra máximo 2 o 3 productos, los más relevantes. Cada uno en 1-2 líneas: nombre en negritas con su código SIEMPRE entre paréntesis — *Cofre Aveo 18-23* (CCAE18) —, *precio con IVA* y la forma de entrega (inmediata / sobre pedido / usado). El código nunca se omite: el cliente lo usa para pedir en mostrador y la página web lo usa para enlazar la pieza.
 - Puedes usar pocos emojis para dar calidez (👍 🔧 📦 💵), sin exagerar.
 - Si falta un dato para acertar (modelo, año, si es sedán/hatchback, lado izquierdo/derecho), pregúntalo en una línea.
-- NUNCA ofrezcas apartar, reservar ni separar la pieza ("¿te la aparto?", "te la separo",
-  "¿te la reservo?"). No manejamos apartados por chat. Cierra preguntando el dato que te
-  falte (lado, año, versión) o si quiere que le confirmes algo más.
+${reglaApartado}
 - SIEMPRE cotiza con precioConIva, que es el precio de mostrador (ya con descuento) más IVA.
   Escríbelo SIEMPRE entre asteriscos, *$1,204.08*, para marcar que es precio con descuento.
   NUNCA presentes precioSinIva como si fuera el precio: solo dilo si el cliente pide
@@ -91,7 +156,7 @@ ESTILO WHATSAPP (muy importante):
 - ANTES de decir que no hay algo, vuelve a buscar con menos palabras (solo la pieza y el
   modelo, sin año ni lado) y con otra forma de nombrarla. Nunca contestes que no tienes
   una pieza después de una sola búsqueda que salió vacía.
-- Si aun así no encuentras nada, pide más datos amablemente.${instruccionFoto}
+- Si aun así no encuentras nada, pide más datos amablemente.${instruccionFoto}${pedidos}
 
 Reglas:
 - NUNCA pienses en voz alta ni te corrijas a media frase ("espera...", "déjame ver...", "ah no, mejor..."). Decide ANTES de escribir y manda solo la respuesta final y limpia.
@@ -147,9 +212,7 @@ export const HERRAMIENTAS: Anthropic.Tool[] = [
   {
     name: "buscar_piezas_usadas",
     description:
-      "Busca piezas USADAS con existencia en el inventario de la Bodega Usado (sucursal de piezas usadas, base aparte del catálogo de nuevas). Devuelve hasta 15 piezas con precio (sin y con IVA), años de aplicación y ubicación.",
-    // cache_control en la última herramienta: cachea el prefijo tools+system.
-    cache_control: { type: "ephemeral" },
+      "Busca piezas USADAS con existencia en el inventario de la Bodega Usado (sucursal de piezas usadas, base aparte del catálogo de nuevas). Devuelve hasta 15 piezas con precio (sin y con IVA), años de aplicación, ubicación e idPieza (la referencia para agregarla a un pedido).",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -172,6 +235,18 @@ export const HERRAMIENTAS: Anthropic.Tool[] = [
     },
   },
 ];
+
+/**
+ * Herramientas de ESTA llamada: las del catálogo más las de pedido cuando el
+ * actor puede pedir. El cache_control (cachea el prefijo tools+system entre
+ * rondas) va en la ÚLTIMA del arreglo resultante, por eso no vive en el
+ * literal: con las tools de pedido la última ya no es buscar_piezas_usadas.
+ */
+export function herramientasPara(actor?: ActorVendedor): Anthropic.Tool[] {
+  const todas = [...HERRAMIENTAS, ...herramientasPedidoPara(actor)];
+  const ultima = todas[todas.length - 1];
+  return [...todas.slice(0, -1), { ...ultima, cache_control: { type: "ephemeral" } }];
+}
 
 interface FilaProducto {
   codigo: string;
@@ -533,17 +608,13 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
     });
   }
   // `foto` (proxy interno) es lo que el agente inserta en el chat web;
-  // `fotoPublica` la usa el canal WhatsApp para adjuntar la imagen real.
+  // `fotoPublica` la usa el canal WhatsApp para adjuntar la imagen real;
+  // `idPieza` es la referencia con la que agregar_al_pedido mete una usada al
+  // pedido (el código de la Bodega no es único).
   const resultados = filas.map(
-    ({
-      idPieza: _id,
-      fotoNombre,
-      rn: _rn,
-      relevanteParte: _rp,
-      relevantePosicion: _rpos,
-      ...pieza
-    }) => ({
-    ...pieza,
+    ({ idPieza, fotoNombre, rn: _rn, relevanteParte: _rp, relevantePosicion: _rpos, ...pieza }) => ({
+      idPieza,
+      ...pieza,
       foto: fotoNombre ? `/api/usadas/foto?n=${encodeURIComponent(fotoNombre)}` : null,
       fotoPublica: fotoNombre ? urlFotoUsadaPublica(fotoNombre) : null,
     })
@@ -553,8 +624,13 @@ async function buscarPiezasUsadas(input: Record<string, unknown>): Promise<strin
 
 export async function ejecutarHerramienta(
   uso: UsoHerramienta,
-  descuentoCliente: number | null = null
+  descuentoCliente: number | null = null,
+  actor: ActorVendedor = { tipo: "anonimo" }
 ): Promise<string> {
+  // Las tools de pedido deciden por su cuenta quién puede usarlas y devuelven
+  // su propio { error }: no pasan por el catch de abajo para que un "no puedes
+  // pedir" no salga disfrazado de "no fue posible consultar el catálogo".
+  if (esHerramientaPedido(uso.name)) return ejecutarHerramientaPedido(uso, actor);
   try {
     if (uso.name === "buscar_productos") return await buscarProductos(uso.input, descuentoCliente);
     if (uso.name === "buscar_piezas_usadas") return await buscarPiezasUsadas(uso.input);
@@ -591,6 +667,9 @@ export interface OpcionesVendedor {
   /** Descuento del cliente identificado por su teléfono, en por ciento. Si es
    *  null (número desconocido o canal sin teléfono) se cotiza de mostrador. */
   descuentoCliente?: number | null;
+  /** Quién habla: decide si entran las herramientas de pedido y para quién se
+   *  captura. Sin actor (o anónimo) Vico solo cotiza, como siempre. */
+  actor?: ActorVendedor;
   /** Recibe los códigos que devolvió cada búsqueda de productos (para fotos). */
   alCodigos?: (codigos: string[]) => void;
   /** Recibe código → URL pública de la foto de cada pieza usada encontrada
@@ -628,7 +707,9 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
   }));
   mensajes.push({ role: "user", content: op.pregunta });
 
-  const sistema = promptSistema(new Date().toLocaleDateString("sv-SE"), op.canal ?? "whatsapp");
+  const actor: ActorVendedor = op.actor ?? { tipo: "anonimo" };
+  const sistema = promptSistema(new Date().toLocaleDateString("sv-SE"), op.canal ?? "whatsapp", actor);
+  const herramientas = herramientasPara(actor);
   let textoFinal = "";
   // Lo que devolvieron las búsquedas, para revisar que la respuesta no cite
   // códigos ni precios que el modelo se haya inventado.
@@ -644,7 +725,7 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     const resultado = await correrTurnoAgente({
       modelo: op.modelo,
       sistema,
-      herramientas: HERRAMIENTAS,
+      herramientas,
       mensajes,
       maxTokens: MAX_TOKENS,
       sinHerramientas: ultimaRonda,
@@ -676,7 +757,7 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     const resultados: Anthropic.ToolResultBlockParam[] = [];
     for (const uso of resultado.usos) {
       op.alEstado?.(ETIQUETA_HERRAMIENTA[uso.name] ?? "Consultando el catálogo");
-      const contenido = await ejecutarHerramienta(uso, op.descuentoCliente ?? null);
+      const contenido = await ejecutarHerramienta(uso, op.descuentoCliente ?? null, actor);
       registrarResultado(contenido, catalogo);
       // Reporta los códigos que devolvió una búsqueda (para que el canal
       // WhatsApp pueda adjuntar las fotos de los que el agente mencione).

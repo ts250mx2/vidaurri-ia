@@ -244,3 +244,10 @@ export function leerPermitirPedido(entrada: unknown): boolean | null {
   const valor = (entrada as Record<string, unknown>).permitirPedido;
   return typeof valor === "boolean" ? valor : null;
 }
+
+/** El [id] de la ruta /api/clientes-descuento/[id]: entero positivo escrito
+ *  tal cual ('12'; no '012', '1e1' ni '12abc'). null si no lo es. */
+export function leerIdRuta(id: string): number | null {
+  const numero = Number.parseInt(id, 10);
+  return Number.isInteger(numero) && numero > 0 && String(numero) === id ? numero : null;
+}

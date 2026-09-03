@@ -20,10 +20,17 @@ export async function firmarSesion(usuario: SesionUsuario): Promise<string> {
     .sign(claveSecreta());
 }
 
-/** Verifica un JWT y devuelve el usuario, o null si es inválido/expirado. */
+/**
+ * Verifica un JWT y devuelve el usuario, o null si es inválido/expirado.
+ * Solo HS256 y sin audiencia: el token del mostrador (`auth-mostrador.ts`)
+ * lleva `aud: "mostrador"` y jose no valida ese claim si no se le pide, así
+ * que aquí se rechaza cualquier token con audiencia para que el aislamiento
+ * entre dashboard y mostrador no dependa solo de que los secretos sean distintos.
+ */
 export async function verificarSesion(token: string): Promise<SesionUsuario | null> {
   try {
-    const { payload } = await jwtVerify(token, claveSecreta());
+    const { payload } = await jwtVerify(token, claveSecreta(), { algorithms: ["HS256"] });
+    if (payload.aud !== undefined) return null;
     return {
       id: Number(payload.id),
       usuario: String(payload.usuario),

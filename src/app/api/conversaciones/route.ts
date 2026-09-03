@@ -24,7 +24,9 @@ export async function GET(request: Request) {
 
   const canalCrudo = searchParams.get("canal");
   const canal =
-    canalCrudo === "whatsapp" || canalCrudo === "web" ? canalCrudo : undefined;
+    canalCrudo === "whatsapp" || canalCrudo === "web" || canalCrudo === "mostrador"
+      ? canalCrudo
+      : undefined;
 
   // El teléfono de búsqueda se reduce a dígitos aquí Y en la capa de datos:
   // la validación de frontera no sustituye a la del que arma el SQL.
