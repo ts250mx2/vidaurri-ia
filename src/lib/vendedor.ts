@@ -94,23 +94,35 @@ ${contexto}${cambioCliente}
 
 export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp", actor?: ActorVendedor): string {
   // Sin permiso de pedidos (anónimo, cliente fuera del padrón o sin
-  // autorización) el prompt es EXACTAMENTE el de siempre: los segmentos de
-  // abajo solo cambian cuando puedePedir. Hay un test que lo comprueba por hash.
+  // autorización) el prompt es el de siempre salvo por los segmentos de abajo,
+  // que solo cambian cuando puedePedir. Hay un test que lo comprueba por hash.
   const conPedidos = puedePedir(actor);
   const apertura =
     conPedidos && actor.tipo === "vendedor"
       ? `Eres Vico, el asistente de ventas de AUTO PARTES VIDAURRI, y en este chat apoyas a ${actor.nombre} (vendedor del mostrador) mientras atiende a un cliente en persona.`
       : "Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp.";
+  // Sin permiso de pedidos NO hay dónde guardar nada: el modelo no tiene
+  // herramienta de pedido ni de "tomar datos". Dejarle "ofrecer tomar sus
+  // datos" acababa en un "quedó registrado tu pedido" que nadie ve (pasó en la
+  // página pública). La regla honesta: por este chat no se levantan pedidos, y
+  // el camino que sí existe es WhatsApp con el número registrado o el mostrador.
   const sinOpciones = conPedidos
     ? "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla; esa pieza NO se agrega al pedido."
-    : "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla.";
+    : "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y sugiere que lo consulte con el mostrador (por WhatsApp o por teléfono): tú no puedes tomar datos ni dejar encargos.";
   const reglaApartado = conPedidos
     ? `- NUNCA digas "apartar", "reservar" ni "separar": lo que levantas es un PEDIDO sujeto a
   confirmación del mostrador (ver PEDIDOS). Cierra preguntando el dato que te falte (lado,
   año, versión) o si quiere agregar la pieza al pedido.`
     : `- NUNCA ofrezcas apartar, reservar ni separar la pieza ("¿te la aparto?", "te la separo",
   "¿te la reservo?"). No manejamos apartados por chat. Cierra preguntando el dato que te
-  falte (lado, año, versión) o si quiere que le confirmes algo más.`;
+  falte (lado, año, versión) o si quiere que le confirmes algo más.
+- Por este chat NO puedes levantar pedidos ni guardar datos: no tienes ninguna herramienta
+  para eso. Si el cliente quiere pedir, dile la verdad en una línea: que escriba al WhatsApp
+  del mostrador desde su número registrado (ahí, si tiene permiso de pedidos, se le levanta el
+  pedido) o que llame al mostrador; si ya está escribiendo por WhatsApp, que el mostrador le
+  active el permiso de pedidos o lo atienda un vendedor. PROHIBIDO pedirle nombre o teléfono
+  "para levantar el pedido" y PROHIBIDO decir que un pedido quedó registrado, anotado,
+  levantado o confirmado, o que alguien lo va a contactar: nada de eso ocurre.`;
   const pedidos = conPedidos ? `\n\n${seccionPedidos(actor)}` : "";
   // En el panel web se pueden mostrar imágenes; en WhatsApp no (llegaría como
   // texto crudo), así que solo se pide la foto para el canal web.
@@ -675,6 +687,11 @@ export interface OpcionesVendedor {
   /** Recibe código → URL pública de la foto de cada pieza usada encontrada
    *  (para que el canal WhatsApp adjunte la imagen real). */
   alFotosUsadas?: (fotos: Array<{ codigo: string; url: string }>) => void;
+  /** Recibe, tal cual, el arreglo `resultados` que devolvió cada búsqueda
+   *  (buscar_productos / buscar_piezas_usadas) con el precio que el modelo vio.
+   *  Sirve para que el mostrador arme sus renglones de "Agregar al pedido"
+   *  sin volver a consultar el catálogo. */
+  alResultados?: (herramienta: string, resultados: unknown[]) => void;
   /** Fragmento de texto en curso (para streaming del canal web). */
   alTexto?: (fragmento: string) => void;
   /** Descarta el borrador porque viene una ronda de herramientas (web). */
@@ -763,13 +780,16 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
       // WhatsApp pueda adjuntar las fotos de los que el agente mencione).
       if (
         (uso.name === "buscar_productos" || uso.name === "buscar_piezas_usadas") &&
-        (op.alCodigos || op.alFotosUsadas)
+        (op.alCodigos || op.alFotosUsadas || op.alResultados)
       ) {
         try {
           const datos = JSON.parse(contenido) as {
             resultados?: Array<{ codigo?: string; fotoPublica?: string | null }>;
           };
           const filas = datos.resultados ?? [];
+          // El arreglo completo, sin filtrar: quien lo recibe decide qué campos
+          // le sirven (precio, existencia, idPieza...) sin otra consulta.
+          if (op.alResultados && Array.isArray(datos.resultados)) op.alResultados(uso.name, datos.resultados);
           const codigos = filas
             .map((r) => r.codigo)
             .filter((c): c is string => typeof c === "string" && c.length > 0);

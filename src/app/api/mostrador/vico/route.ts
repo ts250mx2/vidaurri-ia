@@ -6,6 +6,7 @@ import { guardarIntercambio } from "@/lib/db-conversaciones";
 import { obtenerBorrador } from "@/lib/db-pedidos";
 import { fotosDeRespuesta, separarMarcadorFotos } from "@/lib/fotos-respuesta";
 import { crearMemoriaConversacion } from "@/lib/memoria-conversacion";
+import { productosMencionados } from "@/lib/productos-mencionados";
 import { baseUrlPublica } from "@/lib/url-publica";
 import { correrVendedor } from "@/lib/vendedor";
 import type { ActorVendedor } from "@/lib/vendedor-pedidos";
@@ -15,9 +16,10 @@ import type { ActorVendedor } from "@/lib/vendedor-pedidos";
 // pedido del cliente que tiene seleccionado en pantalla; vidaurri-page manda
 // ese idCliente en CADA llamada, así que el descuento y el dueño del pedido
 // los fija el servidor, nunca el modelo. Devuelve una sola respuesta (sin
-// streaming), las fotos como en WhatsApp (proxy sellado) y el borrador actual
-// del vendedor tras el turno, para que la pantalla pinte el pedido sin otra
-// llamada.
+// streaming), las fotos como en WhatsApp (proxy sellado), los productos que
+// consultó en el turno (para el botón "Agregar al pedido" de la pantalla) y el
+// borrador actual del vendedor tras el turno, para que la pantalla pinte el
+// pedido sin otra llamada.
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -141,6 +143,10 @@ export async function POST(request: Request) {
     // fotos públicas de las piezas usadas encontradas (código → URL).
     const codigosConsultados = new Set<string>();
     const fotosUsadas = new Map<string, string>();
+    // Resultados crudos de cada búsqueda del turno, con el precio que Vico
+    // vio (ya con el descuento del cliente): de aquí salen los renglones de
+    // "Agregar al pedido" sin volver a consultar el catálogo.
+    const resultadosPorHerramienta: Array<{ herramienta: string; resultados: unknown[] }> = [];
 
     const respuesta = await correrVendedor({
       pregunta: mensaje,
@@ -152,6 +158,7 @@ export async function POST(request: Request) {
       actor,
       alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),
       alFotosUsadas: (fotos) => fotos.forEach((f) => fotosUsadas.set(f.codigo.toUpperCase(), f.url)),
+      alResultados: (herramienta, resultados) => resultadosPorHerramienta.push({ herramienta, resultados }),
     });
     const { texto: limpio, codigosMarcados } = separarMarcadorFotos(respuesta);
     const texto = limpio || RESPUESTA_VACIA;
@@ -163,6 +170,9 @@ export async function POST(request: Request) {
       fotosUsadas,
       base: baseUrlPublica(request),
     });
+    // Se ordena con la respuesta completa (marcador incluido) para que cuente
+    // como mencionado también lo que Vico solo puso en [[FOTOS: ...]].
+    const productos = productosMencionados({ resultadosPorHerramienta, texto: respuesta, fotos });
 
     // El borrador tras el turno (Vico pudo haberlo tocado). Si la lectura
     // falla, la respuesta sale igual: la pantalla puede pedirlo aparte.
@@ -183,7 +193,7 @@ export async function POST(request: Request) {
       console.error("[mostrador-vico] no se pudo guardar la conversación en la bitácora:", error);
     });
 
-    return NextResponse.json({ ok: true, respuesta: texto, fotos, pedido });
+    return NextResponse.json({ ok: true, respuesta: texto, fotos, productos, pedido });
   } catch (error) {
     console.error("Error en Vendedor IA (mostrador):", error);
     return NextResponse.json(

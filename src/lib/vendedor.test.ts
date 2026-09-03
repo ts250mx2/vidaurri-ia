@@ -1,19 +1,39 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { ETIQUETA_HERRAMIENTA, HERRAMIENTAS, herramientasPara, promptSistema, type CanalVendedor } from "./vendedor";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  correrVendedor,
+  ETIQUETA_HERRAMIENTA,
+  HERRAMIENTAS,
+  herramientasPara,
+  promptSistema,
+  type CanalVendedor,
+} from "./vendedor";
 import { NOMBRES_HERRAMIENTAS_PEDIDO, type ActorVendedor } from "./vendedor-pedidos";
+import { correrTurnoAgente } from "./agente-modelo";
+import { consultaBdav } from "./db";
+import { consultaUsadas } from "./db-usadas";
+import { precioAldo } from "./aldo";
+
+// Solo para la prueba del loop (correrVendedor): el modelo y las bases se
+// sustituyen; el resto del archivo prueba funciones puras y no los usa.
+vi.mock("./agente-modelo", () => ({ correrTurnoAgente: vi.fn() }));
+vi.mock("./db", () => ({ consultaBdav: vi.fn() }));
+vi.mock("./db-usadas", () => ({ consultaUsadas: vi.fn() }));
+vi.mock("./aldo", () => ({ precioAldo: vi.fn() }));
 
 const HOY = "2026-09-02";
 
-// SHA-256 del prompt tal como estaba ANTES de las herramientas de pedido, por
-// canal, con hoy = 2026-09-02. Para el anónimo (todo WhatsApp que no está en
-// el padrón, y el chat de la página) el prompt tiene que seguir siendo ESE,
-// byte a byte. Si cambias el prompt a propósito, regenera los hashes; si el
-// test truena sin haberlo tocado, cambió el comportamiento de todos los
-// clientes anónimos sin querer.
+// SHA-256 del prompt del actor SIN permiso de pedidos, por canal, con hoy =
+// 2026-09-02. Para el anónimo (todo WhatsApp que no está en el padrón, y el
+// chat de la página) el prompt tiene que seguir siendo ESE, byte a byte. Si
+// cambias el prompt a propósito, regenera los hashes; si el test truena sin
+// haberlo tocado, cambió el comportamiento de todos los clientes anónimos sin
+// querer. Última regeneración: 3 sep 2026, al agregar la regla honesta "por
+// este chat no puedes levantar pedidos ni guardar datos" (antes el modelo
+// "tomaba datos" e inventaba un pedido registrado en la página pública).
 const HASH_PROMPT_ORIGINAL: Record<CanalVendedor, string> = {
-  whatsapp: "4d8fa0fd1dbf59a75396657471bb54984812f5ac82979f2c7ea7f988853e13a2",
-  web: "8ef99812017cd956ab855d34ac1962eadd79be679d3a0c336be6ffb5e5d6f390",
+  whatsapp: "b8d11532b362445d1d0b2aae5b3cbf4acac7617097925b1d72d2944e1134afb3",
+  web: "b1f4fc34eaa0a910be096882feaa4ecd88d0c17b0a231e6a482092f9549faf9c",
 };
 
 const CANALES: CanalVendedor[] = ["whatsapp", "web"];
@@ -157,5 +177,73 @@ describe("ETIQUETA_HERRAMIENTA", () => {
     for (const nombre of NOMBRES_HERRAMIENTAS_PEDIDO) {
       expect(ETIQUETA_HERRAMIENTA[nombre]).toBeTruthy();
     }
+  });
+});
+
+describe("correrVendedor → alResultados", () => {
+  afterEach(() => vi.resetAllMocks());
+
+  it("entrega el arreglo resultados de buscar_productos tal cual, con el precio que vio el modelo", async () => {
+    // Arrange: una ronda con herramienta y otra con el texto final.
+    const fila = {
+      codigo: "DDDAI15",
+      descripcion: "FASCIA DEL VERSA 15-19",
+      marca: "NISSAN",
+      tipoParte: "DEFENSAS DELANTERAS",
+      aini: 2015,
+      afin: 2019,
+      precioSinIva: 1000,
+      precioConIva: 1160,
+      existencia: 2,
+      localizacion: null,
+    };
+    vi.mocked(consultaBdav).mockResolvedValue([fila]);
+    vi.mocked(consultaUsadas).mockResolvedValue([]);
+    vi.mocked(precioAldo).mockResolvedValue({ encontrado: false } as never);
+    vi.mocked(correrTurnoAgente)
+      .mockResolvedValueOnce({
+        contenido: [],
+        usos: [{ id: "t1", name: "buscar_productos", input: { descripcion: "facia versa" } }],
+      })
+      .mockImplementationOnce(async (turno) => {
+        turno.alTexto?.("Tengo la *Facia Versa 15-19* (DDDAI15) en *$1,160.00* 📦");
+        return { contenido: [], usos: [] };
+      });
+    const alResultados = vi.fn();
+    const alCodigos = vi.fn();
+
+    // Act
+    const texto = await correrVendedor({
+      pregunta: "busca facia versa",
+      historial: [],
+      modelo: "claude-test",
+      alResultados,
+      alCodigos,
+    });
+
+    // Assert: mismo arreglo que ven alCodigos y el modelo, sin consultas extra.
+    expect(texto).toContain("DDDAI15");
+    expect(alResultados).toHaveBeenCalledTimes(1);
+    expect(alResultados).toHaveBeenCalledWith("buscar_productos", [
+      expect.objectContaining({ codigo: "DDDAI15", precioConIva: 1160, entregaInmediata: 2, sobrePedido: 0 }),
+    ]);
+    expect(alCodigos).toHaveBeenCalledWith(["DDDAI15"]);
+    expect(consultaBdav).toHaveBeenCalledTimes(1);
+  });
+
+  it("no se invoca cuando la búsqueda no devolvió arreglo (error de catálogo)", async () => {
+    vi.mocked(consultaBdav).mockRejectedValue(new Error("caída"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(correrTurnoAgente)
+      .mockResolvedValueOnce({
+        contenido: [],
+        usos: [{ id: "t1", name: "buscar_productos", input: { descripcion: "x" } }],
+      })
+      .mockResolvedValueOnce({ contenido: [], usos: [] });
+    const alResultados = vi.fn();
+
+    await correrVendedor({ pregunta: "x", historial: [], modelo: "claude-test", alResultados });
+
+    expect(alResultados).not.toHaveBeenCalled();
   });
 });
