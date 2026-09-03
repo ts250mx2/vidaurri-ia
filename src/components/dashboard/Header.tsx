@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Database, LogOut, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SesionUsuario } from "@/types";
+import { ChipSaldoAxon } from "@/components/dashboard/ChipSaldoAxon";
 
 export function Header({ isCollapsed }: { isCollapsed: boolean }) {
   const router = useRouter();
@@ -63,6 +64,9 @@ export function Header({ isCollapsed }: { isCollapsed: boolean }) {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Saldo de tokens de WhatsApp (Axon Logic) */}
+          <ChipSaldoAxon />
+
           {/* Atajo al agente */}
           <Link
             href="/dashboard/vida"

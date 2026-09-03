@@ -55,6 +55,8 @@ const secciones: MenuSeccion[] = [
       { nombre: "Probar el Vendedor", emoji: "🛒", href: "/dashboard/vendedor" },
       { nombre: "Conversaciones", emoji: "💬", href: "/dashboard/conversaciones" },
       { nombre: "Clientes con Descuento", emoji: "🏷️", href: "/dashboard/clientes-descuento" },
+      // "Créditos WhatsApp" (/dashboard/axon) va oculto del menú a propósito:
+      // se llega por el chip de saldo del encabezado.
     ],
   },
   { titulo: "VIDA · Agente IA", emoji: "🤖", href: "/dashboard/vida", items: [] },
