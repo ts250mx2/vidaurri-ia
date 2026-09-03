@@ -116,10 +116,37 @@ En el webhook de Twilio (recibe `From` y `Body`):
 - Nodo/paso "HTTP Request" → `POST` a este endpoint con la API key en el header.
 - Usa el `respuesta` para contestar el chat.
 
+## Pedidos por WhatsApp
+
+Un número que está en el padrón (`Vendedor IA > Clientes con descuento`) **con la
+casilla "Permitir pedido"** puede levantar pedidos desde el chat: el agente agrega
+piezas, muestra el resumen y, cuando el cliente dice que sí, lo envía al mostrador
+con folio (`P-000123`). En ese mismo mensaje va la liga al PDF del pedido:
+
+```
+📄 Tu pedido P-000123 en PDF: https://vidaurri.hlsistemas.com/api/pedidos/123/pdf?f=<firma>
+```
+
+- La liga es pública a propósito (el cliente no tiene sesión) pero lleva una firma
+  HMAC del id derivada de `JWT_SECRET`: sin ella, o con la de otro pedido, responde
+  404. Se arma sobre `PUBLIC_BASE_URL` (obligatoria: sin ella no se manda liga; nunca
+  se deduce del encabezado Host). El PDF trae cliente, sucursal, partidas con
+  precio e importe (ya con descuento e IVA), totales, observaciones y la leyenda de
+  "sujeto a confirmación de existencia".
+- Si el número **no está en el padrón**, o está pero **sin "Permitir pedido"**, el
+  agente solo cotiza y, cuando el cliente pide levantar un pedido, le explica el
+  motivo (no está registrado / no tiene el permiso) y que lo solicite en el mostrador.
+- En cada turno el webservice le pasa al modelo, como nota interna, el estado del
+  pedido en captura del cliente (cuántas piezas lleva) y si el número puede pedir.
+  La memoria de conversación guarda solo texto, no lo que devolvieron las
+  herramientas; sin esa nota, al "sí" del cliente el modelo volvía a agregar las
+  piezas (duplicándolas) en vez de confirmar.
+
 ## Notas de seguridad
 
 - Trata la `WHATSAPP_API_KEY` como un secreto. Si se filtra, genera otra
   (`node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`)
   y actualiza el `.env` y tu pasarela.
 - Expón este endpoint por HTTPS (detrás de tu proxy) si sale a internet.
-- El agente es de **solo consulta** del catálogo: no crea ventas ni modifica datos.
+- El agente **consulta** el catálogo (no crea ventas ni modifica datos de bdav); lo
+  único que escribe son los pedidos de mostrador, y solo para números autorizados.

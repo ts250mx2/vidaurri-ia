@@ -1,13 +1,21 @@
 import crypto from "node:crypto";
 import { claveFaltante } from "@/lib/agente-modelo";
 import { correrVendedor } from "@/lib/vendedor";
-import type { ActorVendedor } from "@/lib/vendedor-pedidos";
-import { guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
+import { puedePedir, type ActorVendedor } from "@/lib/vendedor-pedidos";
+import { ahoraMonterrey, guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
 import { obtenerClienteDescuentoPorTelefono } from "@/lib/db-clientes-descuento";
+import { obtenerBorrador, ultimosPedidosDeTelefono } from "@/lib/db-pedidos";
+import {
+  enlacePdfSiSeEnvio,
+  notaContextoPedido,
+  preguntaConNota,
+  textoConEnlacePdf,
+  type EnlacePedido,
+} from "@/lib/whatsapp-pedidos";
 import { fotosDeRespuesta, separarMarcadorFotos } from "@/lib/fotos-respuesta";
 import { crearMemoriaConversacion } from "@/lib/memoria-conversacion";
 import { normalizarTelefono } from "@/lib/telefono";
-import { baseUrlPublica } from "@/lib/url-publica";
+import { baseUrlConfigurada, baseUrlPublica } from "@/lib/url-publica";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
 // la cookie de sesión), este se autentica con una API key (WHATSAPP_API_KEY) y
@@ -55,6 +63,24 @@ function excedeLimite(telefono: string): boolean {
   ventana.push(ahora);
   ventanas.set(telefono, ventana);
   return false;
+}
+
+/** La liga al PDF del pedido que este cliente envió en el turno, o null. */
+async function enlacePdfDelTurno(
+  actor: ActorVendedor,
+  inicioTurno: string,
+  base: string
+): Promise<EnlacePedido | null> {
+  if (!puedePedir(actor) || actor.tipo !== "cliente") return null;
+  try {
+    const [ultimo] = await ultimosPedidosDeTelefono(actor.telefono, 1);
+    const enlace = enlacePdfSiSeEnvio(ultimo, inicioTurno, base);
+    if (enlace) console.log(`[pedido-whatsapp] ${actor.telefono} envió ${enlace.folio}; va la liga al PDF`);
+    return enlace;
+  } catch (error) {
+    console.error("No se pudo armar la liga al PDF del pedido:", error);
+    return null;
+  }
 }
 
 /** Salud del webservice (sin exponer datos). Útil para probar conectividad. */
@@ -139,8 +165,24 @@ export async function POST(request: Request) {
         }
       : { tipo: "anonimo" };
 
+    // Contexto que el modelo no ve entre turnos (la memoria guarda solo texto,
+    // no lo que devolvieron las herramientas): el pedido en captura del cliente
+    // y si este número puede pedir. Sin esto, al "sí" del cliente el modelo
+    // volvía a agregar las piezas en vez de confirmar (3-sep-2026). El chat de
+    // la página (sesión 77…) no lleva notas: ahí no hay pedidos.
+    const esSesionWeb = ES_SESION_WEB.test(telefono);
+    const borrador =
+      !esSesionWeb && puedePedir(actor) && actor.tipo === "cliente"
+        ? await obtenerBorrador({ tipo: "cliente", telefono: actor.telefono }).catch((error) => {
+            console.error("No se pudo leer el pedido en captura del cliente:", error);
+            return null;
+          })
+        : null;
+    const nota = esSesionWeb ? null : notaContextoPedido(actor, borrador);
+    const inicioTurno = ahoraMonterrey().momento;
+
     const respuesta = await correrVendedor({
-      pregunta: mensaje,
+      pregunta: preguntaConNota(nota, mensaje),
       historial: memoria.historialDe(telefono),
       modelo,
       descuentoCliente: cliente?.descuento ?? null,
@@ -152,7 +194,13 @@ export async function POST(request: Request) {
     // El agente marca los productos sugeridos con [[FOTOS: cod1, cod2]] al final;
     // se extraen los códigos y se quita esa línea técnica del texto visible.
     const { texto: limpio, codigosMarcados } = separarMarcadorFotos(respuesta);
-    const texto = limpio || "Disculpa, no te entendí. ¿Qué parte buscas?";
+    const respuestaLimpia = limpio || "Disculpa, no te entendí. ¿Qué parte buscas?";
+    // Si en este turno se envió el pedido, la liga a su PDF va en el mismo
+    // mensaje (solo clientes del padrón con permiso; la liga lleva firma). Va
+    // sobre PUBLIC_BASE_URL, nunca sobre el Host de la petición: sin ella no
+    // hay liga.
+    const enlace = await enlacePdfDelTurno(actor, inicioTurno, baseUrlConfigurada());
+    const texto = enlace ? textoConEnlacePdf(respuestaLimpia, enlace) : respuestaLimpia;
     memoria.guardarTurno(telefono, mensaje, texto);
 
     // Solo se aceptan códigos REALES (que el catálogo devolvió) y con foto, ya

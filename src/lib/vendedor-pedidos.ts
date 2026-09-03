@@ -141,7 +141,7 @@ const SELECCIONAR_CLIENTE: Anthropic.Tool = {
 const AGREGAR_AL_PEDIDO: Anthropic.Tool = {
   name: "agregar_al_pedido",
   description:
-    "Agrega una pieza al pedido en captura (lo abre si todavía no existe). Manda el código EXACTO que devolvió buscar_productos (pieza nueva) o el idPieza que devolvió buscar_piezas_usadas (pieza usada), nunca los dos. Nunca inventes el código: si no lo buscaste en esta conversación, busca primero. El precio lo calcula el servidor con el descuento del cliente; si la misma pieza ya estaba en el pedido se le suma la cantidad. Devuelve el pedido completo con partidas y totales con IVA.",
+    "Agrega una pieza al pedido en captura (lo abre si todavía no existe). Manda el código EXACTO que devolvió buscar_productos (pieza nueva) o el idPieza que devolvió buscar_piezas_usadas (pieza usada), nunca los dos. Nunca inventes el código: si no lo buscaste en esta conversación, busca primero. El precio lo calcula el servidor con el descuento del cliente; si la misma pieza ya estaba en el pedido se le suma la cantidad. Devuelve el pedido completo con partidas y totales con IVA. NO la uses para confirmar ni para 'volver a asegurar' una pieza que ya agregaste: repetirla duplica cantidades. Si el cliente dice que sí al resumen, lo que toca es confirmar_pedido.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -201,7 +201,7 @@ const CAMBIAR_SUCURSAL: Anthropic.Tool = {
 const CONFIRMAR_PEDIDO: Anthropic.Tool = {
   name: "confirmar_pedido",
   description:
-    "Envía el pedido en captura al mostrador: recibe folio (P-000123) y ya no se puede editar. Llámala SOLO después de mostrar el resumen (ver_pedido) y de que el cliente o el vendedor haya dicho que sí de forma explícita. El pedido queda sujeto a confirmación de existencia por el mostrador; no es un apartado.",
+    "Envía el pedido en captura al mostrador: recibe folio (P-000123) y ya no se puede editar. Llámala SOLO después de mostrar el resumen (ver_pedido o el que devolvió agregar_al_pedido) y de que el cliente o el vendedor haya dicho que sí de forma explícita. Un 'sí', 'confírmalo' o 'está bien' después del resumen ES esa confirmación: llámala en ese momento, sin volver a agregar las piezas. El pedido queda sujeto a confirmación de existencia por el mostrador; no es un apartado.",
   input_schema: {
     type: "object" as const,
     properties: {
