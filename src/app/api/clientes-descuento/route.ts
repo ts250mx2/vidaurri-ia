@@ -8,9 +8,12 @@ import {
   TelefonoDuplicadoError,
 } from "@/lib/db-clientes-descuento";
 import { descuentoPorDefecto } from "@/lib/descuento-default";
+import { enviarBienvenidaWhatsapp } from "@/lib/whatsapp-bienvenida";
 
 // Padrón de clientes con descuento del Vendedor IA (BDVidaurriConversaciones).
 // Solo con sesión del panel: son teléfonos y nombres reales de clientes.
+// Al dar de alta se le manda la bienvenida por WhatsApp (Axon Logic) a cada
+// celular; cómo le fue va en la respuesta, para el aviso del padrón.
 
 export const dynamic = "force-dynamic";
 
@@ -68,7 +71,9 @@ export async function POST(request: Request) {
 
   try {
     const registro = await crearClienteDescuento(validacion.datos, sesion.usuario);
-    return NextResponse.json({ registro }, { status: 201 });
+    // El cliente ya quedó guardado: si la bienvenida falla se informa, no se deshace.
+    const bienvenida = await enviarBienvenidaWhatsapp(registro);
+    return NextResponse.json({ registro, bienvenida }, { status: 201 });
   } catch (error) {
     if (error instanceof TelefonoDuplicadoError) {
       return NextResponse.json(

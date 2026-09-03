@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, Info, Loader2, Plus, Search, X } from "luc
 import { cn } from "@/lib/utils";
 import { fechaCorta, porcentaje } from "@/lib/formato";
 import { TELEFONOS_MAX, type ClienteDescuento } from "@/lib/clientes-descuento";
+import type { ResultadoBienvenida } from "@/lib/whatsapp-bienvenida";
 import { useDialogo } from "@/components/dashboard/useDialogo";
 
 // Alta y edición de un cliente con descuento del Vendedor IA. El celular es
@@ -41,6 +42,8 @@ interface RespuestaBusqueda {
 interface RespuestaGuardado {
   registro?: ClienteDescuento;
   existente?: ClienteDescuento | null;
+  /** Solo en el alta: cómo le fue a la bienvenida por WhatsApp. */
+  bienvenida?: ResultadoBienvenida;
   error?: string;
 }
 
@@ -65,7 +68,12 @@ interface Props {
   registro?: ClienteDescuento;
   /** Debe ser estable (useCallback): el diálogo lo usa en sus efectos. */
   onCerrar: () => void;
-  onGuardado: (registro: ClienteDescuento, modo: ModoFormulario) => void;
+  /** En el alta llega además el resultado de la bienvenida por WhatsApp. */
+  onGuardado: (
+    registro: ClienteDescuento,
+    modo: ModoFormulario,
+    bienvenida?: ResultadoBienvenida
+  ) => void;
   /** El teléfono ya estaba en el padrón: el usuario pidió editar ese registro. */
   onEditarExistente: (registro: ClienteDescuento) => void;
 }
@@ -341,7 +349,7 @@ export function FormularioClienteDescuento({
         if (res.status === 409 && cuerpo?.existente) setDuplicado(cuerpo.existente);
         throw new Error(cuerpo?.error ?? "No se pudo guardar");
       }
-      onGuardado(cuerpo.registro, modo);
+      onGuardado(cuerpo.registro, modo, cuerpo.bienvenida);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error al guardar");
     } finally {

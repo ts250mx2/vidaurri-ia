@@ -180,3 +180,82 @@ Recorre el arreglo y envía una imagen por cada elemento (máx. 3).
   y actualízala en el `.env` del servidor y en Axon Logic.
 - Los mensajes de voz/imagen que reciba tu flujo no se soportan: envía al
   webservice solo texto (si llega audio, responde pidiendo que lo escriban).
+
+## 8. Bienvenida por WhatsApp al dar de alta un cliente
+
+Es el camino inverso: aquí **este sistema llama a Axon Logic**. Cuando en
+`Vendedor IA > Clientes con descuento` se da de alta un cliente con celular,
+el servidor pide la bienvenida a la API pública de Axon Logic por cada celular
+capturado:
+
+```
+POST https://api.axonlogic.com.mx/v1/public/customers/welcome
+X-API-Key: axk_...
+Content-Type: application/json
+
+{ "phone": "+528112345678", "name": "Juan Pérez", "idempotency_key": "cliente-77-8112345678" }
+```
+
+- `phone` va en E.164: el celular de 10 dígitos del padrón con `+52` por
+  delante (un número con lada de otro país solo lleva el `+`).
+- `idempotency_key` es una por cliente y celular (`cliente-<id>-<celular>`):
+  reintentar la misma alta no manda el mensaje dos veces.
+- La plantilla del mensaje se configura en Axon Logic, no aquí.
+
+**Configuración** (`.env` del servidor): `AXON_API_KEY` con la key `axk_...`
+que entrega Axon Logic. Si está vacía la bienvenida no se manda y el alta
+sigue funcionando; el aviso del padrón lo dice. `AXON_API_URL` solo sirve para
+apuntar a otro servidor en pruebas.
+
+**Qué ve el usuario del panel:** el aviso verde de "Se dio de alta a…" añade a
+qué celulares llegó la bienvenida; si alguno falló, el aviso sale en ámbar con
+el motivo (API key rechazada, Axon Logic sin responder, etc.) y dura 15 s. El
+alta **nunca se deshace** por un fallo de la bienvenida: el cliente ya quedó en
+el padrón. El detalle técnico (código HTTP y cuerpo de la respuesta) va al log
+del servidor. Se espera hasta 10 s por envío.
+
+No se manda bienvenida al importar la lista APV (serían miles de mensajes) ni
+al agregar un celular a un cliente ya existente desde la edición.
+
+**Reenvío manual.** Para esos casos, y para las altas hechas mientras Axon
+Logic fallaba, cada fila del padrón con celular tiene el botón «Reenviar
+bienvenida por WhatsApp» (icono de avión de papel), que llama a
+`POST /api/clientes-descuento/{id}/bienvenida` y muestra el resultado en el
+mismo aviso. Usa la misma `idempotency_key` que el alta, así que a quien Axon
+Logic ya le mandó el mensaje no se lo repite.
+
+## 9. Créditos de WhatsApp: saldo y compra de packs
+
+Página `/dashboard/axon`, sin entrada en el menú lateral a propósito: se abre
+desde el chip de saldo del encabezado del panel. Un token de Axon
+Logic es una conversación de 24 h con un cliente por WhatsApp; sin saldo, el
+Vendedor IA deja de contestar. El módulo sigue la "Guía de Integración — API
+Pública de Axon Logic" (v1.0, sep 2026) y usa la misma `AXON_API_KEY`:
+
+| Qué | Axon Logic | Nuestra API (con sesión del panel) |
+|---|---|---|
+| Saldo, consumo 30 días, ritmo diario, días restantes | `GET /v1/public/billing/balance` | `GET /api/axon/saldo` (cacheado 30 s en el servidor, como pide Axon; `?forzar=1` lo salta al volver de un pago) |
+| Catálogo de packs con precio vigente | `GET /v1/public/billing/packs` | `GET /api/axon/packs` (cacheado 10 min) |
+| Comprar un pack | `POST /v1/public/billing/checkout` | `POST /api/axon/checkout` `{ "packId": "pack_1500" }` → `{ checkout: { checkoutUrl, pack, expiraEnMinutos } }` |
+
+**Flujo de compra.** El usuario elige un pack, el servidor abre la sesión de
+pago en Stripe y la interfaz lo manda a `checkoutUrl` (solo se acepta una URL
+HTTPS de `stripe.com`). Paga con tarjeta y Stripe lo regresa a
+`PUBLIC_BASE_URL/dashboard/axon?pago=ok` (o `?pago=cancelado`); Axon acredita
+los tokens por webhook de Stripe, así que al aterrizar el saldo ya viene
+actualizado. La sesión de pago caduca a los 30 min. Cada compra iniciada queda
+en el log del servidor con el usuario del panel. **`PUBLIC_BASE_URL` es
+obligatoria para comprar**: a diferencia de las fotos, la dirección de regreso
+de un pago no se deduce del encabezado Host (lo manda el cliente); sin ella el
+checkout responde 500 con el aviso.
+
+**Interfaz.** El encabezado del panel lleva un chip con el saldo (se refresca
+cada 5 min y se pone en rojo con menos de 7 días de tokens); la página lo
+detalla, alerta cuando quedan menos de 7 días y muestra los packs con el "más
+popular" resaltado. Si `AXON_API_KEY` falta, la página lo dice y el chip no se
+muestra.
+
+**Límites de Axon.** 60 peticiones/min en GET y 20/min en checkout; con la
+caché del servidor el panel no se acerca (ni `?forzar=1` consulta más de una
+vez cada 5 s, y las peticiones simultáneas comparten una llamada). Un `429` se
+muestra como "espera unos segundos".

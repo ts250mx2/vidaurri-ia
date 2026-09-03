@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { sesionActual } from "@/lib/auth";
-import { leerPermitirPedido, validarCapturaClienteDescuento } from "@/lib/clientes-descuento";
+import {
+  leerIdRuta,
+  leerPermitirPedido,
+  validarCapturaClienteDescuento,
+} from "@/lib/clientes-descuento";
 import {
   actualizarClienteDescuento,
   cambiarPermitirPedido,
@@ -16,9 +20,7 @@ export const dynamic = "force-dynamic";
 type Contexto = { params: Promise<{ id: string }> };
 
 async function leerId(contexto: Contexto): Promise<number | null> {
-  const { id } = await contexto.params;
-  const numero = Number.parseInt(id, 10);
-  return Number.isInteger(numero) && numero > 0 && String(numero) === id ? numero : null;
+  return leerIdRuta((await contexto.params).id);
 }
 
 export async function PUT(request: Request, contexto: Contexto) {

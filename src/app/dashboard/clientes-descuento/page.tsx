@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Send,
   Trash2,
   Upload,
   X,
@@ -19,6 +20,11 @@ import {
 import { cn } from "@/lib/utils";
 import { entero, fechaCorta, porcentaje } from "@/lib/formato";
 import type { ClienteDescuento, FiltroCelular } from "@/lib/clientes-descuento";
+import {
+  resumenBienvenida,
+  resumenReenvio,
+  type ResultadoBienvenida,
+} from "@/lib/whatsapp-bienvenida";
 import {
   FormularioClienteDescuento,
   type ModoFormulario,
@@ -72,6 +78,14 @@ interface Respuesta {
 
 type Formulario = { modo: "alta" } | { modo: "edicion"; registro: ClienteDescuento };
 
+/** Aviso de "se guardó / se eliminó"; en alerta cuando la bienvenida no llegó. */
+type Aviso = { texto: string; tono: "ok" | "alerta" };
+
+interface RespuestaReenvio {
+  bienvenida?: ResultadoBienvenida;
+  error?: string;
+}
+
 const lbl = "text-[10px] font-black text-slate-500 uppercase tracking-widest";
 const inputCls =
   "block w-full px-4 py-2.5 bg-white/[0.03] border border-white/10 rounded-xl text-sm font-bold text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400/25 focus:border-amber-400/60 transition-all";
@@ -82,6 +96,8 @@ const btnIcono =
 
 const ESPERA_BUSQUEDA_MS = 300;
 const AVISO_MS = 4000;
+/** Una alerta (bienvenida que no se pudo mandar) merece más tiempo en pantalla. */
+const AVISO_ALERTA_MS = 15000;
 
 /** "2026-08-21 10:15:00" → "10:15". */
 const hora = (momento: string) => momento.slice(11, 16);
@@ -95,12 +111,14 @@ export default function ClientesDescuentoPage() {
   /** Se incrementa para volver a consultar con los mismos filtros. */
   const [version, setVersion] = useState(0);
   const [respuesta, setRespuesta] = useState<Respuesta | null>(null);
-  const [aviso, setAviso] = useState("");
+  const [aviso, setAviso] = useState<Aviso | null>(null);
 
   const [formulario, setFormulario] = useState<Formulario | null>(null);
   const [porEliminar, setPorEliminar] = useState<ClienteDescuento | null>(null);
   const [eliminando, setEliminando] = useState(false);
   const [errorEliminar, setErrorEliminar] = useState("");
+  /** id del cliente cuya bienvenida se está reenviando (uno a la vez). */
+  const [reenviando, setReenviando] = useState<number | null>(null);
 
   const [importando, setImportando] = useState(false);
   const [resumenImportacion, setResumenImportacion] = useState<ResumenImportacion | null>(null);
@@ -120,7 +138,8 @@ export default function ClientesDescuentoPage() {
 
   useEffect(() => {
     if (!aviso) return;
-    const temporizador = setTimeout(() => setAviso(""), AVISO_MS);
+    const duracion = aviso.tono === "alerta" ? AVISO_ALERTA_MS : AVISO_MS;
+    const temporizador = setTimeout(() => setAviso(null), duracion);
     return () => clearTimeout(temporizador);
   }, [aviso]);
 
@@ -180,14 +199,54 @@ export default function ClientesDescuentoPage() {
     if (!eliminando) setPorEliminar(null);
   }, [eliminando]);
 
-  const alGuardar = (registro: ClienteDescuento, modo: ModoFormulario) => {
+  const avisar = (texto: string) => setAviso({ texto, tono: "ok" });
+
+  const alGuardar = (
+    registro: ClienteDescuento,
+    modo: ModoFormulario,
+    bienvenida?: ResultadoBienvenida
+  ) => {
     setFormulario(null);
-    setAviso(
-      modo === "alta"
-        ? `Se dio de alta a ${registro.cliente} con ${porcentaje(registro.descuento)}`
-        : `Se guardaron los cambios de ${registro.cliente}`
-    );
+    if (modo === "alta") {
+      // Con celular, el alta manda la bienvenida por WhatsApp: se cuenta cómo le fue.
+      const resumen = resumenBienvenida(bienvenida);
+      setAviso({
+        texto: `Se dio de alta a ${registro.cliente} con ${porcentaje(registro.descuento)}${resumen?.texto ?? ""}`,
+        tono: resumen?.conFallas ? "alerta" : "ok",
+      });
+    } else {
+      avisar(`Se guardaron los cambios de ${registro.cliente}`);
+    }
     recargar();
+  };
+
+  /** Botón de la lista: vuelve a pedir la bienvenida (misma clave de idempotencia,
+   *  así que a quien ya le llegó no se le repite). Para las altas que fallaron. */
+  const reenviarBienvenida = async (registro: ClienteDescuento) => {
+    setReenviando(registro.id);
+    setAviso(null);
+    try {
+      const res = await fetch(`/api/clientes-descuento/${registro.id}/bienvenida`, {
+        method: "POST",
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const cuerpo = (await res.json().catch(() => null)) as RespuestaReenvio | null;
+      if (!res.ok || !cuerpo?.bienvenida) {
+        throw new Error(cuerpo?.error ?? "No se pudo reenviar la bienvenida");
+      }
+      const resumen = resumenReenvio(registro.cliente, cuerpo.bienvenida);
+      setAviso({ texto: resumen.texto, tono: resumen.conFallas ? "alerta" : "ok" });
+    } catch (err: unknown) {
+      setAviso({
+        texto: err instanceof Error ? err.message : "No se pudo reenviar la bienvenida",
+        tono: "alerta",
+      });
+    } finally {
+      setReenviando(null);
+    }
   };
 
   const eliminar = async () => {
@@ -202,7 +261,7 @@ export default function ClientesDescuentoPage() {
       }
       const cuerpo = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok || cuerpo?.error) throw new Error(cuerpo?.error ?? "No se pudo eliminar");
-      setAviso(`Se eliminó a ${porEliminar.cliente}`);
+      avisar(`Se eliminó a ${porEliminar.cliente}`);
       setPorEliminar(null);
       recargar();
     } catch (err: unknown) {
@@ -276,7 +335,7 @@ export default function ClientesDescuentoPage() {
       if (!res.ok || cuerpo?.error) throw new Error(cuerpo?.error ?? "No se pudo guardar");
     } catch (err: unknown) {
       aplicar(!permitir);
-      setAviso("");
+      setAviso(null);
       setRespuesta((actual) =>
         actual ? { ...actual, error: err instanceof Error ? err.message : "Error al guardar" } : actual
       );
@@ -419,10 +478,19 @@ export default function ClientesDescuentoPage() {
       {aviso && (
         <div
           role="status"
-          className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/25 rounded-2xl p-4 text-emerald-300 text-sm font-bold"
+          className={cn(
+            "flex items-center gap-2 border rounded-2xl p-4 text-sm font-bold",
+            aviso.tono === "alerta"
+              ? "bg-amber-500/10 border-amber-500/25 text-amber-300"
+              : "bg-emerald-500/10 border-emerald-500/25 text-emerald-300"
+          )}
         >
-          <CheckCircle2 className="h-4 w-4 shrink-0" />
-          {aviso}
+          {aviso.tono === "alerta" ? (
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+          ) : (
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+          )}
+          {aviso.texto}
         </div>
       )}
 
@@ -552,6 +620,21 @@ export default function ClientesDescuentoPage() {
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center justify-end gap-1">
+                        {r.telefonos.length > 0 && (
+                          <button
+                            onClick={() => void reenviarBienvenida(r)}
+                            disabled={reenviando !== null}
+                            aria-label={`Reenviar la bienvenida por WhatsApp a ${r.cliente}`}
+                            title="Reenviar bienvenida por WhatsApp"
+                            className={cn(btnIcono, "hover:text-emerald-300 disabled:opacity-40")}
+                          >
+                            {reenviando === r.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Send className="h-4 w-4" />
+                            )}
+                          </button>
+                        )}
                         <button
                           onClick={() => setFormulario({ modo: "edicion", registro: r })}
                           aria-label={`Editar a ${r.cliente}`}
