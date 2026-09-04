@@ -81,7 +81,6 @@ describe("datos y notas del pedido", () => {
       ["Recoge en", "Matriz"],
       ["Levantado por", "WhatsApp"],
       ["Enviado el", "03/09/2026 00:20"],
-      ["Descuento", "38% (ya aplicado en los precios)"],
     ]);
   });
 

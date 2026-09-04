@@ -62,10 +62,6 @@ export function datosDelPedido(pedido: PedidoDetalle): Array<[string, string]> {
     ["Recoge en", nombreSucursalPedido(pedido.sucursal)],
     ["Levantado por", CANAL_TEXTO[pedido.canal]],
     ["Enviado el", fechaHoraPedido(pedido.enviadoEn)],
-    [
-      "Descuento",
-      pedido.descuentoPct > 0 ? `${pedido.descuentoPct}% (ya aplicado en los precios)` : "Precio de mostrador",
-    ],
   ];
 }
 
