@@ -1,23 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
   CANTIDAD_MAX,
+  OBSERVACIONES_MAX,
   calcularTotales,
   errorCantidadUsada,
   errorConfirmacionPartida,
   esEstatusPedido,
   esSucursal,
   folioDeId,
+  partidaVuelveAPendiente,
   perfilDe,
   POR_PAGINA_PEDIDOS,
   puedeCambiarEstatus,
   puedeCancelarCliente,
+  puedeEditarPedido,
   puedeFijarDescuento,
   validarAperturaBorrador,
   validarCambioEstatus,
+  validarCantidad,
   validarEnvioBorrador,
   validarCapturaPartida,
   validarConfirmacionPartidas,
   validarFiltrosPedidos,
+  validarObservaciones,
+  validarSucursal,
   type EstatusPedido,
   type PerfilPos,
 } from "./pedidos";
@@ -126,6 +132,39 @@ describe("puedeCancelarCliente", () => {
     for (const e of ["confirmado", "listo", "entregado", "cancelado"] as const) {
       expect(puedeCancelarCliente(e)).toBe(false);
     }
+  });
+});
+
+describe("puedeEditarPedido", () => {
+  it("se edita mientras el mostrador no lo haya surtido, sin importar el perfil", () => {
+    expect(puedeEditarPedido("borrador")).toBe(true);
+    expect(puedeEditarPedido("enviado")).toBe(true);
+    expect(puedeEditarPedido("confirmado")).toBe(true);
+  });
+
+  it("listo, entregado y cancelado ya no cambian", () => {
+    for (const e of ["listo", "entregado", "cancelado"] as const) {
+      expect(puedeEditarPedido(e), e).toBe(false);
+    }
+  });
+});
+
+describe("partidaVuelveAPendiente", () => {
+  it("en un pedido confirmado cualquier renglón tocado vuelve a pendiente", () => {
+    for (const ep of ["pendiente", "confirmada", "sin_existencia", "sobre_pedido"] as const) {
+      expect(partidaVuelveAPendiente("confirmado", ep), ep).toBe(true);
+    }
+  });
+
+  it("en un pedido enviado solo si el mostrador ya lo había revisado", () => {
+    expect(partidaVuelveAPendiente("enviado", "pendiente")).toBe(false);
+    expect(partidaVuelveAPendiente("enviado", "confirmada")).toBe(true);
+    expect(partidaVuelveAPendiente("enviado", "sin_existencia")).toBe(true);
+    expect(partidaVuelveAPendiente("enviado", "sobre_pedido")).toBe(true);
+  });
+
+  it("en un borrador nunca: nadie lo ha revisado", () => {
+    expect(partidaVuelveAPendiente("borrador", "pendiente")).toBe(false);
   });
 });
 
@@ -393,6 +432,16 @@ describe("validarConfirmacionPartidas", () => {
 });
 
 describe("validarFiltrosPedidos", () => {
+  it("porPagina: número acotado a 10..1000, 'todos' = 1000, basura = 50", () => {
+    expect(validarFiltrosPedidos({ porPagina: "25" }).porPagina).toBe(25);
+    expect(validarFiltrosPedidos({ porPagina: "todos" }).porPagina).toBe(1000);
+    expect(validarFiltrosPedidos({ porPagina: "TODOS" }).porPagina).toBe(1000);
+    expect(validarFiltrosPedidos({ porPagina: "5" }).porPagina).toBe(10);
+    expect(validarFiltrosPedidos({ porPagina: "5000" }).porPagina).toBe(1000);
+    expect(validarFiltrosPedidos({ porPagina: "abc" }).porPagina).toBe(50);
+    expect(validarFiltrosPedidos({ porPagina: "" }).porPagina).toBe(50);
+  });
+
   it("sin querystring: primera página, tamaño fijo y sin filtros", () => {
     expect(validarFiltrosPedidos({})).toEqual({ pagina: 1, porPagina: POR_PAGINA_PEDIDOS });
   });
@@ -497,5 +546,64 @@ describe("validarEnvioBorrador", () => {
     expect(validarEnvioBorrador({ observaciones: "x".repeat(501) }).ok).toBe(false);
     expect(validarEnvioBorrador({ sucursal: "bodega" })).toEqual({ ok: false, error: "Sucursal inválida" });
     expect(validarEnvioBorrador("hola")).toEqual({ ok: false, error: "Petición inválida" });
+  });
+});
+
+describe("validarCantidad", () => {
+  it("acepta un entero entre 1 y el tope, como número o como cadena de dígitos", () => {
+    expect(validarCantidad({ cantidad: 3 })).toEqual({ ok: true, datos: { cantidad: 3 } });
+    expect(validarCantidad({ cantidad: "12" })).toEqual({ ok: true, datos: { cantidad: 12 } });
+    expect(validarCantidad({ cantidad: " 1 " })).toEqual({ ok: true, datos: { cantidad: 1 } });
+    expect(validarCantidad({ cantidad: CANTIDAD_MAX })).toEqual({ ok: true, datos: { cantidad: CANTIDAD_MAX } });
+  });
+
+  it("rechaza cero, negativos, decimales, el tope rebasado y lo que no es número", () => {
+    const error = `La cantidad debe ser un entero entre 1 y ${CANTIDAD_MAX}`;
+    for (const cantidad of [0, -1, 1.5, CANTIDAD_MAX + 1, "0", "012", "1e3", "abc", "", null, undefined, true]) {
+      expect(validarCantidad({ cantidad }), String(cantidad)).toEqual({ ok: false, error });
+    }
+  });
+
+  it("rechaza cuerpos que no son objetos", () => {
+    expect(validarCantidad(null)).toEqual({ ok: false, error: "Petición inválida" });
+    expect(validarCantidad(3)).toEqual({ ok: false, error: "Petición inválida" });
+    expect(validarCantidad([3])).toEqual({ ok: false, error: "Petición inválida" });
+  });
+});
+
+describe("validarObservaciones", () => {
+  it("limpia el texto; vacío o ausente queda en null (las borra)", () => {
+    expect(validarObservaciones({ observaciones: "  lo recoge \t su hijo " })).toEqual({
+      ok: true,
+      datos: { observaciones: "lo recoge su hijo" },
+    });
+    expect(validarObservaciones({ observaciones: "" })).toEqual({ ok: true, datos: { observaciones: null } });
+    expect(validarObservaciones({ observaciones: "   " })).toEqual({ ok: true, datos: { observaciones: null } });
+    expect(validarObservaciones({ observaciones: null })).toEqual({ ok: true, datos: { observaciones: null } });
+    expect(validarObservaciones({})).toEqual({ ok: true, datos: { observaciones: null } });
+  });
+
+  it("acota el largo y rechaza cuerpos que no son objetos", () => {
+    expect(validarObservaciones({ observaciones: "x".repeat(OBSERVACIONES_MAX) }).ok).toBe(true);
+    expect(validarObservaciones({ observaciones: "x".repeat(OBSERVACIONES_MAX + 1) })).toEqual({
+      ok: false,
+      error: `Las observaciones no pueden pasar de ${OBSERVACIONES_MAX} caracteres`,
+    });
+    expect(validarObservaciones("hola")).toEqual({ ok: false, error: "Petición inválida" });
+  });
+});
+
+describe("validarSucursal", () => {
+  it("acepta las sucursales del catálogo", () => {
+    expect(validarSucursal({ sucursal: "matriz" })).toEqual({ ok: true, datos: { sucursal: "matriz" } });
+    expect(validarSucursal({ sucursal: "fierro" })).toEqual({ ok: true, datos: { sucursal: "fierro" } });
+  });
+
+  it("la sucursal es obligatoria y tiene que existir tal cual", () => {
+    for (const sucursal of [undefined, null, "", "Matriz", "centro", 1]) {
+      expect(validarSucursal({ sucursal }), String(sucursal)).toEqual({ ok: false, error: "Sucursal inválida" });
+    }
+    expect(validarSucursal(null)).toEqual({ ok: false, error: "Petición inválida" });
+    expect(validarSucursal("matriz")).toEqual({ ok: false, error: "Petición inválida" });
   });
 });

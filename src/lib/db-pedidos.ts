@@ -17,11 +17,14 @@ import {
   errorCantidadUsada,
   errorConfirmacionPartida,
   folioDeId,
+  partidaVuelveAPendiente,
   puedeCambiarEstatus,
   puedeCancelarCliente,
+  puedeEditarPedido,
   redondear2,
   type CanalPedido,
   type ConfirmacionPartida,
+  type EstadoCotizaPos,
   type EstatusPartida,
   type EstatusPedido,
   type EventoPedido,
@@ -44,6 +47,9 @@ import {
 // más UN borrador vivo, identificado por clave_borrador. Al enviarlo recibe
 // folio y la clave se limpia; de ahí en adelante el mostrador lo mueve por
 // enviado → confirmado → listo → entregado (o cancelado) según su perfil.
+// Mientras no esté listo (puedeEditarPedido) las partidas, la sucursal y las
+// observaciones se siguen pudiendo cambiar desde el detalle; lo que el
+// mostrador ya había revisado de un renglón tocado vuelve a pendiente.
 // Cada cambio deja rastro en pedidos_mostrador_eventos y los totales de la
 // cabecera se recalculan en la misma transacción que la partida que los movió,
 // así nunca se lee una cabecera desfasada de sus renglones.
@@ -86,7 +92,8 @@ export class PedidoVacioError extends Error {
   }
 }
 
-/** Se intentó editar (partidas, sucursal) un pedido que ya no está en captura. */
+/** Se intentó editar (partidas, sucursal, observaciones) un pedido que el
+ *  mostrador ya surtió: listo, entregado o cancelado. */
 export class PedidoNoEditableError extends Error {
   readonly estatus: EstatusPedido;
 
@@ -141,6 +148,8 @@ const CLIENTE_MAX = 150;
 const TELEFONO_MAX = 20;
 const DESCRIPCION_MAX = 200;
 const DETALLE_MAX = 500;
+/** Extracto de las observaciones que va a la bitácora; el texto completo vive en la cabecera. */
+const OBSERVACIONES_BITACORA = 120;
 const ULTIMOS_PEDIDOS_DEFAULT = 5;
 const ULTIMOS_PEDIDOS_MAX = 50;
 /** Usuario con el que se firman los eventos que dispara el propio cliente. */
@@ -151,10 +160,13 @@ const COLUMNAS_PEDIDO = `p.id, p.folio, p.estatus, p.canal, p.id_cliente AS idCl
        p.capturado_por AS capturadoPor, p.atendido_por AS atendidoPor,
        p.subtotal, p.iva, p.total, p.observaciones,
        p.folio_venta_pos AS folioVentaPos, p.motivo_cancelacion AS motivoCancelacion,
+       p.num_cotiza_pos AS numCotizaPos, p.cotiza_pos_estado AS cotizaPosEstado,
+       p.cotiza_pos_error AS cotizaPosError,
        p.creado_en AS creadoEn, p.enviado_en AS enviadoEn, p.confirmado_en AS confirmadoEn,
        p.listo_en AS listoEn, p.entregado_en AS entregadoEn, p.cancelado_en AS canceladoEn,
        p.actualizado_en AS actualizadoEn,
-       (SELECT COUNT(*) FROM pedidos_mostrador_partidas pp WHERE pp.id_pedido = p.id) AS numPartidas`;
+       (SELECT COUNT(*) FROM pedidos_mostrador_partidas pp WHERE pp.id_pedido = p.id) AS numPartidas,
+       (SELECT c.id_cliente_bdav FROM clientes_descuento c WHERE c.id = p.id_cliente) AS idClienteBdav`;
 
 const COLUMNAS_PARTIDA = `id, partida, origen, codigo, id_pieza_usada AS idPiezaUsada, descripcion,
        cantidad, precio_unitario AS precioUnitario, importe,
@@ -192,6 +204,7 @@ function aResumen(fila: RowDataPacket): PedidoResumen {
     estatus: String(fila.estatus) as EstatusPedido,
     canal: String(fila.canal) as CanalPedido,
     idCliente: numero(fila.idCliente),
+    idClienteBdav: numero(fila.idClienteBdav),
     cliente: String(fila.cliente),
     telefono: texto(fila.telefono),
     descuentoPct: Number(fila.descuentoPct),
@@ -202,6 +215,9 @@ function aResumen(fila: RowDataPacket): PedidoResumen {
     iva: Number(fila.iva),
     total: Number(fila.total),
     numPartidas: Number(fila.numPartidas),
+    numCotizaPos: numero(fila.numCotizaPos),
+    cotizaPosEstado: String(fila.cotizaPosEstado) as EstadoCotizaPos,
+    cotizaPosError: texto(fila.cotizaPosError),
     creadoEn: String(fila.creadoEn),
     enviadoEn: texto(fila.enviadoEn),
     confirmadoEn: texto(fila.confirmadoEn),
@@ -289,6 +305,7 @@ interface CabeceraBloqueada {
   telefono: string | null;
   descuentoPct: number;
   sucursal: SucursalEntrega;
+  observaciones: string | null;
 }
 
 /**
@@ -299,7 +316,7 @@ interface CabeceraBloqueada {
 async function bloquearPedido(conexion: Connection, id: number): Promise<CabeceraBloqueada> {
   const [filas] = await conexion.query<RowDataPacket[]>(
     `SELECT id, estatus, canal, id_cliente AS idCliente, cliente, telefono,
-            descuento_pct AS descuentoPct, sucursal
+            descuento_pct AS descuentoPct, sucursal, observaciones
        FROM pedidos_mostrador WHERE id = ? FOR UPDATE`,
     [id]
   );
@@ -314,6 +331,7 @@ async function bloquearPedido(conexion: Connection, id: number): Promise<Cabecer
     telefono: texto(fila.telefono),
     descuentoPct: Number(fila.descuentoPct),
     sucursal: String(fila.sucursal) as SucursalEntrega,
+    observaciones: texto(fila.observaciones),
   };
 }
 
@@ -412,6 +430,11 @@ function usuarioDe(actor: ActorCaptura): string {
   return actor.tipo === "vendedor" ? actor.usuario : USUARIO_CLIENTE;
 }
 
+/** Cómo se nombra un renglón en la bitácora: su código de bdav o 'usada #id'. */
+function referenciaDe(partida: { codigo: string | null; idPiezaUsada: number | null }): string {
+  return partida.codigo ?? (partida.idPiezaUsada !== null ? `usada #${partida.idPiezaUsada}` : "");
+}
+
 /** Texto para la bitácora de un renglón: '2 × FAC123 · Facia Versa ($1,234.00)'. */
 function describirPartida(partida: {
   cantidad: number;
@@ -420,12 +443,46 @@ function describirPartida(partida: {
   descripcion: string;
   precioUnitario: number;
 }): string {
-  const referencia = partida.codigo ?? (partida.idPiezaUsada !== null ? `usada #${partida.idPiezaUsada}` : "");
-  return `${partida.cantidad} × ${referencia} · ${partida.descripcion} (${moneda(partida.precioUnitario)})`;
+  return `${partida.cantidad} × ${referenciaDe(partida)} · ${partida.descripcion} (${moneda(partida.precioUnitario)})`;
+}
+
+/** Cuántos renglones tiene el pedido (dentro de la transacción que lo tiene bloqueado). */
+async function contarPartidas(conexion: Connection, idPedido: number): Promise<number> {
+  const [conteo] = await conexion.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS renglones FROM pedidos_mostrador_partidas WHERE id_pedido = ?`,
+    [idPedido]
+  );
+  return Number(conteo[0]?.renglones ?? 0);
+}
+
+/** Renglón del pedido, con bloqueo; un id de otro pedido se reporta como inexistente. */
+async function bloquearPartida(conexion: Connection, idPedido: number, idPartida: number): Promise<PartidaPedido> {
+  const [filas] = await conexion.query<RowDataPacket[]>(
+    `SELECT ${COLUMNAS_PARTIDA} FROM pedidos_mostrador_partidas WHERE id = ? AND id_pedido = ? FOR UPDATE`,
+    [idPartida, idPedido]
+  );
+  if (filas.length === 0) throw new PartidaNoEncontradaError();
+  return aPartida(filas[0]);
+}
+
+/**
+ * Regresa un renglón a pendiente: lo que el mostrador dijo de él ya no aplica
+ * a la cantidad nueva. Una partida que era sobre pedido vuelve a nueva (igual
+ * que al desmarcarla en confirmarPartidas); una usada conserva su origen. La
+ * nota se queda: es contexto que el mostrador querrá releer al reconfirmar.
+ */
+async function regresarAPendiente(conexion: Connection, idPartida: number, momento: string): Promise<void> {
+  await conexion.query(
+    `UPDATE pedidos_mostrador_partidas
+        SET estatus_partida = 'pendiente', dias_entrega = NULL,
+            origen = IF(origen = 'sobre_pedido', 'nueva', origen), actualizado_en = ?
+      WHERE id = ?`,
+    [momento, idPartida]
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Borrador (captura).
+// Captura y edición (borrador, enviado y confirmado).
 // ---------------------------------------------------------------------------
 
 export async function obtenerBorrador(actor: ActorCaptura): Promise<PedidoDetalle | null> {
@@ -566,27 +623,34 @@ async function partidaRepetida(
   conexion: Connection,
   idPedido: number,
   partida: PartidaNueva
-): Promise<{ id: number; cantidad: number } | null> {
+): Promise<{ id: number; cantidad: number; estatusPartida: EstatusPartida } | null> {
   const [filas] =
     partida.idPiezaUsada !== null
       ? await conexion.query<RowDataPacket[]>(
-          `SELECT id, cantidad FROM pedidos_mostrador_partidas
+          `SELECT id, cantidad, estatus_partida AS estatusPartida FROM pedidos_mostrador_partidas
             WHERE id_pedido = ? AND id_pieza_usada = ? LIMIT 1`,
           [idPedido, partida.idPiezaUsada]
         )
       : await conexion.query<RowDataPacket[]>(
-          `SELECT id, cantidad FROM pedidos_mostrador_partidas
+          `SELECT id, cantidad, estatus_partida AS estatusPartida FROM pedidos_mostrador_partidas
             WHERE id_pedido = ? AND id_pieza_usada IS NULL AND UPPER(codigo) = UPPER(?) LIMIT 1`,
           [idPedido, partida.codigo ?? ""]
         );
-  return filas.length > 0 ? { id: Number(filas[0].id), cantidad: Number(filas[0].cantidad) } : null;
+  if (filas.length === 0) return null;
+  return {
+    id: Number(filas[0].id),
+    cantidad: Number(filas[0].cantidad),
+    estatusPartida: String(filas[0].estatusPartida) as EstatusPartida,
+  };
 }
 
 /**
- * Agrega un renglón al borrador. Si la misma pieza ya estaba, se le suma la
- * cantidad (y se le pone el precio y la existencia recién cotizados, que son
- * los que el cliente acaba de oír) en vez de duplicar el renglón. Una pieza
- * usada nunca rebasa su existencia, ni sumando: es una unidad física.
+ * Agrega un renglón a un pedido editable (borrador, enviado o confirmado). Si
+ * la misma pieza ya estaba, se le suma la cantidad (y se le pone el precio y
+ * la existencia recién cotizados, que son los que el cliente acaba de oír) en
+ * vez de duplicar el renglón; si el mostrador ya había revisado ese renglón,
+ * vuelve a pendiente. Una pieza usada nunca rebasa su existencia, ni sumando:
+ * es una unidad física.
  */
 export async function agregarPartida(
   idPedido: number,
@@ -600,7 +664,7 @@ export async function agregarPartida(
 
   return enTransaccion(async (conexion) => {
     const pedido = await bloquearPedido(conexion, idPedido);
-    if (pedido.estatus !== "borrador") throw new PedidoNoEditableError(pedido.estatus);
+    if (!puedeEditarPedido(pedido.estatus)) throw new PedidoNoEditableError(pedido.estatus);
 
     const repetida = await partidaRepetida(conexion, idPedido, partida);
     let cantidad = partida.cantidad;
@@ -630,6 +694,9 @@ export async function agregarPartida(
           repetida.id,
         ]
       );
+      if (partidaVuelveAPendiente(pedido.estatus, repetida.estatusPartida)) {
+        await regresarAPendiente(conexion, repetida.id, momento);
+      }
     } else {
       const [conteo] = await conexion.query<RowDataPacket[]>(
         `SELECT COUNT(*) AS renglones, IFNULL(MAX(partida), 0) AS ultima
@@ -695,6 +762,7 @@ async function renumerarPartidas(conexion: Connection, idPedido: number, momento
   }
 }
 
+/** Quita un renglón de un pedido editable. No deja rastro salvo el evento. */
 export async function quitarPartida(
   idPedido: number,
   idPartida: number,
@@ -706,14 +774,14 @@ export async function quitarPartida(
 
   return enTransaccion(async (conexion) => {
     const pedido = await bloquearPedido(conexion, idPedido);
-    if (pedido.estatus !== "borrador") throw new PedidoNoEditableError(pedido.estatus);
+    if (!puedeEditarPedido(pedido.estatus)) throw new PedidoNoEditableError(pedido.estatus);
 
-    const [filas] = await conexion.query<RowDataPacket[]>(
-      `SELECT ${COLUMNAS_PARTIDA} FROM pedidos_mostrador_partidas WHERE id = ? AND id_pedido = ?`,
-      [idPartida, idPedido]
-    );
-    if (filas.length === 0) throw new PartidaNoEncontradaError();
-    const quitada = aPartida(filas[0]);
+    const quitada = await bloquearPartida(conexion, idPedido, idPartida);
+    // Un pedido con folio y sin renglones no le dice nada al mostrador (enviar
+    // ya exige al menos uno): si ya no quieren la única pieza, se cancela.
+    if (pedido.estatus !== "borrador" && (await contarPartidas(conexion, idPedido)) <= 1) {
+      throw new LimitePedidoError("Es la única partida del pedido: si ya no la quieren, cancela el pedido");
+    }
 
     await conexion.query(`DELETE FROM pedidos_mostrador_partidas WHERE id = ?`, [idPartida]);
     await renumerarPartidas(conexion, idPedido, momento);
@@ -728,8 +796,8 @@ export async function quitarPartida(
   });
 }
 
-/** Dónde recoge. Se puede cambiar mientras el mostrador no haya empezado a
- *  surtir (borrador o enviado); después la pieza ya está en camino a una sucursal. */
+/** Dónde recoge. Se puede cambiar mientras el pedido se pueda editar (borrador,
+ *  enviado o confirmado); ya listo, la pieza está en esa sucursal. */
 export async function cambiarSucursal(
   idPedido: number,
   sucursal: SucursalEntrega,
@@ -741,9 +809,7 @@ export async function cambiarSucursal(
 
   return enTransaccion(async (conexion) => {
     const pedido = await bloquearPedido(conexion, idPedido);
-    if (pedido.estatus !== "borrador" && pedido.estatus !== "enviado") {
-      throw new PedidoNoEditableError(pedido.estatus);
-    }
+    if (!puedeEditarPedido(pedido.estatus)) throw new PedidoNoEditableError(pedido.estatus);
     if (pedido.sucursal === sucursal) return detalleEscrito(conexion, idPedido);
 
     await conexion.query(`UPDATE pedidos_mostrador SET sucursal = ?, actualizado_en = ? WHERE id = ?`, [
@@ -755,6 +821,100 @@ export async function cambiarSucursal(
       conexion,
       idPedido,
       { evento: "sucursal_cambiada", detalle: `${pedido.sucursal} → ${sucursal}`, usuario, canal },
+      momento
+    );
+    return detalleEscrito(conexion, idPedido);
+  });
+}
+
+/**
+ * Cambia la cantidad de un renglón de un pedido editable. Una pieza usada no
+ * rebasa la existencia que tenía al pedirla (es una unidad física). Si el
+ * mostrador ya había revisado el renglón, o el pedido ya está confirmado, la
+ * partida vuelve a pendiente para que la confirmen con la cantidad nueva.
+ * Misma cantidad = nada que hacer, ni evento.
+ */
+export async function cambiarCantidadPartida(
+  idPedido: number,
+  idPartida: number,
+  cantidad: number,
+  usuario: string | null,
+  canal: CanalPedido
+): Promise<PedidoDetalle> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+  if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > CANTIDAD_MAX) {
+    throw new LimitePedidoError(`La cantidad debe ser un entero entre 1 y ${CANTIDAD_MAX}`);
+  }
+
+  return enTransaccion(async (conexion) => {
+    const pedido = await bloquearPedido(conexion, idPedido);
+    if (!puedeEditarPedido(pedido.estatus)) throw new PedidoNoEditableError(pedido.estatus);
+
+    const partida = await bloquearPartida(conexion, idPedido, idPartida);
+    if (partida.cantidad === cantidad) return detalleEscrito(conexion, idPedido);
+    if (partida.origen === "usada") {
+      const sobra = errorCantidadUsada(partida.existenciaAlPedir, cantidad);
+      if (sobra) throw new LimitePedidoError(sobra);
+    }
+
+    await conexion.query(
+      `UPDATE pedidos_mostrador_partidas SET cantidad = ?, importe = ?, actualizado_en = ? WHERE id = ?`,
+      [cantidad, redondear2(cantidad * partida.precioUnitario), momento, idPartida]
+    );
+    const vuelve = partidaVuelveAPendiente(pedido.estatus, partida.estatusPartida);
+    if (vuelve) await regresarAPendiente(conexion, idPartida, momento);
+    await registrarEvento(
+      conexion,
+      idPedido,
+      {
+        evento: "cantidad_cambiada",
+        detalle:
+          `${referenciaDe(partida)} · ${partida.cantidad} → ${cantidad}` +
+          (vuelve ? " (vuelve a pendiente de confirmar)" : ""),
+        usuario,
+        canal,
+      },
+      momento
+    );
+    await recalcularTotales(conexion, idPedido, momento);
+    return detalleEscrito(conexion, idPedido);
+  });
+}
+
+/**
+ * Observaciones del pedido (quién recoge, cómo lo quiere). Se cambian mientras
+ * el pedido se pueda editar; null las borra. Sin cambio no hay evento.
+ */
+export async function actualizarObservaciones(
+  idPedido: number,
+  observaciones: string | null,
+  usuario: string | null,
+  canal: CanalPedido
+): Promise<PedidoDetalle> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+  const nuevas = observaciones?.slice(0, OBSERVACIONES_MAX) ?? null;
+
+  return enTransaccion(async (conexion) => {
+    const pedido = await bloquearPedido(conexion, idPedido);
+    if (!puedeEditarPedido(pedido.estatus)) throw new PedidoNoEditableError(pedido.estatus);
+    if (pedido.observaciones === nuevas) return detalleEscrito(conexion, idPedido);
+
+    await conexion.query(`UPDATE pedidos_mostrador SET observaciones = ?, actualizado_en = ? WHERE id = ?`, [
+      nuevas,
+      momento,
+      idPedido,
+    ]);
+    await registrarEvento(
+      conexion,
+      idPedido,
+      {
+        evento: "observaciones",
+        detalle: nuevas === null ? "Sin observaciones" : nuevas.slice(0, OBSERVACIONES_BITACORA),
+        usuario,
+        canal,
+      },
       momento
     );
     return detalleEscrito(conexion, idPedido);
@@ -779,11 +939,7 @@ export async function enviarPedido(
     const pedido = await bloquearPedido(conexion, idPedido);
     if (pedido.estatus !== "borrador") throw new TransicionInvalidaError(pedido.estatus, "enviado");
 
-    const [conteo] = await conexion.query<RowDataPacket[]>(
-      `SELECT COUNT(*) AS renglones FROM pedidos_mostrador_partidas WHERE id_pedido = ?`,
-      [idPedido]
-    );
-    if (Number(conteo[0]?.renglones ?? 0) === 0) throw new PedidoVacioError();
+    if ((await contarPartidas(conexion, idPedido)) === 0) throw new PedidoVacioError();
 
     await recalcularTotales(conexion, idPedido, momento);
     await conexion.query(
@@ -992,6 +1148,89 @@ export async function confirmarPartidas(
       conexion,
       idPedido,
       { evento: "partidas_confirmadas", detalle: resumirConfirmacion(cambios), usuario, canal: "mostrador" },
+      momento
+    );
+    return detalleEscrito(conexion, idPedido);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cotización en el POS (bdav). La escritura al POS vive en pos-cotiza.ts; aquí
+// solo se guarda en el pedido cómo quedó, con su evento en la bitácora.
+// ---------------------------------------------------------------------------
+
+export interface CotizacionPosGuardada {
+  estado: EstadoCotizaPos;
+  numCotizaPos: number | null;
+  /** cotiza.id en bdav. Interno: la API no lo expone, solo sirve para cancelar. */
+  idCotizaPos: number | null;
+}
+
+/** Lo que el pedido tiene guardado de su cotización en el POS; null si el pedido no existe. */
+export async function leerCotizacionPos(idPedido: number): Promise<CotizacionPosGuardada | null> {
+  await asegurarEsquema();
+  const [filas] = await poolConversaciones().query<RowDataPacket[]>(
+    `SELECT cotiza_pos_estado AS estado, num_cotiza_pos AS numCotizaPos, id_cotiza_pos AS idCotizaPos
+       FROM pedidos_mostrador WHERE id = ?`,
+    [idPedido]
+  );
+  if (filas.length === 0) return null;
+  return {
+    estado: String(filas[0].estado) as EstadoCotizaPos,
+    numCotizaPos: numero(filas[0].numCotizaPos),
+    idCotizaPos: numero(filas[0].idCotizaPos),
+  };
+}
+
+export interface ResultadoCotizaPos extends CotizacionPosGuardada {
+  /** Por qué falló o, en simulación, el resumen de lo que se habría insertado; null si no hay nada que decir. */
+  error: string | null;
+  /** Evento de la bitácora (cotizacion_pos, cotizacion_pos_error, cotizacion_pos_simulada…) y su detalle. */
+  evento: string;
+  detalle: string;
+}
+
+const COTIZA_POS_ERROR_MAX = 200;
+/** Estados que significan "en este momento se cotizó": son los que sellan cotiza_pos_en. */
+const ESTADOS_QUE_SELLAN_COTIZA_POS: ReadonlyArray<EstadoCotizaPos> = ["insertada", "simulada"];
+
+/**
+ * Deja en el pedido cómo quedó su cotización en el POS y lo anota en la
+ * bitácora. Se llama DESPUÉS de escribir (o simular) en bdav: si esto falla,
+ * el pedido queda desfasado del POS y el error sube para que quien llama lo
+ * loguee; el reintento manual (POST .../cotizacion) lo vuelve a intentar.
+ */
+export async function guardarCotizacionPos(
+  idPedido: number,
+  resultado: ResultadoCotizaPos,
+  usuario: string | null
+): Promise<PedidoDetalle> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+
+  return enTransaccion(async (conexion) => {
+    const pedido = await bloquearPedido(conexion, idPedido);
+    const sella = ESTADOS_QUE_SELLAN_COTIZA_POS.includes(resultado.estado);
+    await conexion.query(
+      `UPDATE pedidos_mostrador
+          SET cotiza_pos_estado = ?, num_cotiza_pos = ?, id_cotiza_pos = ?, cotiza_pos_error = ?,
+              cotiza_pos_en = IF(?, ?, cotiza_pos_en), actualizado_en = ?
+        WHERE id = ?`,
+      [
+        resultado.estado,
+        resultado.numCotizaPos,
+        resultado.idCotizaPos,
+        resultado.error?.slice(0, COTIZA_POS_ERROR_MAX) ?? null,
+        sella ? 1 : 0,
+        momento,
+        momento,
+        idPedido,
+      ]
+    );
+    await registrarEvento(
+      conexion,
+      idPedido,
+      { evento: resultado.evento, detalle: resultado.detalle, usuario, canal: pedido.canal },
       momento
     );
     return detalleEscrito(conexion, idPedido);

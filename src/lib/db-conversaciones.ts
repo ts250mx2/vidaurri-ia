@@ -25,7 +25,9 @@ const globalConPool = globalThis as unknown as {
 // aplicaría hasta reiniciar el servidor.
 // v5: pedidos_mostrador, pedidos_mostrador_partidas y pedidos_mostrador_eventos
 // (módulo de pedidos, fase 1).
-const VERSION_ESQUEMA = 5;
+// v6: columnas de la cotización en el POS en pedidos_mostrador (num_cotiza_pos,
+// id_cotiza_pos, cotiza_pos_estado, cotiza_pos_error, cotiza_pos_en).
+const VERSION_ESQUEMA = 6;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -148,6 +150,11 @@ const TABLAS = [
   observaciones VARCHAR(500) NULL,
   folio_venta_pos VARCHAR(20) NULL COMMENT 'Folio de la venta en el POS al entregar (referencia, solo lectura)',
   motivo_cancelacion VARCHAR(200) NULL,
+  num_cotiza_pos BIGINT NULL COMMENT 'cotiza.num_cotiza en bdav (folio que ve el POS)',
+  id_cotiza_pos BIGINT NULL COMMENT 'cotiza.id en bdav (para cancelarla)',
+  cotiza_pos_estado VARCHAR(12) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | simulada | insertada | omitida | error | cancelada',
+  cotiza_pos_error VARCHAR(200) NULL COMMENT 'Motivo del error; en simulación, resumen de lo que se habría insertado',
+  cotiza_pos_en DATETIME NULL COMMENT 'Cuándo se cotizó (o simuló) en el POS',
   creado_en DATETIME NOT NULL COMMENT 'America/Monterrey',
   enviado_en DATETIME NULL,
   confirmado_en DATETIME NULL,
@@ -279,6 +286,65 @@ async function migrarClientesDescuento(pool: mysql.Pool): Promise<void> {
   }
 }
 
+/** Una columna que se agregó después de la primera versión de una tabla. */
+interface ColumnaNueva {
+  columna: string;
+  alter: string;
+}
+
+/**
+ * Agrega a `tabla` las columnas de la lista que aún no tenga (mismo patrón que
+ * migrarClientesDescuento: MySQL 8 no tiene ADD COLUMN IF NOT EXISTS, así que
+ * se consulta information_schema y se aplica solo lo que falte). El nombre de
+ * la tabla sale del código, nunca de fuera.
+ */
+async function agregarColumnasFaltantes(
+  pool: mysql.Pool,
+  tabla: string,
+  columnas: ReadonlyArray<ColumnaNueva>
+): Promise<void> {
+  const [filas] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT COLUMN_NAME AS columna
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+    [tabla]
+  );
+  const existentes = new Set(filas.map((f) => String(f.columna)));
+  for (const { columna, alter } of columnas) {
+    if (!existentes.has(columna)) await pool.query(alter);
+  }
+}
+
+// v6: la cotización del pedido en el POS. Van después de motivo_cancelacion,
+// en el mismo orden que en el CREATE TABLE.
+const COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR: ReadonlyArray<ColumnaNueva> = [
+  {
+    columna: "num_cotiza_pos",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN num_cotiza_pos BIGINT NULL COMMENT 'cotiza.num_cotiza en bdav (folio que ve el POS)' AFTER motivo_cancelacion",
+  },
+  {
+    columna: "id_cotiza_pos",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN id_cotiza_pos BIGINT NULL COMMENT 'cotiza.id en bdav (para cancelarla)' AFTER num_cotiza_pos",
+  },
+  {
+    columna: "cotiza_pos_estado",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN cotiza_pos_estado VARCHAR(12) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | simulada | insertada | omitida | error | cancelada' AFTER id_cotiza_pos",
+  },
+  {
+    columna: "cotiza_pos_error",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN cotiza_pos_error VARCHAR(200) NULL COMMENT 'Motivo del error; en simulación, resumen de lo que se habría insertado' AFTER cotiza_pos_estado",
+  },
+  {
+    columna: "cotiza_pos_en",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN cotiza_pos_en DATETIME NULL COMMENT 'Cuándo se cotizó (o simuló) en el POS' AFTER cotiza_pos_error",
+  },
+];
+
 export function asegurarEsquema(): Promise<void> {
   if (
     !globalConPool.__esquemaConversaciones ||
@@ -290,6 +356,7 @@ export function asegurarEsquema(): Promise<void> {
         await poolConversaciones().query(sql);
       }
       await migrarClientesDescuento(poolConversaciones());
+      await agregarColumnasFaltantes(poolConversaciones(), "pedidos_mostrador", COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR);
     })().catch((error) => {
       // Si falló, se permite reintentar en la siguiente llamada.
       globalConPool.__esquemaConversaciones = undefined;

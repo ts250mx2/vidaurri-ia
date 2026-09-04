@@ -18,6 +18,11 @@ export type SucursalEntrega = "matriz" | "fierro";
 export type OrigenPartida = "nueva" | "usada" | "sobre_pedido";
 export type EstatusPartida = "pendiente" | "confirmada" | "sin_existencia" | "sobre_pedido";
 export type PerfilPos = "Administrador" | "Operaciones" | "Ventas";
+/** Cómo va la cotización del pedido en el POS (bdav): pendiente mientras no
+ *  esté listo; simulada cuando el módulo corre en modo simulación; insertada
+ *  con num_cotiza real; omitida con el módulo apagado o sin nada que cotizar;
+ *  error con el mensaje en cotizaPosError; cancelada al cancelar el pedido. */
+export type EstadoCotizaPos = "pendiente" | "simulada" | "insertada" | "omitida" | "error" | "cancelada";
 
 export const ESTATUS_PEDIDO: ReadonlyArray<EstatusPedido> = [
   "borrador",
@@ -36,6 +41,14 @@ export const ESTATUS_PARTIDA: ReadonlyArray<EstatusPartida> = [
   "sobre_pedido",
 ];
 export const PERFILES_POS: ReadonlyArray<PerfilPos> = ["Administrador", "Operaciones", "Ventas"];
+export const ESTADOS_COTIZA_POS: ReadonlyArray<EstadoCotizaPos> = [
+  "pendiente",
+  "simulada",
+  "insertada",
+  "omitida",
+  "error",
+  "cancelada",
+];
 
 export const SUCURSALES_ENTREGA: ReadonlyArray<{ clave: SucursalEntrega; nombre: string }> = [
   { clave: "matriz", nombre: "Matriz" },
@@ -61,6 +74,9 @@ export const DIAS_ENTREGA_MAX = 365;
 /** Paginación de la cola de pedidos: tamaño fijo, como en el resto del panel. */
 export const POR_PAGINA_PEDIDOS = 50;
 export const PAGINA_MAX_PEDIDOS = 10000;
+/** Tope del tamaño de página (y lo que significa "todos"): la cola cabe entera en una vuelta. */
+export const POR_PAGINA_MAX_PEDIDOS = 1000;
+export const POR_PAGINA_MIN_PEDIDOS = 10;
 export const BUSQUEDA_MAX = 80;
 
 // ---------------------------------------------------------------------------
@@ -109,6 +125,8 @@ export interface PedidoResumen {
   canal: CanalPedido;
   /** clientes_descuento.id; null = público general. */
   idCliente: number | null;
+  /** clientes.id en bdav (el ID que ve el POS), si el cliente del padrón está ligado; null si no. */
+  idClienteBdav: number | null;
   /** Nombre del cliente al momento del pedido (snapshot). */
   cliente: string;
   telefono: string | null;
@@ -122,6 +140,11 @@ export interface PedidoResumen {
   total: number;
   /** Conteo de renglones (en el detalle `partidas` es el arreglo). */
   numPartidas: number;
+  /** num_cotiza de la cotización en el POS; null mientras no se inserte. */
+  numCotizaPos: number | null;
+  cotizaPosEstado: EstadoCotizaPos;
+  /** Por qué falló la cotización en el POS (o, en simulación, el resumen de lo que se habría insertado). */
+  cotizaPosError: string | null;
   creadoEn: string;
   enviadoEn: string | null;
   confirmadoEn: string | null;
@@ -233,6 +256,27 @@ export function puedeCancelarCliente(estatus: EstatusPedido): boolean {
 }
 
 /**
+ * Un pedido se puede editar (partidas, cantidades, sucursal, observaciones)
+ * mientras el mostrador no lo haya surtido: cualquier perfil del POS puede
+ * hacerlo en borrador, enviado y confirmado; listo, entregado y cancelado ya
+ * no cambian.
+ */
+export function puedeEditarPedido(estatus: EstatusPedido): boolean {
+  return estatus === "borrador" || estatus === "enviado" || estatus === "confirmado";
+}
+
+/**
+ * Al cambiar la cantidad de un renglón (o sumarle piezas) lo que el mostrador
+ * ya dijo de él deja de valer, así que vuelve a pendiente para que lo revisen
+ * otra vez: siempre en un pedido confirmado, y en cualquier estatus si la
+ * partida ya estaba revisada (confirmada, sin existencia o sobre pedido). En
+ * un borrador nunca: ahí nadie la ha revisado todavía.
+ */
+export function partidaVuelveAPendiente(estatusPedido: EstatusPedido, estatusPartida: EstatusPartida): boolean {
+  return estatusPedido === "confirmado" || estatusPartida !== "pendiente";
+}
+
+/**
  * Quién puede fijar el descuento de un cliente al darlo de alta desde el
  * mostrador. Ventas captura con el descuento por defecto: dejarle mandar el
  * porcentaje sería dejarle fijar el precio del pedido, cosa que el POS no le
@@ -338,6 +382,16 @@ function leerCodigo(crudo: unknown): string | null | undefined {
   return texto;
 }
 
+const ERROR_CANTIDAD = `La cantidad debe ser un entero entre 1 y ${CANTIDAD_MAX}`;
+const ERROR_OBSERVACIONES = `Las observaciones no pueden pasar de ${OBSERVACIONES_MAX} caracteres`;
+const ERROR_SUCURSAL = "Sucursal inválida";
+
+/** Cantidad de un renglón: entero 1..CANTIDAD_MAX (número o cadena de dígitos); undefined si no vale. */
+function leerCantidad(crudo: unknown): number | undefined {
+  const cantidad = leerEnteroPositivo(crudo);
+  return cantidad && cantidad <= CANTIDAD_MAX ? cantidad : undefined;
+}
+
 /**
  * Renglón que se agrega al borrador. Tiene que traer exactamente UNA
  * referencia: código de bdav (nueva / sobre pedido) o id de pieza usada. El
@@ -373,10 +427,8 @@ export function validarCapturaPartida(entrada: unknown): Validacion<CapturaParti
     origen = origenCrudo;
   }
 
-  const cantidad = leerEnteroPositivo(entrada.cantidad);
-  if (!cantidad || cantidad > CANTIDAD_MAX) {
-    return { ok: false, error: `La cantidad debe ser un entero entre 1 y ${CANTIDAD_MAX}` };
-  }
+  const cantidad = leerCantidad(entrada.cantidad);
+  if (cantidad === undefined) return { ok: false, error: ERROR_CANTIDAD };
 
   return { ok: true, datos: { origen, codigo, idPiezaUsada, cantidad } };
 }
@@ -496,8 +548,16 @@ export function validarFiltrosPedidos(sp: Record<string, string | undefined>): F
     ...(hasta !== undefined ? { hasta } : {}),
     ...(busqueda ? { busqueda } : {}),
     pagina: leerPagina(sp.pagina),
-    porPagina: POR_PAGINA_PEDIDOS,
+    porPagina: leerPorPagina(sp.porPagina),
   };
+}
+
+/** `porPagina`: número entre 10 y 1000, o la palabra "todos" (= el tope); cualquier otra cosa → 50. */
+function leerPorPagina(crudo: string | undefined): number {
+  const texto = (crudo ?? "").trim().toLowerCase();
+  if (texto === "todos") return POR_PAGINA_MAX_PEDIDOS;
+  if (!/^\d{1,4}$/.test(texto)) return POR_PAGINA_PEDIDOS;
+  return Math.min(POR_PAGINA_MAX_PEDIDOS, Math.max(POR_PAGINA_MIN_PEDIDOS, Number.parseInt(texto, 10)));
 }
 
 function leerPagina(crudo: string | undefined): number {
@@ -530,7 +590,7 @@ export function validarAperturaBorrador(entrada: unknown): Validacion<AperturaBo
   if (idCliente === undefined) return { ok: false, error: "Cliente inválido" };
 
   const sucursal = leerSucursalOpcional(entrada.sucursal);
-  if (sucursal === undefined) return { ok: false, error: "Sucursal inválida" };
+  if (sucursal === undefined) return { ok: false, error: ERROR_SUCURSAL };
 
   return { ok: true, datos: { idCliente, sucursal } };
 }
@@ -547,12 +607,43 @@ export function validarEnvioBorrador(entrada: unknown): Validacion<EnvioBorrador
   if (!esObjeto(cuerpo)) return { ok: false, error: "Petición inválida" };
 
   const observaciones = leerTextoOpcional(cuerpo.observaciones, OBSERVACIONES_MAX);
-  if (observaciones === undefined) {
-    return { ok: false, error: `Las observaciones no pueden pasar de ${OBSERVACIONES_MAX} caracteres` };
-  }
+  if (observaciones === undefined) return { ok: false, error: ERROR_OBSERVACIONES };
 
   const sucursal = leerSucursalOpcional(cuerpo.sucursal);
-  if (sucursal === undefined) return { ok: false, error: "Sucursal inválida" };
+  if (sucursal === undefined) return { ok: false, error: ERROR_SUCURSAL };
 
   return { ok: true, datos: { observaciones, sucursal } };
+}
+
+// ---------------------------------------------------------------------------
+// Cuerpos de la edición de un pedido (PATCH .../partidas/[idPartida],
+// POST .../sucursal, POST .../observaciones). Si el pedido admite el cambio lo
+// decide puedeEditarPedido en la capa de datos, con la fila bloqueada.
+// ---------------------------------------------------------------------------
+
+/** Cuerpo de PATCH .../partidas/[idPartida]: `{ cantidad }` (número o cadena de dígitos). */
+export function validarCantidad(entrada: unknown): Validacion<{ cantidad: number }> {
+  if (!esObjeto(entrada)) return { ok: false, error: "Petición inválida" };
+
+  const cantidad = leerCantidad(entrada.cantidad);
+  if (cantidad === undefined) return { ok: false, error: ERROR_CANTIDAD };
+
+  return { ok: true, datos: { cantidad } };
+}
+
+/** Cuerpo de POST .../observaciones: `{ observaciones }`; vacío o ausente las borra (null). */
+export function validarObservaciones(entrada: unknown): Validacion<{ observaciones: string | null }> {
+  if (!esObjeto(entrada)) return { ok: false, error: "Petición inválida" };
+
+  const observaciones = leerTextoOpcional(entrada.observaciones, OBSERVACIONES_MAX);
+  if (observaciones === undefined) return { ok: false, error: ERROR_OBSERVACIONES };
+
+  return { ok: true, datos: { observaciones } };
+}
+
+/** Cuerpo de POST .../sucursal: `{ sucursal }`, obligatoria y del catálogo. */
+export function validarSucursal(entrada: unknown): Validacion<{ sucursal: SucursalEntrega }> {
+  if (!esObjeto(entrada)) return { ok: false, error: "Petición inválida" };
+  if (!esSucursal(entrada.sucursal)) return { ok: false, error: ERROR_SUCURSAL };
+  return { ok: true, datos: { sucursal: entrada.sucursal } };
 }
