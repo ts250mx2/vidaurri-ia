@@ -235,8 +235,29 @@ export interface SentenciaPos {
   params: unknown[];
 }
 
-export const SQL_SIGUIENTE_NUM_COTIZA = "SELECT IFNULL(MAX(num_cotiza), 0) + 1 AS n FROM cotiza FOR UPDATE";
-export const SQL_CONTAR_NUM_COTIZA = "SELECT COUNT(*) AS c FROM cotiza WHERE num_cotiza = ?";
+/**
+ * El último número, leído por la llave primaria (una fila) y SIN `FOR UPDATE`.
+ *
+ * `num_cotiza` no tiene índice, así que `MAX(num_cotiza) ... FOR UPDATE` recorre
+ * y bloquea las 166 mil filas de `cotiza` mientras dura la transacción, y eso sí
+ * frena al POS al guardar sus propias cotizaciones. El candado tampoco servía de
+ * nada: el POS numera con una lectura normal, que no lo respeta. Lo que protege
+ * de verdad es la comprobación de después de insertar. En bdav `num_cotiza`
+ * nunca baja al crecer el `id` (comprobado sobre las 166 mil filas: las únicas
+ * excepciones son números repetidos, que valen igual, no menos), así que la
+ * fila de mayor `id` es la del número más alto.
+ */
+export const SQL_ULTIMO_NUM_COTIZA = "SELECT num_cotiza AS n FROM cotiza ORDER BY id DESC LIMIT 1";
+/**
+ * ¿Alguien más se quedó con este número? Acotado por `id` para no recorrer la
+ * tabla entera: un choque solo puede venir del POS guardando en el mismo
+ * instante, y esa fila queda a unos pocos ids de la nuestra (el mostrador
+ * levanta unas 150 cotizaciones al día). Un repetido histórico es imposible:
+ * el número que tomamos es mayor que todos los que existían.
+ */
+export const SQL_CONTAR_NUM_COTIZA = "SELECT COUNT(*) AS c FROM cotiza WHERE num_cotiza = ? AND id >= ?";
+/** Cuántos ids hacia atrás mira esa comprobación. */
+export const VENTANA_CHOQUE_COTIZA = 1000;
 export const SQL_CANCELAR_COTIZA = "UPDATE cotiza SET estatus = ? WHERE id = ?";
 
 /** INSERT de la cabecera. `numCotiza` admite un texto solo para el log de la simulación. */
@@ -322,18 +343,19 @@ interface InsercionPos {
 }
 
 /**
- * Inserta la cotización en bdav en una transacción: numera con MAX+1 bajo
- * FOR UPDATE, inserta cabecera y renglones y comprueba que el número siga
- * siendo único (el POS numera sin candado). Si chocó, deshace y vuelve con
- * el siguiente número, hasta INTENTOS_NUM_COTIZA veces.
+ * Inserta la cotización en bdav en una transacción: toma el número que sigue
+ * al último, inserta cabecera y renglones y comprueba que nadie más se haya
+ * quedado con ese número (el POS numera igual y sin candado, así que puede
+ * pasar). Si chocó, deshace y vuelve con el siguiente, hasta
+ * INTENTOS_NUM_COTIZA veces.
  */
 async function insertarEnPos(cotizacion: CotizacionPos, fechaCot: string): Promise<InsercionPos> {
   let ultimoIntentado = 0;
   for (let intento = 1; ; intento++) {
     try {
       return await enTransaccionPos(async (ejecutar) => {
-        const filas = (await ejecutar(SQL_SIGUIENTE_NUM_COTIZA)) as Array<{ n: number }>;
-        const numCotiza = Math.max(Number(filas[0]?.n ?? 1), ultimoIntentado + 1);
+        const filas = (await ejecutar(SQL_ULTIMO_NUM_COTIZA)) as Array<{ n: number }>;
+        const numCotiza = Math.max(Number(filas[0]?.n ?? 0) + 1, ultimoIntentado + 1);
         ultimoIntentado = numCotiza;
 
         const cabecera = sentenciaCabecera(cotizacion.cabecera, numCotiza, fechaCot);
@@ -343,7 +365,8 @@ async function insertarEnPos(cotizacion: CotizacionPos, fechaCot: string): Promi
           await ejecutar(sentencia.sql, sentencia.params);
         }
 
-        const conteo = (await ejecutar(SQL_CONTAR_NUM_COTIZA, [numCotiza])) as Array<{ c: number }>;
+        const desde = Math.max(1, insertada.insertId - VENTANA_CHOQUE_COTIZA);
+        const conteo = (await ejecutar(SQL_CONTAR_NUM_COTIZA, [numCotiza, desde])) as Array<{ c: number }>;
         if (Number(conteo[0]?.c ?? 0) > 1) throw new NumCotizaRepetidoError(numCotiza);
         return { idCotiza: insertada.insertId, numCotiza };
       });
@@ -357,8 +380,8 @@ async function insertarEnPos(cotizacion: CotizacionPos, fechaCot: string): Promi
 /** Número que le tocaría a la cotización, solo para que el log de la simulación sea creíble. */
 async function siguienteNumCotizaEstimado(): Promise<string> {
   try {
-    const filas = await consultaBdav<{ n: number }>("SELECT IFNULL(MAX(num_cotiza), 0) + 1 AS n FROM cotiza");
-    return `${Number(filas[0]?.n ?? 0)} (estimado, MAX+1)`;
+    const filas = await consultaBdav<{ n: number }>(SQL_ULTIMO_NUM_COTIZA);
+    return `${Number(filas[0]?.n ?? 0) + 1} (estimado)`;
   } catch (error) {
     console.warn("[pos-cotiza] no se pudo estimar el num_cotiza para la simulación:", error);
     return "<MAX(num_cotiza)+1>";

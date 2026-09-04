@@ -6,7 +6,7 @@ import {
   ID_CTE_NO_REGISTRADO,
   SQL_CANCELAR_COTIZA,
   SQL_CONTAR_NUM_COTIZA,
-  SQL_SIGUIENTE_NUM_COTIZA,
+  SQL_ULTIMO_NUM_COTIZA,
   armarCotizacionPos,
   leerModoCotizaPos,
   puedeCotizarEnPos,
@@ -216,7 +216,7 @@ describe("sentencias del POS", () => {
   it("todas pasan la lista blanca del pool de escritura tal como se arman", () => {
     if (!cotizacion.ok) throw new Error("armado inválido");
     const sentencias = [
-      SQL_SIGUIENTE_NUM_COTIZA,
+      SQL_ULTIMO_NUM_COTIZA,
       SQL_CONTAR_NUM_COTIZA,
       SQL_CANCELAR_COTIZA,
       sentenciaCabecera(cotizacion.cotizacion.cabecera, 1, "2026-09-03").sql,
