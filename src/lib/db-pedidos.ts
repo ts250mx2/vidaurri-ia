@@ -7,6 +7,7 @@ import {
 } from "@/lib/db-conversaciones";
 import { moneda } from "@/lib/formato";
 import {
+  BKO_FIRMA_MAX,
   CANTIDAD_MAX,
   ESTATUS_PEDIDO,
   MOTIVO_MAX,
@@ -24,6 +25,7 @@ import {
   redondear2,
   type CanalPedido,
   type ConfirmacionPartida,
+  type EstadoBkoPos,
   type EstadoCotizaPos,
   type EstatusPartida,
   type EstatusPedido,
@@ -162,6 +164,8 @@ const COLUMNAS_PEDIDO = `p.id, p.folio, p.estatus, p.canal, p.id_cliente AS idCl
        p.folio_venta_pos AS folioVentaPos, p.motivo_cancelacion AS motivoCancelacion,
        p.num_cotiza_pos AS numCotizaPos, p.cotiza_pos_estado AS cotizaPosEstado,
        p.cotiza_pos_error AS cotizaPosError,
+       p.num_bko_pos AS numBkoPos, p.bko_pos_estado AS bkoPosEstado,
+       p.bko_pos_error AS bkoPosError, p.bko_pos_compromiso AS bkoPosCompromiso,
        p.creado_en AS creadoEn, p.enviado_en AS enviadoEn, p.confirmado_en AS confirmadoEn,
        p.listo_en AS listoEn, p.entregado_en AS entregadoEn, p.cancelado_en AS canceladoEn,
        p.actualizado_en AS actualizadoEn,
@@ -218,6 +222,10 @@ function aResumen(fila: RowDataPacket): PedidoResumen {
     numCotizaPos: numero(fila.numCotizaPos),
     cotizaPosEstado: String(fila.cotizaPosEstado) as EstadoCotizaPos,
     cotizaPosError: texto(fila.cotizaPosError),
+    numBkoPos: numero(fila.numBkoPos),
+    bkoPosEstado: String(fila.bkoPosEstado) as EstadoBkoPos,
+    bkoPosError: texto(fila.bkoPosError),
+    bkoPosCompromiso: texto(fila.bkoPosCompromiso),
     creadoEn: String(fila.creadoEn),
     enviadoEn: texto(fila.enviadoEn),
     confirmadoEn: texto(fila.confirmadoEn),
@@ -1235,6 +1243,123 @@ export async function guardarCotizacionPos(
     );
     return detalleEscrito(conexion, idPedido);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Back order a Aldo en el POS (bdav). La escritura al POS vive en
+// pos-backorder.ts; aquí solo se guarda en el pedido cómo quedó, con su evento
+// en la bitácora, y se resuelve el vendedor del POS del usuario que confirmó.
+// ---------------------------------------------------------------------------
+
+export interface BackorderPosGuardada {
+  estado: EstadoBkoPos;
+  numBkoPos: number | null;
+  /** back_order.id en bdav. Interno: la API no lo expone, solo sirve para cancelarla. */
+  idBkoPos: number | null;
+  /** Huella de los renglones con los que se pidió (firmaBackorder); null si no hay back order vigente. */
+  firma: string | null;
+  /** MARTES | VIERNES con el que se pidió. */
+  compromiso: string | null;
+  /** Motivo del error o de la omisión; en simulación, el resumen de lo que se habría insertado. */
+  error: string | null;
+  /** Cuándo se pidió (o simuló); null si nunca. */
+  en: string | null;
+}
+
+/** Lo que el pedido tiene guardado de su back order en el POS; null si el pedido no existe. */
+export async function leerBackorderPos(idPedido: number): Promise<BackorderPosGuardada | null> {
+  await asegurarEsquema();
+  const [filas] = await poolConversaciones().query<RowDataPacket[]>(
+    `SELECT bko_pos_estado AS estado, num_bko_pos AS numBkoPos, id_bko_pos AS idBkoPos,
+            bko_pos_firma AS firma, bko_pos_compromiso AS compromiso, bko_pos_error AS error,
+            bko_pos_en AS en
+       FROM pedidos_mostrador WHERE id = ?`,
+    [idPedido]
+  );
+  if (filas.length === 0) return null;
+  return {
+    estado: String(filas[0].estado) as EstadoBkoPos,
+    numBkoPos: numero(filas[0].numBkoPos),
+    idBkoPos: numero(filas[0].idBkoPos),
+    firma: texto(filas[0].firma),
+    compromiso: texto(filas[0].compromiso),
+    error: texto(filas[0].error),
+    en: texto(filas[0].en),
+  };
+}
+
+export interface ResultadoBkoPos extends Omit<BackorderPosGuardada, "en"> {
+  /** Evento de la bitácora (backorder_pos, backorder_pos_error, backorder_pos_simulada…) y su detalle. */
+  evento: string;
+  detalle: string;
+}
+
+const BKO_POS_ERROR_MAX = 200;
+const BKO_POS_COMPROMISO_MAX = 15;
+/** Estados que significan "en este momento se pidió": son los que sellan bko_pos_en. */
+const ESTADOS_QUE_SELLAN_BKO_POS: ReadonlyArray<EstadoBkoPos> = ["insertada", "simulada"];
+
+/**
+ * Deja en el pedido cómo quedó su back order en el POS (estado, número,
+ * firma y compromiso) y lo anota en la bitácora. Se llama DESPUÉS de escribir
+ * (o simular) en bdav: si esto falla, el pedido queda desfasado del POS y el
+ * error sube para que quien llama lo loguee; el reintento manual
+ * (POST .../backorder) lo vuelve a intentar.
+ */
+export async function guardarBackorderPos(
+  idPedido: number,
+  resultado: ResultadoBkoPos,
+  usuario: string | null
+): Promise<PedidoDetalle> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+
+  return enTransaccion(async (conexion) => {
+    const pedido = await bloquearPedido(conexion, idPedido);
+    const sella = ESTADOS_QUE_SELLAN_BKO_POS.includes(resultado.estado);
+    await conexion.query(
+      `UPDATE pedidos_mostrador
+          SET bko_pos_estado = ?, num_bko_pos = ?, id_bko_pos = ?, bko_pos_error = ?,
+              bko_pos_firma = ?, bko_pos_compromiso = ?,
+              bko_pos_en = IF(?, ?, bko_pos_en), actualizado_en = ?
+        WHERE id = ?`,
+      [
+        resultado.estado,
+        resultado.numBkoPos,
+        resultado.idBkoPos,
+        resultado.error?.slice(0, BKO_POS_ERROR_MAX) ?? null,
+        resultado.firma?.slice(0, BKO_FIRMA_MAX) ?? null,
+        resultado.compromiso?.slice(0, BKO_POS_COMPROMISO_MAX) ?? null,
+        sella ? 1 : 0,
+        momento,
+        momento,
+        idPedido,
+      ]
+    );
+    await registrarEvento(
+      conexion,
+      idPedido,
+      { evento: resultado.evento, detalle: resultado.detalle, usuario, canal: pedido.canal },
+      momento
+    );
+    return detalleEscrito(conexion, idPedido);
+  });
+}
+
+/**
+ * vendedores.id de bdav con el que firma la back order el usuario del POS,
+ * según vendedores_pos (que se llena a mano, en minúsculas); null si no está
+ * y quien llama usa el vendedor por defecto.
+ */
+export async function leerIdVendedorPos(usuario: string): Promise<number | null> {
+  await asegurarEsquema();
+  const limpio = usuario.trim().toLowerCase();
+  if (!limpio) return null;
+  const [filas] = await poolConversaciones().query<RowDataPacket[]>(
+    `SELECT id_vendedor_bdav AS idVendedor FROM vendedores_pos WHERE usuario = ? LIMIT 1`,
+    [limpio]
+  );
+  return filas.length > 0 ? numero(filas[0].idVendedor) : null;
 }
 
 // ---------------------------------------------------------------------------

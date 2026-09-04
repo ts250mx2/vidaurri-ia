@@ -59,6 +59,38 @@ punto de venta). Perfiles: Administrador, Operaciones, Ventas.
   Cada respuesta se puede exportar a PDF con la pregunta que la originó y su formato
   (tablas, listas, negritas, código).
 
+## Pedidos de mostrador y el POS
+
+Los pedidos de mostrador (los captura vidaurri-page contra `/api/mostrador/*`) viven en
+`BDVidaurriConversaciones`. Dos momentos se reflejan en el POS (`bdav`), y son lo ÚNICO que
+esta aplicación escribe ahí: van por el pool acotado de `src/lib/db-bdav-escritura.ts`, con
+lista blanca de sentencias (lo que no está en la lista no se ejecuta).
+
+- **Cotización** al quedar *listo*: `cotiza` + `detalle_cotiza` (`POS_COTIZA_MODO`).
+- **Back order a Aldo Autopartes** al quedar *confirmado* (y cada vez que el mostrador vuelve
+  a confirmar partidas): las partidas sobre pedido se insertan en `back_order` + `detalle_bko`
+  con estatus ABIERTA (`POS_BKO_MODO`: `real` escribe, `simulacion` solo arma y loguea —el
+  default—, `apagado` no hace nada). El número de la back order NO es MAX+1: el POS lo toma de
+  `folios_ventas.folio_bko` (la fila con `folio_bko` no nulo guarda el SIGUIENTE número) y lo
+  sube, así que aquí se lee bajo `FOR UPDATE` y se sube con
+  `UPDATE folios_ventas SET folio_bko = folio_bko + 1 WHERE id = ? AND folio_bko = ?`; si el
+  UPDATE no afecta una fila es que el POS lo tomó en el mismo instante y se reintenta la
+  transacción completa. Si no se subiera, la siguiente back order del POS repetiría el número.
+  Una sola back order vigente por pedido: se guarda la firma de los renglones y, si cambian, la
+  vigente pasa a CANCELADA y se pide otra; al cancelar el pedido se cancela. `fecha_compromiso`
+  es MARTES o VIERNES (los días que entrega Aldo). El vendedor que firma (`vendedores.id`:
+  1 POLENDO, 2 ECHAVARRI, 3 JR) sale de la tabla `vendedores_pos` de `BDVidaurriConversaciones`
+  por el usuario del POS que confirmó, o de `POS_BKO_VENDEDOR_DEFAULT` (3 = JR). Esa tabla no
+  tiene UI; se llena a mano, con el usuario en minúsculas:
+
+  ```sql
+  INSERT INTO vendedores_pos (usuario, id_vendedor_bdav, vendedor, creado_en)
+  VALUES ('jr', 3, 'JR', NOW());
+  ```
+
+  La hoja imprimible ("Orden de compra · Aldo Autopartes") sale de
+  `GET /api/mostrador/pedidos/[id]/backorder`; `POST` a la misma ruta reintenta.
+
 ## Base de datos
 
 Ver [docs/BDAV.md](docs/BDAV.md) para el esquema documentado (tablas vivas,

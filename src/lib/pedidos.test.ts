@@ -7,7 +7,10 @@ import {
   errorConfirmacionPartida,
   esEstatusPedido,
   esSucursal,
+  fechaCompromisoAldo,
+  firmaBackorder,
   folioDeId,
+  partidasParaBackorder,
   partidaVuelveAPendiente,
   perfilDe,
   POR_PAGINA_PEDIDOS,
@@ -15,6 +18,7 @@ import {
   puedeCancelarCliente,
   puedeEditarPedido,
   puedeFijarDescuento,
+  puedeTenerBackorder,
   validarAperturaBorrador,
   validarCambioEstatus,
   validarCantidad,
@@ -25,11 +29,128 @@ import {
   validarObservaciones,
   validarSucursal,
   type EstatusPedido,
+  type PartidaPedido,
   type PerfilPos,
 } from "./pedidos";
 
 const PERFILES: PerfilPos[] = ["Administrador", "Operaciones", "Ventas"];
 const ESTATUS: EstatusPedido[] = ["borrador", "enviado", "confirmado", "listo", "entregado", "cancelado"];
+
+/** Renglón de pedido con todo en su valor más simple; lo que importa va en `extra`. */
+function partida(numero: number, extra: Partial<PartidaPedido> = {}): PartidaPedido {
+  return {
+    id: numero,
+    partida: numero,
+    origen: "nueva",
+    codigo: `C${numero}`,
+    idPiezaUsada: null,
+    descripcion: `Pieza ${numero}`,
+    cantidad: 1,
+    precioUnitario: 116,
+    importe: 116,
+    existenciaAlPedir: null,
+    estatusPartida: "pendiente",
+    diasEntrega: null,
+    nota: null,
+    ...extra,
+  };
+}
+
+describe("partidasParaBackorder", () => {
+  it("toma las que el mostrador marcó sobre pedido al confirmar", () => {
+    const marcada = partida(1, { origen: "sobre_pedido", estatusPartida: "sobre_pedido", diasEntrega: 3 });
+    expect(partidasParaBackorder([partida(2, { estatusPartida: "confirmada" }), marcada])).toEqual([marcada]);
+  });
+
+  it("toma las que ya venían sobre pedido y siguen pendientes (nadie dijo que sí hay en tienda)", () => {
+    const pendiente = partida(1, { origen: "sobre_pedido", estatusPartida: "pendiente" });
+    expect(partidasParaBackorder([pendiente])).toEqual([pendiente]);
+  });
+
+  it("nunca usadas, confirmadas ni sin existencia; una nueva pendiente tampoco", () => {
+    const fuera = [
+      partida(1, { origen: "usada", codigo: null, idPiezaUsada: 18639, estatusPartida: "pendiente" }),
+      partida(2, { origen: "usada", codigo: null, idPiezaUsada: 18640, estatusPartida: "confirmada" }),
+      partida(3, { origen: "sobre_pedido", estatusPartida: "confirmada" }),
+      partida(4, { origen: "sobre_pedido", estatusPartida: "sin_existencia" }),
+      partida(5, { origen: "nueva", estatusPartida: "pendiente" }),
+      partida(6, { origen: "nueva", estatusPartida: "sin_existencia" }),
+    ];
+    expect(partidasParaBackorder(fuera)).toEqual([]);
+  });
+
+  it("conserva el orden del pedido y no toca la lista original", () => {
+    const a = partida(3, { origen: "sobre_pedido", estatusPartida: "sobre_pedido" });
+    const b = partida(1, { origen: "sobre_pedido", estatusPartida: "pendiente" });
+    const original = [a, partida(2), b];
+    expect(partidasParaBackorder(original)).toEqual([a, b]);
+    expect(original).toHaveLength(3);
+  });
+});
+
+describe("firmaBackorder", () => {
+  it("'CODIGO×cant|CODIGO×cant' en orden de partida, aunque lleguen desordenadas", () => {
+    const partidas = [
+      partida(2, { codigo: "DDNVE15M", cantidad: 2, origen: "sobre_pedido", estatusPartida: "sobre_pedido" }),
+      partida(1, { codigo: "FAC123", cantidad: 1, origen: "sobre_pedido", estatusPartida: "pendiente" }),
+    ];
+    expect(firmaBackorder(partidas)).toBe("FAC123×1|DDNVE15M×2");
+  });
+
+  it("solo firma las partidas sobre pedido; sin ninguna es ''", () => {
+    const partidas = [
+      partida(1, { codigo: "DDNVE15", estatusPartida: "confirmada" }),
+      partida(2, { codigo: "DDNVE15M", cantidad: 2, origen: "sobre_pedido", estatusPartida: "sobre_pedido" }),
+    ];
+    expect(firmaBackorder(partidas)).toBe("DDNVE15M×2");
+    expect(firmaBackorder([partida(1, { estatusPartida: "confirmada" })])).toBe("");
+    expect(firmaBackorder([])).toBe("");
+  });
+
+  it("cambia si cambia la cantidad o el código, y normaliza el código a mayúsculas", () => {
+    const base = partida(1, { codigo: "ddnve15m", cantidad: 2, origen: "sobre_pedido", estatusPartida: "sobre_pedido" });
+    expect(firmaBackorder([base])).toBe("DDNVE15M×2");
+    expect(firmaBackorder([{ ...base, cantidad: 3 }])).not.toBe(firmaBackorder([base]));
+    expect(firmaBackorder([{ ...base, codigo: "DDNVE15" }])).not.toBe(firmaBackorder([base]));
+  });
+});
+
+describe("fechaCompromisoAldo", () => {
+  it("lunes → MARTES", () => {
+    expect(fechaCompromisoAldo("2026-08-31")).toBe("MARTES");
+  });
+
+  it("martes, miércoles y jueves → VIERNES (el camión del martes ya no alcanza)", () => {
+    expect(fechaCompromisoAldo("2026-09-01")).toBe("VIERNES");
+    expect(fechaCompromisoAldo("2026-09-02")).toBe("VIERNES");
+    expect(fechaCompromisoAldo("2026-09-03")).toBe("VIERNES");
+  });
+
+  it("viernes, sábado y domingo → MARTES", () => {
+    expect(fechaCompromisoAldo("2026-09-04")).toBe("MARTES");
+    expect(fechaCompromisoAldo("2026-09-05")).toBe("MARTES");
+    expect(fechaCompromisoAldo("2026-09-06")).toBe("MARTES");
+  });
+
+  it("una fecha mal formada o inexistente lanza, en vez de prometer un día al azar", () => {
+    expect(() => fechaCompromisoAldo("hoy")).toThrow(/fecha/i);
+    expect(() => fechaCompromisoAldo("")).toThrow(/fecha/i);
+    expect(() => fechaCompromisoAldo("2026-02-30")).toThrow(/fecha/i);
+    expect(() => fechaCompromisoAldo("2026-09-03 10:00:00")).toThrow(/fecha/i);
+  });
+});
+
+describe("puedeTenerBackorder", () => {
+  it("desde que el mostrador lo confirma: confirmado, listo o entregado", () => {
+    expect(puedeTenerBackorder("confirmado")).toBe(true);
+    expect(puedeTenerBackorder("listo")).toBe(true);
+    expect(puedeTenerBackorder("entregado")).toBe(true);
+  });
+
+  it("antes de confirmar o ya cancelado, no", () => {
+    for (const e of ["borrador", "enviado", "cancelado"] as const) expect(puedeTenerBackorder(e), e).toBe(false);
+  });
+});
 
 describe("folioDeId", () => {
   it("rellena a seis dígitos con el prefijo P-", () => {

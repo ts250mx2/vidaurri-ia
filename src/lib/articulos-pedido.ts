@@ -11,6 +11,7 @@
 import { consultaBdav } from "@/lib/db";
 import { consultaUsadas } from "@/lib/db-usadas";
 import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
+import type { OrigenPartida } from "@/lib/pedidos";
 
 // Tope del buscador manual de /mostrador/nuevo: es una lista para elegir a
 // mano, no un catálogo.
@@ -293,4 +294,40 @@ export function depurarDuplicados<T extends { codigo: string; existencia: number
     if (gana) mejorPorCodigo.set(clave, fila);
   }
   return [...mejorPorCodigo.values()];
+}
+
+/** Lo que hace falta de un renglón del pedido para resolver su articulos.id. */
+export type PartidaConCodigo = { partida: number; origen: OrigenPartida; codigo: string | null };
+
+/**
+ * articulos.id de cada renglón nuevo o sobre pedido, por número de partida
+ * (las usadas no existen en bdav y se saltan). bdav tiene códigos capturados
+ * dos veces: se elige la misma fila que cotizó articuloParaPedido (más
+ * existencia y, a empate, menor id), para que lo que se escriba en el POS
+ * (cotización, back order a Aldo) apunte al artículo cuyo precio se dio.
+ */
+export async function idArticuloPorPartidaDe(partidas: ReadonlyArray<PartidaConCodigo>): Promise<Map<number, number>> {
+  const mapa = new Map<number, number>();
+  const codigos = [
+    ...new Set(
+      partidas.filter((p) => p.origen !== "usada" && p.codigo).map((p) => (p.codigo as string).toUpperCase())
+    ),
+  ];
+  if (codigos.length === 0) return mapa;
+
+  const filas = await consultaBdav<{ id: number; codigo: string; existencia: number }>(
+    "SELECT id, codigo, IFNULL(existencia, 0) AS existencia FROM articulos WHERE codigo IN (?)",
+    [codigos]
+  );
+  const porCodigo = new Map(
+    depurarDuplicados(
+      filas.map((f) => ({ id: Number(f.id), codigo: String(f.codigo), existencia: Number(f.existencia) }))
+    ).map((f) => [f.codigo.toUpperCase(), f.id])
+  );
+  for (const partida of partidas) {
+    if (partida.origen === "usada" || !partida.codigo) continue;
+    const id = porCodigo.get(partida.codigo.toUpperCase());
+    if (id) mapa.set(partida.partida, id);
+  }
+  return mapa;
 }

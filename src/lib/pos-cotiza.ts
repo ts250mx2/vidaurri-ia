@@ -1,4 +1,4 @@
-import { depurarDuplicados } from "@/lib/articulos-pedido";
+import { idArticuloPorPartidaDe } from "@/lib/articulos-pedido";
 import { consultaBdav } from "@/lib/db";
 import { enTransaccionPos } from "@/lib/db-bdav-escritura";
 import { obtenerClienteDescuento } from "@/lib/db-clientes-descuento";
@@ -26,7 +26,8 @@ import {
 // para que el mostrador la cobre desde el punto de venta con un número que ya
 // conoce; si el pedido se cancela, la cotización se marca CANCELADA.
 //
-// Es la ÚNICA escritura de esta aplicación en bdav y va por el pool acotado de
+// Es una de las dos escrituras de esta aplicación en bdav (la otra es la back
+// order a Aldo, pos-backorder.ts) y va por el pool acotado de
 // db-bdav-escritura.ts (lista blanca de sentencias). Todo lo demás de bdav
 // (clientes, artículos) se sigue leyendo por consultaBdav.
 //
@@ -293,46 +294,15 @@ function detalleInsercion(numCotiza: number, cotizacion: CotizacionPos): string 
 // ---------------------------------------------------------------------------
 
 /** clientes.id en bdav del cliente del pedido, solo si el padrón lo liga y el
- *  cliente sigue existiendo allá; si no, null (NO REGISTRADO). */
-async function idClienteBdavDe(idCliente: number | null): Promise<number | null> {
+ *  cliente sigue existiendo allá; si no, null (NO REGISTRADO). Lo comparte
+ *  pos-backorder.ts: la back order lleva el mismo cliente que la cotización. */
+export async function idClienteBdavDe(idCliente: number | null): Promise<number | null> {
   if (idCliente === null) return null;
   const cliente = await obtenerClienteDescuento(idCliente);
   const idBdav = cliente?.idClienteBdav ?? null;
   if (idBdav === null || idBdav <= 0) return null;
   const filas = await consultaBdav<{ id: number }>("SELECT id FROM clientes WHERE id = ? LIMIT 1", [idBdav]);
   return filas.length > 0 ? Number(filas[0].id) : null;
-}
-
-/**
- * articulos.id de cada renglón nuevo o sobre pedido, por número de partida.
- * bdav tiene códigos capturados dos veces: se elige la misma fila que cotizó
- * articuloParaPedido (más existencia y, a empate, menor id), para que la
- * cotización apunte al artículo cuyo precio se dio.
- */
-async function idArticuloPorPartidaDe(partidas: PartidaACotizarPos[]): Promise<Map<number, number>> {
-  const mapa = new Map<number, number>();
-  const codigos = [
-    ...new Set(
-      partidas.filter((p) => p.origen !== "usada" && p.codigo).map((p) => (p.codigo as string).toUpperCase())
-    ),
-  ];
-  if (codigos.length === 0) return mapa;
-
-  const filas = await consultaBdav<{ id: number; codigo: string; existencia: number }>(
-    "SELECT id, codigo, IFNULL(existencia, 0) AS existencia FROM articulos WHERE codigo IN (?)",
-    [codigos]
-  );
-  const porCodigo = new Map(
-    depurarDuplicados(
-      filas.map((f) => ({ id: Number(f.id), codigo: String(f.codigo), existencia: Number(f.existencia) }))
-    ).map((f) => [f.codigo.toUpperCase(), f.id])
-  );
-  for (const partida of partidas) {
-    if (partida.origen === "usada" || !partida.codigo) continue;
-    const id = porCodigo.get(partida.codigo.toUpperCase());
-    if (id) mapa.set(partida.partida, id);
-  }
-  return mapa;
 }
 
 /** El num_cotiza que elegimos ya lo usó el POS en el mismo instante. */

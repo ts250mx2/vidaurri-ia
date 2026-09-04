@@ -13,6 +13,17 @@ const INSERT_DETALLE = `INSERT INTO detalle_cotiza (id_cot, id_articulo, partida
 const UPDATE_ESTATUS = "UPDATE cotiza SET estatus = ? WHERE id = ?";
 const SELECT_NUM = "SELECT IFNULL(MAX(num_cotiza), 0) + 1 AS n FROM cotiza FOR UPDATE";
 
+// Back order a Aldo (segunda excepción autorizada el 3 sep 2026), tal como las
+// arma pos-backorder.ts.
+const INSERT_BKO = `INSERT INTO back_order (id_prov, id_cte, id_vendedor, num_bko, fecha_bko, nombre_cliente, telefono, email, subtotal, iva, total, anticipo, liquida, saldo, estatus, fecha_compromiso, comentarios)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const INSERT_DETALLE_BKO = `INSERT INTO detalle_bko (id_bko, id_art, partida, cantidad, precio, total_part, estatus, cant_recibida, fecha_llegada)
+   VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)`;
+const UPDATE_FOLIO_BKO = "UPDATE folios_ventas SET folio_bko = folio_bko + 1 WHERE id = ? AND folio_bko = ?";
+const UPDATE_ESTATUS_BKO = "UPDATE back_order SET estatus = ? WHERE id = ?";
+const SELECT_FOLIO_BKO =
+  "SELECT id, folio_bko FROM folios_ventas WHERE folio_bko IS NOT NULL ORDER BY id LIMIT 1 FOR UPDATE";
+
 describe("validarSentenciaPos", () => {
   it("deja pasar exactamente las cuatro formas autorizadas", () => {
     expect(() => validarSentenciaPos(SELECT_NUM)).not.toThrow();
@@ -20,6 +31,46 @@ describe("validarSentenciaPos", () => {
     expect(() => validarSentenciaPos(INSERT_COTIZA)).not.toThrow();
     expect(() => validarSentenciaPos(INSERT_DETALLE)).not.toThrow();
     expect(() => validarSentenciaPos(UPDATE_ESTATUS)).not.toThrow();
+  });
+
+  it("deja pasar exactamente las cuatro formas de la back order a Aldo (3 sep 2026)", () => {
+    expect(() => validarSentenciaPos(SELECT_FOLIO_BKO)).not.toThrow();
+    expect(() => validarSentenciaPos(INSERT_BKO)).not.toThrow();
+    expect(() => validarSentenciaPos(INSERT_DETALLE_BKO)).not.toThrow();
+    expect(() => validarSentenciaPos(UPDATE_FOLIO_BKO)).not.toThrow();
+    expect(() => validarSentenciaPos(UPDATE_ESTATUS_BKO)).not.toThrow();
+  });
+
+  it("de la back order rechaza cualquier variante: otro folio, otra columna, borrar o tocar artículos", () => {
+    const prohibidas = [
+      "UPDATE folios_ventas SET folio_bko = 99 WHERE id = ?",
+      "UPDATE folios_ventas SET folio_bko = ? WHERE id = ?",
+      "UPDATE folios_ventas SET folio_bko = folio_bko + 1 WHERE id = ?",
+      "UPDATE folios_ventas SET folio_bko = folio_bko + 2 WHERE id = ? AND folio_bko = ?",
+      "UPDATE folios_ventas SET folio_bko = folio_bko + 1 WHERE id = ? AND folio_bko = ? OR 1 = 1",
+      "UPDATE folios_ventas SET folio = folio + 1 WHERE id = ? AND folio = ?",
+      "UPDATE folios_ventas SET folio_pago = folio_pago + 1 WHERE id = ? AND folio_pago = ?",
+      "UPDATE folios_ventas SET folio_bko = folio_bko + 1, folio = folio + 1 WHERE id = ? AND folio_bko = ?",
+      "UPDATE back_order SET total = ? WHERE id = ?",
+      "UPDATE back_order SET estatus = ?, total = ? WHERE id = ?",
+      "UPDATE back_order SET estatus = ? WHERE id = ? OR 1 = 1",
+      "UPDATE back_order SET estatus = ?",
+      "UPDATE detalle_bko SET estatus = ? WHERE id = ?",
+      "DELETE FROM back_order WHERE id = ?",
+      "DELETE FROM back_order",
+      "DELETE FROM detalle_bko WHERE id_bko = ?",
+      "INSERT INTO articulos (codigo) VALUES (?)",
+      "INSERT INTO clientes (nombre) VALUES (?)",
+      "INSERT INTO vendedores (vendedor) VALUES (?)",
+      "INSERT INTO back_order VALUES (?)",
+      "INSERT INTO back_order_bak (id) VALUES (?)",
+      "INSERT INTO detalle_bko_x (id) VALUES (?)",
+      "insert into back_order (id) VALUES (?)",
+      `${UPDATE_FOLIO_BKO}; DROP TABLE back_order`,
+    ];
+    for (const sql of prohibidas) {
+      expect(() => validarSentenciaPos(sql), sql).toThrow(EscrituraNoPermitidaError);
+    }
   });
 
   it("tolera saltos de línea y sangría de las plantillas multilínea", () => {

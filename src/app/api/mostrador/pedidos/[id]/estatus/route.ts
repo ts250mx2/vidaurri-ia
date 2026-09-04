@@ -9,6 +9,7 @@ import {
   respuestaOk,
 } from "@/lib/mostrador-api";
 import { validarCambioEstatus } from "@/lib/pedidos";
+import { cancelarBackorderPos, sincronizarBackorderPos } from "@/lib/pos-backorder";
 import { cancelarCotizacionPos, sincronizarCotizacionPos } from "@/lib/pos-cotiza";
 
 // El mostrador mueve el pedido: confirmado, listo, entregado o cancelado. La
@@ -16,15 +17,26 @@ import { cancelarCotizacionPos, sincronizarCotizacionPos } from "@/lib/pos-cotiz
 // (puedeCambiarEstatus); aquí solo se traduce: 403 si es cuestión de perfil,
 // 409 si la transición no existe.
 //
-// Al quedar listo, el pedido se refleja como cotización en el POS (y al
-// cancelarse, la cotización se cancela). Eso va DESPUÉS del cambio y nunca lo
+// Al quedar confirmado, las partidas sobre pedido se piden a Aldo como back
+// order en el POS; al quedar listo, el pedido se refleja como cotización; al
+// cancelarse, se cancelan las dos. Eso va DESPUÉS del cambio y nunca lo
 // deshace: si el POS falla, el pedido ya cambió y el estado de su cotización
-// (cotizaPosEstado / cotizaPosError) cuenta qué pasó, con reintento manual en
-// POST .../cotizacion.
+// (cotizaPosEstado / cotizaPosError) o de su back order (bkoPosEstado /
+// bkoPosError) cuenta qué pasó, con reintento manual en POST .../cotizacion y
+// POST .../backorder.
 
 export const dynamic = "force-dynamic";
 
 type Contexto = { params: Promise<{ id: string }> };
+
+/** Lo que pasa DESPUÉS del cambio de estatus nunca lo deshace: si falla, se loguea y el pedido ya cambió. */
+async function sinDeshacer(contexto: string, trabajo: () => Promise<void>): Promise<void> {
+  try {
+    await trabajo();
+  } catch (error) {
+    console.error(`[mostrador] ${contexto}:`, error);
+  }
+}
 
 export async function POST(request: Request, contexto: Contexto) {
   const guardia = await exigirMostrador(request);
@@ -48,19 +60,24 @@ export async function POST(request: Request, contexto: Contexto) {
       motivo,
       folioVentaPos,
     });
-    if (estatus === "listo") {
-      try {
+    if (estatus === "confirmado") {
+      await sinDeshacer(`pidiendo a Aldo la back order del pedido ${id}`, async () => {
+        pedido = await sincronizarBackorderPos(id, sesion.usuario);
+      });
+    } else if (estatus === "listo") {
+      await sinDeshacer(`cotizando en el POS el pedido ${id}`, async () => {
         pedido = await sincronizarCotizacionPos(id, sesion.usuario);
-      } catch (error) {
-        console.error(`[mostrador] cotizando en el POS el pedido ${id}:`, error);
-      }
+      });
     } else if (estatus === "cancelado") {
-      try {
-        await cancelarCotizacionPos(id, sesion.usuario);
+      await sinDeshacer(`cancelando en el POS la cotización del pedido ${id}`, () =>
+        cancelarCotizacionPos(id, sesion.usuario)
+      );
+      await sinDeshacer(`cancelando en el POS la back order del pedido ${id}`, () =>
+        cancelarBackorderPos(id, sesion.usuario)
+      );
+      await sinDeshacer(`releyendo el pedido ${id} tras cancelarlo`, async () => {
         pedido = (await obtenerPedido(id)) ?? pedido;
-      } catch (error) {
-        console.error(`[mostrador] cancelando en el POS la cotización del pedido ${id}:`, error);
-      }
+      });
     }
     return respuestaOk({ pedido });
   } catch (error) {

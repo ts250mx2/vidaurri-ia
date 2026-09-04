@@ -13,6 +13,8 @@ import mysql from "mysql2/promise";
 //   pedidos_mostrador       — pedidos para recoger en sucursal (mostrador,
 //                             WhatsApp o web) con sus partidas y bitácora de
 //                             eventos (capa de datos en db-pedidos.ts)
+//   vendedores_pos          — usuario del POS → vendedores.id de bdav con el
+//                             que se firma la back order a Aldo (se llena a mano)
 
 const globalConPool = globalThis as unknown as {
   __poolConversaciones?: mysql.Pool;
@@ -27,7 +29,10 @@ const globalConPool = globalThis as unknown as {
 // (módulo de pedidos, fase 1).
 // v6: columnas de la cotización en el POS en pedidos_mostrador (num_cotiza_pos,
 // id_cotiza_pos, cotiza_pos_estado, cotiza_pos_error, cotiza_pos_en).
-const VERSION_ESQUEMA = 6;
+// v7: columnas de la back order a Aldo en pedidos_mostrador (num_bko_pos,
+// id_bko_pos, bko_pos_estado, bko_pos_error, bko_pos_en, bko_pos_firma,
+// bko_pos_compromiso) y tabla vendedores_pos.
+const VERSION_ESQUEMA = 7;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -155,6 +160,13 @@ const TABLAS = [
   cotiza_pos_estado VARCHAR(12) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | simulada | insertada | omitida | error | cancelada',
   cotiza_pos_error VARCHAR(200) NULL COMMENT 'Motivo del error; en simulación, resumen de lo que se habría insertado',
   cotiza_pos_en DATETIME NULL COMMENT 'Cuándo se cotizó (o simuló) en el POS',
+  num_bko_pos BIGINT NULL COMMENT 'back_order.num_bko en bdav (número de la back order a Aldo que ve el POS)',
+  id_bko_pos BIGINT NULL COMMENT 'back_order.id en bdav (para cancelarla)',
+  bko_pos_estado VARCHAR(12) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | simulada | insertada | omitida | error | cancelada',
+  bko_pos_error VARCHAR(200) NULL COMMENT 'Motivo del error o de la omisión; en simulación, resumen de lo que se habría insertado',
+  bko_pos_en DATETIME NULL COMMENT 'Cuándo se pidió (o simuló) la back order en el POS',
+  bko_pos_firma VARCHAR(500) NULL COMMENT 'CODIGO×cant|… de los renglones de la back order vigente, para no repetirla',
+  bko_pos_compromiso VARCHAR(15) NULL COMMENT 'MARTES | VIERNES: día de entrega de Aldo con el que se pidió',
   creado_en DATETIME NOT NULL COMMENT 'America/Monterrey',
   enviado_en DATETIME NULL,
   confirmado_en DATETIME NULL,
@@ -204,6 +216,17 @@ const TABLAS = [
   PRIMARY KEY (id),
   KEY idx_pedido (id_pedido),
   CONSTRAINT fk_ev_pedido FOREIGN KEY (id_pedido) REFERENCES pedidos_mostrador (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  // Con qué vendedor del POS (vendedores.id de bdav: 1 POLENDO, 2 ECHAVARRI,
+  // 3 JR) se firma la back order a Aldo que confirma cada usuario del POS. Sin
+  // UI: se llena a mano (ver README); el usuario que no esté toma
+  // POS_BKO_VENDEDOR_DEFAULT.
+  `CREATE TABLE IF NOT EXISTS vendedores_pos (
+  usuario VARCHAR(50) NOT NULL COMMENT 'usuarios.usuario del POS, en minúsculas',
+  id_vendedor_bdav INT NOT NULL COMMENT 'vendedores.id en bdav',
+  vendedor VARCHAR(20) NOT NULL COMMENT 'vendedores.vendedor, copia para leerlo sin ir a bdav',
+  creado_en DATETIME NOT NULL,
+  PRIMARY KEY (usuario)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
@@ -342,6 +365,43 @@ const COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR: ReadonlyArray<ColumnaNueva> = [
     columna: "cotiza_pos_en",
     alter:
       "ALTER TABLE pedidos_mostrador ADD COLUMN cotiza_pos_en DATETIME NULL COMMENT 'Cuándo se cotizó (o simuló) en el POS' AFTER cotiza_pos_error",
+  },
+  // v7: la back order a Aldo. Van después de cotiza_pos_en, en el mismo orden
+  // que en el CREATE TABLE.
+  {
+    columna: "num_bko_pos",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN num_bko_pos BIGINT NULL COMMENT 'back_order.num_bko en bdav (número de la back order a Aldo que ve el POS)' AFTER cotiza_pos_en",
+  },
+  {
+    columna: "id_bko_pos",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN id_bko_pos BIGINT NULL COMMENT 'back_order.id en bdav (para cancelarla)' AFTER num_bko_pos",
+  },
+  {
+    columna: "bko_pos_estado",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN bko_pos_estado VARCHAR(12) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | simulada | insertada | omitida | error | cancelada' AFTER id_bko_pos",
+  },
+  {
+    columna: "bko_pos_error",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN bko_pos_error VARCHAR(200) NULL COMMENT 'Motivo del error o de la omisión; en simulación, resumen de lo que se habría insertado' AFTER bko_pos_estado",
+  },
+  {
+    columna: "bko_pos_en",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN bko_pos_en DATETIME NULL COMMENT 'Cuándo se pidió (o simuló) la back order en el POS' AFTER bko_pos_error",
+  },
+  {
+    columna: "bko_pos_firma",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN bko_pos_firma VARCHAR(500) NULL COMMENT 'CODIGO×cant|… de los renglones de la back order vigente, para no repetirla' AFTER bko_pos_en",
+  },
+  {
+    columna: "bko_pos_compromiso",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN bko_pos_compromiso VARCHAR(15) NULL COMMENT 'MARTES | VIERNES: día de entrega de Aldo con el que se pidió' AFTER bko_pos_firma",
   },
 ];
 

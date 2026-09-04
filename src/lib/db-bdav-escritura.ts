@@ -5,12 +5,20 @@ import { garantizarSoloLectura } from "@/lib/db";
 // ÚNICA puerta de ESCRITURA hacia bdav, y es angosta a propósito.
 //
 // bdav es la base del punto de venta y esta aplicación la trata como de solo
-// lectura (db.ts). La excepción, autorizada por el dueño el 3 sep 2026, es
-// que un pedido de mostrador que ya está listo se refleje como cotización en
-// el POS: INSERT en `cotiza`, INSERT en `detalle_cotiza` y UPDATE del estatus
-// de `cotiza` para cancelarla. Nada más. Cada sentencia que pasa por aquí se
-// coteja contra una lista blanca ANTES de mandarse; lo que no está en la lista
-// no se ejecuta, aunque el usuario de MySQL tuviera permiso.
+// lectura (db.ts). Hay dos excepciones, las dos autorizadas por el dueño el
+// 3 sep 2026:
+//   1. Un pedido de mostrador que ya está listo se refleja como cotización en
+//      el POS: INSERT en `cotiza`, INSERT en `detalle_cotiza` y UPDATE del
+//      estatus de `cotiza` para cancelarla (pos-cotiza.ts).
+//   2. Las partidas sobre pedido de un pedido confirmado se piden a Aldo como
+//      back order en el POS: INSERT en `back_order`, INSERT en `detalle_bko`,
+//      UPDATE de `folios_ventas.folio_bko` (el POS toma de ahí el número y lo
+//      sube; solo se permite +1 con comprobación optimista del valor leído) y
+//      UPDATE del estatus de `back_order` para cancelarla (pos-backorder.ts).
+// Nada más: ni DELETE, ni tocar `articulos`, `clientes` o `vendedores`. Cada
+// sentencia que pasa por aquí se coteja contra una lista blanca ANTES de
+// mandarse; lo que no está en la lista no se ejecuta, aunque el usuario de
+// MySQL tuviera permiso.
 //
 // Es un pool aparte de poolBdav (que sigue sin poder escribir) con su propio
 // usuario (MYSQL_POS_ESCRITURA_*, que el dueño acotará a esos permisos en el
@@ -20,22 +28,32 @@ import { garantizarSoloLectura } from "@/lib/db";
 
 const globalConPool = globalThis as unknown as { __poolBdavEscritura?: mysql.Pool };
 
-/** Es un canal para una cotización a la vez: no necesita más conexiones. */
+/** Es un canal para una cotización o una back order a la vez: no necesita más conexiones. */
 const CONEXIONES_ESCRITURA = 2;
 const PUERTO_MYSQL_DEFAULT = 3306;
 
 /**
  * Lista blanca. Cada patrón está anclado al inicio y escrito en la forma
- * canónica exacta en la que el código de pos-cotiza.ts arma la sentencia
- * (mayúsculas, un espacio, paréntesis de columnas): cualquier variación se
- * rechaza. Es deliberadamente estricta; si hace falta otra sentencia se
- * agrega aquí, con el dueño enterado, no se relaja el patrón.
+ * canónica exacta en la que pos-cotiza.ts y pos-backorder.ts arman la
+ * sentencia (mayúsculas, un espacio, paréntesis de columnas): cualquier
+ * variación se rechaza. Es deliberadamente estricta; si hace falta otra
+ * sentencia se agrega aquí, con el dueño enterado, no se relaja el patrón.
  */
 const SENTENCIAS_PERMITIDAS: ReadonlyArray<{ nombre: string; patron: RegExp }> = [
   { nombre: "SELECT", patron: /^SELECT\b/ },
+  // Cotización del pedido (pos-cotiza.ts).
   { nombre: "INSERT INTO cotiza", patron: /^INSERT INTO cotiza \(/ },
   { nombre: "INSERT INTO detalle_cotiza", patron: /^INSERT INTO detalle_cotiza \(/ },
   { nombre: "UPDATE cotiza SET estatus", patron: /^UPDATE cotiza SET estatus = \? WHERE id = \?$/ },
+  // Back order a Aldo (pos-backorder.ts). El folio solo sube de uno en uno y
+  // solo si sigue valiendo lo que se leyó bajo FOR UPDATE.
+  { nombre: "INSERT INTO back_order", patron: /^INSERT INTO back_order \(/ },
+  { nombre: "INSERT INTO detalle_bko", patron: /^INSERT INTO detalle_bko \(/ },
+  {
+    nombre: "UPDATE folios_ventas SET folio_bko",
+    patron: /^UPDATE folios_ventas SET folio_bko = folio_bko \+ 1 WHERE id = \? AND folio_bko = \?$/,
+  },
+  { nombre: "UPDATE back_order SET estatus", patron: /^UPDATE back_order SET estatus = \? WHERE id = \?$/ },
 ];
 
 /** Una sentencia que no está en la lista blanca. Se lanza SIN ejecutarla. */

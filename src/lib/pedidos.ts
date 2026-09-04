@@ -23,6 +23,14 @@ export type PerfilPos = "Administrador" | "Operaciones" | "Ventas";
  *  con num_cotiza real; omitida con el módulo apagado o sin nada que cotizar;
  *  error con el mensaje en cotizaPosError; cancelada al cancelar el pedido. */
 export type EstadoCotizaPos = "pendiente" | "simulada" | "insertada" | "omitida" | "error" | "cancelada";
+/** Cómo va la back order a Aldo del pedido en el POS (bdav): pendiente mientras
+ *  el mostrador no lo confirme; simulada en modo simulación; insertada con
+ *  num_bko real; omitida sin partidas sobre pedido o con el módulo apagado;
+ *  error con el mensaje en bkoPosError; cancelada al cancelar el pedido o al
+ *  quedarse sin renglones sobre pedido. */
+export type EstadoBkoPos = "pendiente" | "simulada" | "insertada" | "omitida" | "error" | "cancelada";
+/** Días en que entrega Aldo Autopartes (back_order.fecha_compromiso). */
+export type CompromisoAldo = "MARTES" | "VIERNES";
 
 export const ESTATUS_PEDIDO: ReadonlyArray<EstatusPedido> = [
   "borrador",
@@ -42,6 +50,14 @@ export const ESTATUS_PARTIDA: ReadonlyArray<EstatusPartida> = [
 ];
 export const PERFILES_POS: ReadonlyArray<PerfilPos> = ["Administrador", "Operaciones", "Ventas"];
 export const ESTADOS_COTIZA_POS: ReadonlyArray<EstadoCotizaPos> = [
+  "pendiente",
+  "simulada",
+  "insertada",
+  "omitida",
+  "error",
+  "cancelada",
+];
+export const ESTADOS_BKO_POS: ReadonlyArray<EstadoBkoPos> = [
   "pendiente",
   "simulada",
   "insertada",
@@ -69,6 +85,8 @@ export const MOTIVO_MAX = 200;
 export const NOTA_MAX = 200;
 export const FOLIO_VENTA_POS_MAX = 20;
 export const USUARIO_MAX = 50;
+/** pedidos_mostrador.bko_pos_firma: la huella de los renglones de la back order. */
+export const BKO_FIRMA_MAX = 500;
 /** Plazo máximo que el mostrador promete en una pieza sobre pedido. */
 export const DIAS_ENTREGA_MAX = 365;
 /** Paginación de la cola de pedidos: tamaño fijo, como en el resto del panel. */
@@ -145,6 +163,13 @@ export interface PedidoResumen {
   cotizaPosEstado: EstadoCotizaPos;
   /** Por qué falló la cotización en el POS (o, en simulación, el resumen de lo que se habría insertado). */
   cotizaPosError: string | null;
+  /** back_order.num_bko de la back order a Aldo en el POS; null mientras no se inserte. */
+  numBkoPos: number | null;
+  bkoPosEstado: EstadoBkoPos;
+  /** Por qué falló la back order, por qué se omitió o, en simulación, el resumen de lo que se habría insertado. */
+  bkoPosError: string | null;
+  /** MARTES | VIERNES: día de entrega de Aldo con el que se pidió; null sin back order. */
+  bkoPosCompromiso: string | null;
   creadoEn: string;
   enviadoEn: string | null;
   confirmadoEn: string | null;
@@ -274,6 +299,71 @@ export function puedeEditarPedido(estatus: EstatusPedido): boolean {
  */
 export function partidaVuelveAPendiente(estatusPedido: EstatusPedido, estatusPartida: EstatusPartida): boolean {
   return estatusPedido === "confirmado" || estatusPartida !== "pendiente";
+}
+
+// --- Back order a Aldo (pos-backorder.ts escribe en el POS; aquí solo las reglas puras).
+
+type PartidaSobrePedido = Pick<PartidaPedido, "origen" | "estatusPartida">;
+
+/**
+ * Las partidas que se le piden a Aldo: las que el mostrador marcó sobre pedido
+ * al confirmar y las que ya venían sobre pedido y nadie ha dicho que sí hay en
+ * tienda (siguen pendientes). Nunca usadas (Aldo no las surte) ni confirmadas
+ * o sin existencia (esas ya se resolvieron aquí). Devuelve una lista nueva en
+ * el orden del pedido.
+ */
+export function partidasParaBackorder<T extends PartidaSobrePedido>(partidas: readonly T[]): T[] {
+  return partidas.filter(
+    (p) =>
+      p.origen !== "usada" &&
+      (p.estatusPartida === "sobre_pedido" || (p.origen === "sobre_pedido" && p.estatusPartida === "pendiente"))
+  );
+}
+
+type PartidaFirmable = PartidaSobrePedido & Pick<PartidaPedido, "partida" | "codigo" | "cantidad">;
+
+/**
+ * Huella de los renglones que van a la back order, 'CODIGO×2|CODIGO×1' en
+ * orden de partida: si la vigente en el POS tiene la misma huella no hay que
+ * volver a pedirla; si cambió, se cancela y se pide otra. Aplica
+ * partidasParaBackorder, así que se le puede dar el pedido completo. Sin
+ * renglones es ''.
+ */
+export function firmaBackorder(partidas: readonly PartidaFirmable[]): string {
+  return partidasParaBackorder(partidas)
+    .slice()
+    .sort((a, b) => a.partida - b.partida)
+    .map((p) => `${(p.codigo ?? "").toUpperCase()}×${p.cantidad}`)
+    .join("|");
+}
+
+const FECHA_ISO = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** Días de la semana como los da Date#getUTCDay. */
+const MARTES = 2;
+const JUEVES = 4;
+
+/**
+ * Aldo entrega martes y viernes. Lunes → MARTES; martes → VIERNES (el camión
+ * del martes ya no alcanza); miércoles y jueves → VIERNES; viernes, sábado y
+ * domingo → MARTES. La fecha es 'AAAA-MM-DD' (la de Monterrey, ahoraMonterrey)
+ * y se lee como UTC para que la zona horaria del servidor no mueva el día. Una
+ * fecha inválida lanza: mejor que prometer un día al azar.
+ */
+export function fechaCompromisoAldo(fechaISO: string): CompromisoAldo {
+  const partes = FECHA_ISO.exec(fechaISO);
+  if (!partes) throw new Error(`Fecha inválida para el compromiso de Aldo: "${fechaISO}"`);
+  const [anio, mes, dia] = partes.slice(1).map(Number);
+  const fecha = new Date(Date.UTC(anio, mes - 1, dia));
+  if (fecha.getUTCMonth() !== mes - 1 || fecha.getUTCDate() !== dia) {
+    throw new Error(`Fecha inexistente para el compromiso de Aldo: "${fechaISO}"`);
+  }
+  const diaSemana = fecha.getUTCDay();
+  return diaSemana >= MARTES && diaSemana <= JUEVES ? "VIERNES" : "MARTES";
+}
+
+/** Un pedido lleva back order desde que el mostrador lo confirma: confirmado, listo o entregado. */
+export function puedeTenerBackorder(estatus: EstatusPedido): boolean {
+  return estatus === "confirmado" || estatus === "listo" || estatus === "entregado";
 }
 
 /**
