@@ -2,6 +2,7 @@ import { exigirMostrador } from "@/lib/auth-mostrador";
 import { cambiarSucursal } from "@/lib/db-pedidos";
 import {
   CANAL_MOSTRADOR,
+  conCotizacionReemitida,
   idDeRuta,
   leerCuerpo,
   respuestaDeError,
@@ -33,7 +34,7 @@ export async function POST(request: Request, contexto: Contexto) {
 
   try {
     const pedido = await cambiarSucursal(id, validacion.datos.sucursal, sesion.usuario, CANAL_MOSTRADOR);
-    return respuestaOk({ pedido });
+    return respuestaOk({ pedido: await conCotizacionReemitida(id, sesion.usuario, pedido) });
   } catch (error) {
     return respuestaDeError(error, `cambiando la sucursal del pedido ${id}`);
   }

@@ -11,7 +11,8 @@ import {
   TransicionInvalidaError,
   type ActorCaptura,
 } from "@/lib/db-pedidos";
-import { puedeCambiarEstatus, type CanalPedido } from "@/lib/pedidos";
+import { puedeCambiarEstatus, type CanalPedido, type PedidoDetalle } from "@/lib/pedidos";
+import { reemitirCotizacionPos } from "@/lib/pos-cotiza";
 
 // Lo que comparten las rutas /api/mostrador/*: la forma de las respuestas
 // (`{ ok: true, ...datos }` / `{ ok: false, error }`), la lectura del cuerpo
@@ -90,4 +91,23 @@ export function respuestaDeError(error: unknown, contexto: string): NextResponse
   }
   console.error(`[mostrador] ${contexto}:`, error);
   return respuestaError(ERROR_BASE, 502);
+}
+
+/**
+ * Tras editar un pedido ya cotizado, su cotización en el POS se reemite con el
+ * contenido nuevo (pos-cotiza.ts). Nunca rompe la edición: si el POS falla, se
+ * loguea y se devuelve el pedido tal como lo dejó la edición, igual que el
+ * resto de los efectos en el POS.
+ */
+export async function conCotizacionReemitida(
+  id: number,
+  usuario: string | null,
+  pedido: PedidoDetalle
+): Promise<PedidoDetalle> {
+  try {
+    return await reemitirCotizacionPos(id, usuario);
+  } catch (error) {
+    console.error(`[mostrador] reemitiendo la cotización del pedido ${id}:`, error);
+    return pedido;
+  }
 }

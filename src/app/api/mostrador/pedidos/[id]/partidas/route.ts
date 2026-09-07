@@ -2,6 +2,7 @@ import { exigirMostrador } from "@/lib/auth-mostrador";
 import { PedidoNoEditableError, agregarPartida, obtenerPedido } from "@/lib/db-pedidos";
 import {
   CANAL_MOSTRADOR,
+  conCotizacionReemitida,
   idDeRuta,
   leerCuerpo,
   respuestaDeError,
@@ -44,7 +45,7 @@ export async function POST(request: Request, contexto: Contexto) {
     if (!cotizacion.ok) return respuestaError(cotizacion.error, cotizacion.status);
 
     const pedido = await agregarPartida(id, cotizacion.partida, sesion.usuario, CANAL_MOSTRADOR);
-    return respuestaOk({ pedido });
+    return respuestaOk({ pedido: await conCotizacionReemitida(id, sesion.usuario, pedido) });
   } catch (error) {
     return respuestaDeError(error, `agregando una partida al pedido ${id}`);
   }

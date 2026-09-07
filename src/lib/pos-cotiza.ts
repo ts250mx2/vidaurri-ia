@@ -21,10 +21,12 @@ import {
   type SucursalEntrega,
 } from "@/lib/pedidos";
 
-// Cotización de un pedido de mostrador en el POS (bdav): cuando el pedido
-// queda listo se inserta como cotización VIGENTE en `cotiza` + `detalle_cotiza`
-// para que el mostrador la cobre desde el punto de venta con un número que ya
-// conoce; si el pedido se cancela, la cotización se marca CANCELADA.
+// Cotización de un pedido de mostrador en el POS (bdav): cuando el mostrador
+// confirma el pedido se inserta como cotización VIGENTE en `cotiza` +
+// `detalle_cotiza` para que lo cobre desde el punto de venta con un número que
+// ya conoce; si el pedido se cancela, la cotización se marca CANCELADA. Un
+// pedido confirmado todavía se puede editar: cada edición la reemite
+// (reemitirCotizacionPos), porque el POS no deja actualizarla en su lugar.
 //
 // Es una de las dos escrituras de esta aplicación en bdav (la otra es la back
 // order a Aldo, pos-backorder.ts) y va por el pool acotado de
@@ -220,9 +222,9 @@ export function armarCotizacionPos(pedido: PedidoACotizarPos, contexto: Contexto
   };
 }
 
-/** Un pedido se puede (re)cotizar en el POS cuando el mostrador ya lo surtió. */
+/** Un pedido se puede (re)cotizar en el POS desde que el mostrador lo confirma. */
 export function puedeCotizarEnPos(estatus: EstatusPedido): boolean {
-  return estatus === "listo" || estatus === "entregado";
+  return estatus === "confirmado" || estatus === "listo" || estatus === "entregado";
 }
 
 // ---------------------------------------------------------------------------
@@ -563,4 +565,42 @@ export async function cancelarCotizacionPos(idPedido: number, usuario: string | 
       usuario
     );
   }
+}
+
+/**
+ * Al editar un pedido que ya se cotizó, la cotización del POS quedó vieja: se
+ * cancela y se emite una nueva con el contenido de ahora. No se actualiza en su
+ * lugar porque el POS no lo permite: la lista blanca de db-bdav-escritura.ts
+ * solo deja insertar y mover el estatus, nunca borrar ni reescribir renglones.
+ * Cuesta un número de cotización por edición, que es el precio de que el POS
+ * nunca muestre precios que ya no son.
+ *
+ * Si el pedido no tiene nada en el POS (pendiente, omitida, error, cancelada,
+ * simulada) no hay qué reemitir y no hace nada: la cotización se creará cuando
+ * toque. Nada de esto sube: un fallo queda anotado en el pedido, igual que en
+ * el resto del módulo.
+ */
+export async function reemitirCotizacionPos(idPedido: number, usuario: string | null): Promise<PedidoDetalle> {
+  const guardada = await leerCotizacionPos(idPedido);
+  if (!guardada) throw new PedidoNoEncontradoError();
+  if (guardada.estado !== "insertada") {
+    const pedido = await obtenerPedido(idPedido);
+    if (!pedido) throw new PedidoNoEncontradoError();
+    return pedido;
+  }
+
+  await cancelarCotizacionPos(idPedido, usuario);
+  const trasCancelar = await leerCotizacionPos(idPedido);
+  // Si la cancelación en el POS falló, la cotización vieja sigue VIGENTE allá:
+  // emitir otra dejaría dos cotizaciones vivas del mismo pedido. Mejor una vieja
+  // que dos, y el error ya quedó anotado en el pedido.
+  if (trasCancelar?.estado !== "cancelada") {
+    console.error(
+      `[pos-cotiza] no se reemite la cotización del pedido ${idPedido}: la anterior no se pudo cancelar`
+    );
+    const pedido = await obtenerPedido(idPedido);
+    if (!pedido) throw new PedidoNoEncontradoError();
+    return pedido;
+  }
+  return sincronizarCotizacionPos(idPedido, usuario);
 }

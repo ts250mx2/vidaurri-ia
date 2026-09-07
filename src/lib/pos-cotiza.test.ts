@@ -256,9 +256,13 @@ describe("leerModoCotizaPos / puedeCotizarEnPos", () => {
     expect(leerModoCotizaPos("REAL ")).toBe("real");
   });
 
-  it("solo se cotiza en el POS un pedido listo o entregado", () => {
+  it("se cotiza en el POS desde que el pedido queda confirmado", () => {
+    expect(puedeCotizarEnPos("confirmado")).toBe(true);
     expect(puedeCotizarEnPos("listo")).toBe(true);
     expect(puedeCotizarEnPos("entregado")).toBe(true);
-    for (const e of ["borrador", "enviado", "confirmado", "cancelado"] as const) expect(puedeCotizarEnPos(e)).toBe(false);
+  });
+
+  it("no se cotiza lo que aún no es pedido ni lo que ya se cayó", () => {
+    for (const e of ["borrador", "enviado", "cancelado"] as const) expect(puedeCotizarEnPos(e)).toBe(false);
   });
 });

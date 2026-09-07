@@ -2,6 +2,7 @@ import { exigirMostrador } from "@/lib/auth-mostrador";
 import { cambiarCantidadPartida, quitarPartida } from "@/lib/db-pedidos";
 import {
   CANAL_MOSTRADOR,
+  conCotizacionReemitida,
   idDeRuta,
   leerCuerpo,
   respuestaDeError,
@@ -47,7 +48,7 @@ export async function PATCH(request: Request, contexto: Contexto) {
       sesion.usuario,
       CANAL_MOSTRADOR
     );
-    return respuestaOk({ pedido });
+    return respuestaOk({ pedido: await conCotizacionReemitida(ids.id, sesion.usuario, pedido) });
   } catch (error) {
     return respuestaDeError(error, `cambiando la cantidad de la partida ${ids.idPartida} del pedido ${ids.id}`);
   }
@@ -63,7 +64,7 @@ export async function DELETE(request: Request, contexto: Contexto) {
 
   try {
     const pedido = await quitarPartida(ids.id, ids.idPartida, sesion.usuario, CANAL_MOSTRADOR);
-    return respuestaOk({ pedido });
+    return respuestaOk({ pedido: await conCotizacionReemitida(ids.id, sesion.usuario, pedido) });
   } catch (error) {
     return respuestaDeError(error, `quitando la partida ${ids.idPartida} del pedido ${ids.id}`);
   }

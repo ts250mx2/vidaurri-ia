@@ -18,12 +18,18 @@ import { cancelarCotizacionPos, sincronizarCotizacionPos } from "@/lib/pos-cotiz
 // 409 si la transición no existe.
 //
 // Al quedar confirmado, las partidas sobre pedido se piden a Aldo como back
-// order en el POS; al quedar listo, el pedido se refleja como cotización; al
-// cancelarse, se cancelan las dos. Eso va DESPUÉS del cambio y nunca lo
-// deshace: si el POS falla, el pedido ya cambió y el estado de su cotización
-// (cotizaPosEstado / cotizaPosError) o de su back order (bkoPosEstado /
-// bkoPosError) cuenta qué pasó, con reintento manual en POST .../cotizacion y
-// POST .../backorder.
+// order en el POS y el pedido se refleja como cotización; al cancelarse, se
+// cancelan las dos. Eso va DESPUÉS del cambio y nunca lo deshace: si el POS
+// falla, el pedido ya cambió y el estado de su cotización (cotizaPosEstado /
+// cotizaPosError) o de su back order (bkoPosEstado / bkoPosError) cuenta qué
+// pasó, con reintento manual en POST .../cotizacion y POST .../backorder.
+//
+// El paso a listo vuelve a intentar la cotización: no duplica (si ya está
+// insertada, sincronizarCotizacionPos la deja como está), pero recupera los
+// pedidos que se confirmaron cuando el disparo todavía era en listo y los que
+// fallaron al confirmar. Un pedido confirmado se puede seguir editando, y cada
+// edición reemite su cotización (reemitirCotizacionPos en las rutas de
+// partidas, sucursal y observaciones).
 
 export const dynamic = "force-dynamic";
 
@@ -60,11 +66,12 @@ export async function POST(request: Request, contexto: Contexto) {
       motivo,
       folioVentaPos,
     });
-    if (estatus === "confirmado") {
-      await sinDeshacer(`pidiendo a Aldo la back order del pedido ${id}`, async () => {
-        pedido = await sincronizarBackorderPos(id, sesion.usuario);
-      });
-    } else if (estatus === "listo") {
+    if (estatus === "confirmado" || estatus === "listo") {
+      if (estatus === "confirmado") {
+        await sinDeshacer(`pidiendo a Aldo la back order del pedido ${id}`, async () => {
+          pedido = await sincronizarBackorderPos(id, sesion.usuario);
+        });
+      }
       await sinDeshacer(`cotizando en el POS el pedido ${id}`, async () => {
         pedido = await sincronizarCotizacionPos(id, sesion.usuario);
       });

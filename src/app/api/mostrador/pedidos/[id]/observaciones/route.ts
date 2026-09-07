@@ -2,6 +2,7 @@ import { exigirMostrador } from "@/lib/auth-mostrador";
 import { actualizarObservaciones } from "@/lib/db-pedidos";
 import {
   CANAL_MOSTRADOR,
+  conCotizacionReemitida,
   idDeRuta,
   leerCuerpo,
   respuestaDeError,
@@ -32,7 +33,7 @@ export async function POST(request: Request, contexto: Contexto) {
 
   try {
     const pedido = await actualizarObservaciones(id, validacion.datos.observaciones, sesion.usuario, CANAL_MOSTRADOR);
-    return respuestaOk({ pedido });
+    return respuestaOk({ pedido: await conCotizacionReemitida(id, sesion.usuario, pedido) });
   } catch (error) {
     return respuestaDeError(error, `actualizando las observaciones del pedido ${id}`);
   }
