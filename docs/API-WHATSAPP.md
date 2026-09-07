@@ -12,8 +12,10 @@ POST  /api/whatsapp/vendedor
 GET   /api/whatsapp/vendedor      (health check: responde {ok:true})
 ```
 
-Base URL según dónde corra el sistema, por ejemplo:
-`http://TU_SERVIDOR:3038/api/whatsapp/vendedor`
+Base URL según dónde corra el sistema. En producción es
+`https://vidaurri.hlsistemas.com/api/whatsapp/vendedor` (**con `https://`**: el
+puerto 80 de ese servidor redirige a otro vhost y el 3038 no está abierto a
+internet). En desarrollo, `http://localhost:3037/api/whatsapp/vendedor`.
 
 ## Autenticación
 
@@ -84,7 +86,7 @@ En error: `{ "ok": false, "error": "..." }` con el código HTTP correspondiente
 ## Prueba rápida (curl)
 
 ```bash
-curl -X POST http://TU_SERVIDOR:3038/api/whatsapp/vendedor \
+curl -X POST https://vidaurri.hlsistemas.com/api/whatsapp/vendedor \
   -H "X-API-Key: <WHATSAPP_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"telefono":"5218112345678","mensaje":"cofre para versa 2016"}'

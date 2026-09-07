@@ -26,12 +26,25 @@ eso al chat.
 | Campo | Valor |
 |---|---|
 | **Método** | `POST` |
-| **URL** | `http://vidaurri.hlsistemas.com/api/whatsapp/vendedor` |
+| **URL** | `https://vidaurri.hlsistemas.com/api/whatsapp/vendedor` |
 | **Header 1** | `Content-Type: application/json` |
 | **Header 2** | `X-API-Key: TU_API_KEY` |
 | **Timeout** | `120000` ms (120 s) — ver nota abajo |
 | **Body** | JSON (raw), ver payload |
 
+- **La URL va con `https://`, no con `http://`.** Hasta el 5-sep-2026 esta guía
+  decía `http://` y funcionaba. El defacement de ese día se llevó los bloques
+  `listen 80` de todos los sitios del servidor y dejó un solo catch-all que
+  responde `301` hacia `https://bretone.hlsistemas.com/...` (otro sitio, con el
+  certificado vencido), sin importar el `Host`. Desde entonces un `POST` por
+  `http://` no llega al agente: el `301` lo convierte en `GET` y se pierde el
+  mensaje. `https://` nunca dejó de funcionar. Tampoco sirve
+  `http://74.208.192.90:3038`: el puerto de la app no está abierto a internet,
+  solo nginx.
+- Si en el servidor se restaura el bloque del puerto 80 (con `proxy_pass`, no con
+  un redirect: un `301` rompe el `POST`), `http://` vuelve a servir. Aun así
+  conviene dejar el nodo en `https://`: por `http://` la `WHATSAPP_API_KEY` viaja
+  en claro.
 - `TU_API_KEY`: el valor real de `WHATSAPP_API_KEY` del `.env` del servidor
   (no se versiona aquí a propósito: este repositorio es público). También se
   acepta como `Authorization: Bearer TU_API_KEY`.
@@ -101,7 +114,7 @@ mostrar el mensaje técnico.
 ## 4. Ejemplo completo (probar antes de conectar)
 
 ```bash
-curl -X POST http://TU_SERVIDOR:3038/api/whatsapp/vendedor \
+curl -X POST https://vidaurri.hlsistemas.com/api/whatsapp/vendedor \
   -H "Content-Type: application/json" \
   -H "X-API-Key: TU_API_KEY" \
   -d '{
@@ -113,9 +126,12 @@ curl -X POST http://TU_SERVIDOR:3038/api/whatsapp/vendedor \
 Health check (sin API key, para verificar conectividad desde Axon Logic):
 
 ```
-GET http://TU_SERVIDOR:3038/api/whatsapp/vendedor
+GET https://vidaurri.hlsistemas.com/api/whatsapp/vendedor
 → { "ok": true, "servicio": "vendedor-ia-whatsapp" }
 ```
+
+Si el health check devuelve `301 → https://bretone.hlsistemas.com/...`, la URL
+del nodo quedó en `http://`: cámbiala a `https://`.
 
 ## 5. Diseño recomendado del flujo en Axon Logic
 
