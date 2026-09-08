@@ -84,6 +84,22 @@ describe("datos y notas del pedido", () => {
     ]);
   });
 
+  it("agrega la cotización del POS en cuanto el pedido tiene número", () => {
+    expect(datosDelPedido({ ...PEDIDO, numCotizaPos: 166789, cotizaPosEstado: "insertada" })).toEqual([
+      ["Cliente", "JUAN RUBEN HERNANDEZ GONZALEZ"],
+      ["Teléfono", "8186921848"],
+      ["Recoge en", "Matriz"],
+      ["Levantado por", "WhatsApp"],
+      ["Enviado el", "03/09/2026 00:20"],
+      ["Cotización", "166789"],
+    ]);
+  });
+
+  it("sin cotización emitida no imprime un renglón vacío", () => {
+    const etiquetas = datosDelPedido({ ...PEDIDO, numCotizaPos: null }).map(([e]) => e);
+    expect(etiquetas).not.toContain("Cotización");
+  });
+
   it("las notas llevan observaciones y la leyenda de sujeto a confirmación, o el motivo si se canceló", () => {
     expect(notasDelPedido(PEDIDO)).toEqual([
       "Observaciones: Lado derecho con fondo negro",

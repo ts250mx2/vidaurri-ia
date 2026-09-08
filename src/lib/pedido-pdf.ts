@@ -56,13 +56,20 @@ function codigoDe(partida: PedidoDetalle["partidas"][number]): string {
 
 /** Renglones de datos del pedido, en el orden en que se imprimen (dos columnas). */
 export function datosDelPedido(pedido: PedidoDetalle): Array<[string, string]> {
-  return [
+  const datos: Array<[string, string]> = [
     ["Cliente", pedido.cliente],
     ["Teléfono", pedido.telefono ?? "—"],
     ["Recoge en", nombreSucursalPedido(pedido.sucursal)],
     ["Levantado por", CANAL_TEXTO[pedido.canal]],
     ["Enviado el", fechaHoraPedido(pedido.enviadoEn)],
   ];
+  // El número con el que el mostrador encuentra el pedido en el POS. Solo
+  // existe una vez emitida la cotización (pos-cotiza.ts), y el PDF se arma al
+  // vuelo: la liga que ya tiene el cliente lo muestra en cuanto aparece. Antes
+  // de eso no se imprime el renglón, para no dejarle un dato vacío que no
+  // sabría interpretar.
+  if (pedido.numCotizaPos !== null) datos.push(["Cotización", String(pedido.numCotizaPos)]);
+  return datos;
 }
 
 /** Notas al pie de la tabla: observaciones, motivo de cancelación o la leyenda de "sujeto a confirmación". */
