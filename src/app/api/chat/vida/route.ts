@@ -8,7 +8,7 @@ import {
   TABLAS_PERMITIDAS,
   TABLAS_PERMITIDAS_USADAS,
 } from "@/lib/agente-sql";
-import { correrTurnoAgente, claveFaltante, type UsoHerramienta } from "@/lib/agente-modelo";
+import { correrTurnoAgente, claveFaltanteConRespaldo, type UsoHerramienta } from "@/lib/agente-modelo";
 import { esModeloVidaValido } from "@/lib/modelos-vida";
 
 // Agente VIDA — Vidaurri Inteligencia de Datos Automotriz.
@@ -241,7 +241,7 @@ export async function POST(request: Request) {
   const modelo = esModeloVidaValido(modeloElegido)
     ? modeloElegido
     : process.env.AGENTES_MODELO || "claude-opus-5";
-  const claveEnv = claveFaltante(modelo);
+  const claveEnv = claveFaltanteConRespaldo(modelo);
   if (claveEnv) {
     return Response.json(
       { error: `Falta configurar ${claveEnv} en el servidor para el modelo seleccionado` },

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { claveFaltante } from "@/lib/agente-modelo";
+import { claveFaltanteConRespaldo } from "@/lib/agente-modelo";
 import { correrVendedor } from "@/lib/vendedor";
 import { puedePedir, type ActorVendedor } from "@/lib/vendedor-pedidos";
 import { ahoraMonterrey, guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
   }
 
   const modelo = process.env.VENDEDOR_MODELO || "claude-sonnet-5";
-  if (claveFaltante(modelo)) {
+  if (claveFaltanteConRespaldo(modelo)) {
     return Response.json(
       { ok: false, error: "Servicio de IA no configurado" },
       { status: 500 }

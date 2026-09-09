@@ -1,5 +1,5 @@
 import { sesionActual } from "@/lib/auth";
-import { claveFaltante } from "@/lib/agente-modelo";
+import { claveFaltanteConRespaldo } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
 
 // Endpoint web del Vendedor IA (canal del dashboard). Streaming NDJSON:
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
   }
 
   const modelo = process.env.VENDEDOR_MODELO || "claude-sonnet-5";
-  const claveEnv = claveFaltante(modelo);
+  const claveEnv = claveFaltanteConRespaldo(modelo);
   if (claveEnv) {
     return Response.json({ error: `Falta configurar ${claveEnv} en el servidor` }, { status: 500 });
   }

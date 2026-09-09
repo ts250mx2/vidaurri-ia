@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { claveFaltante } from "@/lib/agente-modelo";
+import { claveFaltanteConRespaldo } from "@/lib/agente-modelo";
 import { exigirMostrador } from "@/lib/auth-mostrador";
 import { obtenerClienteDescuento } from "@/lib/db-clientes-descuento";
 import { guardarIntercambio } from "@/lib/db-conversaciones";
@@ -89,7 +89,7 @@ export async function POST(request: Request) {
   const { sesion } = guardia;
 
   const modelo = process.env.VENDEDOR_MODELO || "claude-sonnet-5";
-  if (claveFaltante(modelo)) {
+  if (claveFaltanteConRespaldo(modelo)) {
     return NextResponse.json({ ok: false, error: "Servicio de IA no configurado" }, { status: 500 });
   }
 
