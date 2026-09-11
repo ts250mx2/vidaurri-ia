@@ -5,7 +5,6 @@ import { FileDown, Loader2, RotateCcw, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { preguntarVida, SesionExpiradaError } from "@/lib/agente-cliente";
 import { AgenteMarkdown } from "@/components/dashboard/AgenteMarkdown";
-import { MODELOS_VIDA, esModeloVidaValido } from "@/lib/modelos-vida";
 
 interface Mensaje {
   rol: "usuario" | "agente";
@@ -13,7 +12,6 @@ interface Mensaje {
 }
 
 const CLAVE_STORAGE = "vida-conversacion";
-const CLAVE_MODELO = "vida-modelo";
 
 const SUGERENCIAS = [
   "¿Cómo van las ventas de hoy?",
@@ -32,7 +30,6 @@ export default function VidaPage() {
   const [estado, setEstado] = useState("");
   const [pensando, setPensando] = useState(false);
   const [error, setError] = useState("");
-  const [modelo, setModelo] = useState(MODELOS_VIDA[0].id);
   /** Índice de la respuesta que se está exportando a PDF. */
   const [exportando, setExportando] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -41,19 +38,13 @@ export default function VidaPage() {
   const borradorRef = useRef("");
   const finalRef = useRef<HTMLDivElement | null>(null);
 
-  // Restaura la conversación y el modelo elegido.
+  // Restaura la conversación.
   useEffect(() => {
     try {
       const guardado = sessionStorage.getItem(CLAVE_STORAGE);
       if (guardado) setMensajes(JSON.parse(guardado));
     } catch {
       // storage corrupto: se inicia limpio
-    }
-    try {
-      const m = localStorage.getItem(CLAVE_MODELO);
-      if (m && esModeloVidaValido(m)) setModelo(m);
-    } catch {
-      // sin localStorage: se queda con el modelo por defecto
     }
   }, []);
 
@@ -77,14 +68,6 @@ export default function VidaPage() {
     }
   };
 
-  const cambiarModelo = (id: string) => {
-    setModelo(id);
-    try {
-      localStorage.setItem(CLAVE_MODELO, id);
-    } catch {
-      // sin localStorage: el cambio vale solo para esta sesión
-    }
-  };
   useEffect(() => {
     // Con la lista vacía no se escribe: en el primer render (y en la doble
     // corrida de efectos de StrictMode en desarrollo) pisaría con [] la
@@ -128,8 +111,7 @@ export default function VidaPage() {
             },
             alEstado: setEstado,
           },
-          controlador.signal,
-          modelo
+          controlador.signal
         );
         setMensajes([...historial, { rol: "agente", texto: respuesta || "…" }]);
       } catch (err: unknown) {
@@ -154,7 +136,7 @@ export default function VidaPage() {
         abortRef.current = null;
       }
     },
-    [mensajes, pensando, modelo]
+    [mensajes, pensando]
   );
 
   const detener = () => abortRef.current?.abort();
@@ -190,25 +172,6 @@ export default function VidaPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {/* Selector de modelo */}
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.05] border border-white/10">
-            {MODELOS_VIDA.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => cambiarModelo(m.id)}
-                disabled={pensando}
-                title={`Usar ${m.etiqueta}`}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-50",
-                  modelo === m.id
-                    ? "bg-amber-500 text-slate-950"
-                    : "text-slate-400 hover:text-white"
-                )}
-              >
-                {m.etiqueta}
-              </button>
-            ))}
-          </div>
           <button
             onClick={reiniciar}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white transition-all"

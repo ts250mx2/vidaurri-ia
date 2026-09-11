@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { claveFaltanteConRespaldo } from "@/lib/agente-modelo";
+import { credencialParaRuta } from "@/lib/agente-modelo";
 import { correrVendedor } from "@/lib/vendedor";
 import { puedePedir, type ActorVendedor } from "@/lib/vendedor-pedidos";
 import { ahoraMonterrey, guardarIntercambio, ES_SESION_WEB } from "@/lib/db-conversaciones";
@@ -93,13 +93,10 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, error: "No autorizado" }, { status: 401 });
   }
 
-  const modelo = process.env.VENDEDOR_MODELO || "claude-sonnet-5";
-  if (claveFaltanteConRespaldo(modelo)) {
-    return Response.json(
-      { ok: false, error: "Servicio de IA no configurado" },
-      { status: 500 }
-    );
-  }
+  // Proveedor, modelo y llave de Vico salen de HL Servidor (HL_AGENTE_VICO).
+  const ia = await credencialParaRuta("vico");
+  if (!ia.ok) return Response.json({ ok: false, error: ia.error }, { status: 503 });
+  const { credencial } = ia;
 
   let cuerpo: { telefono?: string; mensaje?: string; reiniciar?: boolean };
   try {
@@ -184,7 +181,7 @@ export async function POST(request: Request) {
     const respuesta = await correrVendedor({
       pregunta: preguntaConNota(nota, mensaje),
       historial: memoria.historialDe(telefono),
-      modelo,
+      credencial,
       descuentoCliente: cliente?.descuento ?? null,
       actor,
       alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),

@@ -1,5 +1,5 @@
 import { sesionActual } from "@/lib/auth";
-import { claveFaltanteConRespaldo } from "@/lib/agente-modelo";
+import { credencialParaRuta } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
 
 // Endpoint web del Vendedor IA (canal del dashboard). Streaming NDJSON:
@@ -32,11 +32,10 @@ export async function POST(request: Request) {
     );
   }
 
-  const modelo = process.env.VENDEDOR_MODELO || "claude-sonnet-5";
-  const claveEnv = claveFaltanteConRespaldo(modelo);
-  if (claveEnv) {
-    return Response.json({ error: `Falta configurar ${claveEnv} en el servidor` }, { status: 500 });
-  }
+  // Proveedor, modelo y llave de Vico salen de HL Servidor (HL_AGENTE_VICO).
+  const ia = await credencialParaRuta("vico");
+  if (!ia.ok) return Response.json({ error: ia.error }, { status: 503 });
+  const { credencial } = ia;
 
   let cuerpo: { pregunta?: string; historial?: MensajeConversacion[] };
   try {
@@ -65,7 +64,7 @@ export async function POST(request: Request) {
         await correrVendedor({
           pregunta,
           historial,
-          modelo,
+          credencial,
           canal: "web",
           alTexto: (fragmento) => emitir({ t: "delta", texto: fragmento }),
           alReinicio: () => emitir({ t: "reinicio" }),

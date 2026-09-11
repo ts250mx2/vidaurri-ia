@@ -1,15 +1,33 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import { HlClienteError, agenteConfigurado, obtenerLlave, type AgenteHl, type EntornoHl } from "./hl-cliente";
 
 // Adaptador de proveedor para los agentes (patrón de kyk-server-web): el loop
 // del agente siempre habla "formato Anthropic" (mensajes con bloques tool_use /
-// tool_result) y aquí se enruta por prefijo del modelo.
+// tool_result) y aquí se enruta por proveedor.
 //
-// Respaldo: si el modelo principal falla por causas del servicio (sin
-// conexión, timeout, 429, 5xx incluido el 529 "overloaded") y hay
-// MODELO_RESPALDO configurado con su clave, el mismo turno se repite con el
-// respaldo. Como cada llamada traduce la conversación completa, cambiar de
-// proveedor a mitad de una conversación no pierde contexto.
+// Proveedor, modelo y llave salen de HL Servidor (hl-cliente.ts), uno por
+// agente: VIDA con HL_AGENTE_VIDA y Vico —mostrador, página web y WhatsApp—
+// con HL_AGENTE_VICO. Del .env ya no se lee ningún modelo ni llave de
+// proveedor: cambiar de modelo o rotar la llave se hace en el portal de HL.
+//
+// Respaldo: si HL_AGENTE_RESPALDO está configurado, la credencial de cada
+// agente lleva adentro la de respaldo. Si el turno falla por causas del
+// servicio o de la cuenta (ver esFalloDelServicio), se repite con ella; como
+// cada llamada traduce la conversación completa, cambiar de proveedor a media
+// conversación no pierde contexto.
+
+/** Proveedores que este adaptador sabe correr. */
+export type ProveedorIA = "claude" | "openai";
+
+/** Con qué corre un turno: lo que HL entrega para cada agente. */
+export interface CredencialIA {
+  proveedor: ProveedorIA;
+  modelo: string;
+  llave: string;
+  /** A qué credencial cae el turno si esta falla (HL_AGENTE_RESPALDO); null o ausente = sin respaldo. */
+  respaldo?: CredencialIA | null;
+}
 
 export interface UsoHerramienta {
   id: string;
@@ -17,8 +35,7 @@ export interface UsoHerramienta {
   input: Record<string, unknown>;
 }
 
-export interface TurnoAgente {
-  modelo: string;
+export interface TurnoAgente extends CredencialIA {
   sistema: string;
   herramientas: Anthropic.Tool[];
   mensajes: Anthropic.MessageParam[];
@@ -36,39 +53,82 @@ export interface ResultadoTurno {
   modelo?: string;
 }
 
-export function esModeloOpenAI(modelo: string): boolean {
-  return /^(gpt-|o\d)/i.test(modelo.trim());
-}
-
-/** Variables de entorno que importan aquí (process.env o un doble en pruebas). */
-export type EntornoModelos = Record<string, string | undefined>;
-
-export function claveFaltante(modelo: string, env: EntornoModelos = process.env): string | null {
-  if (esModeloOpenAI(modelo)) return env.OPENAI_API_KEY ? null : "OPENAI_API_KEY";
-  return env.ANTHROPIC_API_KEY ? null : "ANTHROPIC_API_KEY";
+/** El proveedor que manda HL, si este adaptador lo sabe correr; null para gemini, otro… */
+export function proveedorSoportado(proveedor: string): ProveedorIA | null {
+  const limpio = proveedor.trim().toLowerCase();
+  return limpio === "claude" || limpio === "openai" ? limpio : null;
 }
 
 /**
- * Modelo al que se cae si el principal falla: MODELO_RESPALDO del .env, siempre
- * que sea otro modelo y su proveedor tenga clave. null = sin respaldo.
+ * Proveedor, modelo y llave con que corre el agente, según HL. Sube un
+ * HlClienteError si HL no contesta (y no hay llave previa en cache) o si
+ * asigna un proveedor que aquí no se sabe correr.
  */
-export function modeloRespaldoPara(modelo: string, env: EntornoModelos = process.env): string | null {
-  const respaldo = env.MODELO_RESPALDO?.trim();
-  if (!respaldo || respaldo === modelo.trim()) return null;
-  if (claveFaltante(respaldo, env)) return null;
-  return respaldo;
+export async function credencialDeAgente(
+  agente: AgenteHl,
+  obtener: typeof obtenerLlave = obtenerLlave
+): Promise<CredencialIA> {
+  const { proveedor, modelo, llave } = await obtener(agente);
+  const soportado = proveedorSoportado(proveedor);
+  if (!soportado) {
+    throw new HlClienteError(
+      `HL asignó al agente ${agente} el proveedor "${proveedor}", que este sistema no sabe correr (solo claude u openai)`
+    );
+  }
+  return { proveedor: soportado, modelo, llave };
+}
+
+/** Lo que ve quien usa el agente cuando HL no dio credencial; el detalle va al log. */
+export const ERROR_SIN_IA = "El servicio de IA no está disponible en este momento; intenta de nuevo en unos minutos";
+
+export type CredencialParaRuta = { ok: true; credencial: CredencialIA } | { ok: false; error: string };
+
+export interface DependenciasRuta {
+  /** Quién pide las llaves a HL (inyectable en pruebas). */
+  obtener?: typeof obtenerLlave;
+  env?: EntornoHl;
+}
+
+function mismaCredencial(a: CredencialIA, b: CredencialIA): boolean {
+  return a.proveedor === b.proveedor && a.modelo === b.modelo && a.llave === b.llave;
 }
 
 /**
- * Portero de las rutas: qué clave falta para poder contestar, o null si se
- * puede. A diferencia de `claveFaltante`, que falte la del modelo principal no
- * apaga el servicio mientras el respaldo pueda tomar el turno — si no, quitar
- * la clave de Anthropic dejaría a los agentes mudos teniendo OpenAI a la mano.
+ * Para las rutas: la credencial del agente —con la de respaldo adentro, si HL
+ * la dio— o un mensaje presentable. Nunca sube: el motivo (HL caído, key
+ * inválida, IP no autorizada, llave caducada, proveedor no soportado) queda en
+ * el log, que es donde sirve.
+ *
+ * El respaldo es opcional (HL_AGENTE_RESPALDO) y se pide junto con la llave
+ * del agente, sin sumar espera. Si HL no da la del agente pero sí la de
+ * respaldo —la llave del agente caducó o está desactivada en el portal—, el
+ * agente corre con la de respaldo en vez de quedarse mudo.
  */
-export function claveFaltanteConRespaldo(modelo: string, env: EntornoModelos = process.env): string | null {
-  const falta = claveFaltante(modelo, env);
-  if (!falta || modeloRespaldoPara(modelo, env)) return null;
-  return falta;
+export async function credencialParaRuta(
+  agente: Exclude<AgenteHl, "respaldo">,
+  { obtener = obtenerLlave, env = process.env }: DependenciasRuta = {}
+): Promise<CredencialParaRuta> {
+  const [principal, respaldo] = await Promise.allSettled([
+    credencialDeAgente(agente, obtener),
+    agenteConfigurado("respaldo", env) ? credencialDeAgente("respaldo", obtener) : Promise.resolve(null),
+  ]);
+
+  if (respaldo.status === "rejected") {
+    console.error(`[hl] sin credencial de respaldo (HL_AGENTE_RESPALDO):`, respaldo.reason);
+  }
+  const deRespaldo = respaldo.status === "fulfilled" ? respaldo.value : null;
+
+  if (principal.status === "fulfilled") {
+    const util = deRespaldo && !mismaCredencial(deRespaldo, principal.value) ? deRespaldo : null;
+    return { ok: true, credencial: { ...principal.value, respaldo: util } };
+  }
+
+  console.error(`[hl] sin credencial para el agente ${agente}:`, principal.reason);
+  if (deRespaldo) {
+    console.warn(`[hl] el agente ${agente} corre con la credencial de respaldo (${deRespaldo.modelo})`);
+    return { ok: true, credencial: { ...deRespaldo, respaldo: null } };
+  }
+  return { ok: false, error: ERROR_SIN_IA };
 }
 
 /**
@@ -102,37 +162,25 @@ function describirError(error: unknown): string {
 }
 
 export interface OpcionesTurno {
-  /** Modelo de respaldo; undefined = el del .env, null = sin respaldo. */
-  respaldo?: string | null;
+  /** Credencial de respaldo; undefined = la que trae el turno, null = sin respaldo. */
+  respaldo?: CredencialIA | null;
   /** Quién ejecuta el turno contra el proveedor (inyectable en pruebas). */
   ejecutar?: (turno: TurnoAgente) => Promise<ResultadoTurno>;
-  /** De dónde salen MODELO_RESPALDO y las claves (inyectable en pruebas). */
-  env?: EntornoModelos;
 }
 
 function ejecutarTurno(turno: TurnoAgente): Promise<ResultadoTurno> {
-  return esModeloOpenAI(turno.modelo) ? turnoOpenAI(turno) : turnoAnthropic(turno);
+  return turno.proveedor === "openai" ? turnoOpenAI(turno) : turnoAnthropic(turno);
 }
 
 /**
- * Corre un turno del agente y, si el proveedor principal falla antes de
- * empezar a contestar, lo repite con el modelo de respaldo. Con texto ya
- * emitido no se reintenta: el usuario lo vería dos veces.
+ * Corre un turno del agente y, si hay respaldo y el principal falla antes de
+ * empezar a contestar, lo repite con él. Con texto ya emitido no se reintenta:
+ * el usuario lo vería dos veces.
  */
 export async function correrTurnoAgente(turno: TurnoAgente, opciones: OpcionesTurno = {}): Promise<ResultadoTurno> {
   const ejecutar = opciones.ejecutar ?? ejecutarTurno;
-  const env = opciones.env ?? process.env;
-  const respaldo = opciones.respaldo === undefined ? modeloRespaldoPara(turno.modelo, env) : opciones.respaldo;
+  const respaldo = opciones.respaldo !== undefined ? opciones.respaldo : (turno.respaldo ?? null);
   if (!respaldo) return ejecutar(turno);
-
-  // Sin la clave del proveedor principal el intento es un fallo seguro: el SDK
-  // ni siquiera llega a la red y su error no es "del servicio", así que no
-  // dispararía el respaldo. Se arranca directo con él.
-  const sinClave = claveFaltante(turno.modelo, env);
-  if (sinClave) {
-    console.warn(`[respaldo] falta ${sinClave}; el turno de ${turno.modelo} va directo a ${respaldo}`);
-    return ejecutar({ ...turno, modelo: respaldo });
-  }
 
   let emitido = false;
   const alTexto = (fragmento: string) => {
@@ -143,11 +191,12 @@ export async function correrTurnoAgente(turno: TurnoAgente, opciones: OpcionesTu
     return await ejecutar({ ...turno, alTexto });
   } catch (error) {
     if (emitido || !esFalloDelServicio(error)) throw error;
-    console.warn(`[respaldo] ${turno.modelo} falló (${describirError(error)}); se repite el turno con ${respaldo}`);
+    console.warn(`[respaldo] ${turno.modelo} falló (${describirError(error)}); se repite el turno con ${respaldo.modelo}`);
     try {
-      return await ejecutar({ ...turno, modelo: respaldo });
+      // El respaldo no encadena otro respaldo: un solo reintento por turno.
+      return await ejecutar({ ...turno, ...respaldo, respaldo: null });
     } catch (errorRespaldo) {
-      console.error(`[respaldo] ${respaldo} también falló (${describirError(errorRespaldo)})`);
+      console.error(`[respaldo] ${respaldo.modelo} también falló (${describirError(errorRespaldo)})`);
       throw errorRespaldo;
     }
   }
@@ -156,7 +205,7 @@ export async function correrTurnoAgente(turno: TurnoAgente, opciones: OpcionesTu
 // ---------- Anthropic ----------
 
 async function turnoAnthropic(turno: TurnoAgente): Promise<ResultadoTurno> {
-  const anthropic = new Anthropic(); // lee ANTHROPIC_API_KEY del entorno
+  const anthropic = new Anthropic({ apiKey: turno.llave });
   const stream = anthropic.messages.stream({
     model: turno.modelo,
     max_tokens: turno.maxTokens,
@@ -224,7 +273,7 @@ function traducirMensajes(sistema: string, mensajes: Anthropic.MessageParam[]): 
 }
 
 async function turnoOpenAI(turno: TurnoAgente): Promise<ResultadoTurno> {
-  const openai = new OpenAI(); // lee OPENAI_API_KEY del entorno
+  const openai = new OpenAI({ apiKey: turno.llave });
   // Los modelos gpt-5.x son razonadores; chat.completions NO admite function
   // tools con reasoning_effort activo, así que se fuerza a 'none' (además va
   // más rápido para un agente con herramientas).

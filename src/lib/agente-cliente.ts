@@ -27,14 +27,12 @@ export async function preguntarAgente(
   pregunta: string,
   historial: MensajeHistorial[],
   eventos: EventosAgente,
-  señal?: AbortSignal,
-  /** Modelo elegido en la interfaz (opcional; el servidor valida y cae al default). */
-  modelo?: string
+  señal?: AbortSignal
 ): Promise<string> {
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pregunta, historial, ...(modelo ? { modelo } : {}) }),
+    body: JSON.stringify({ pregunta, historial }),
     signal: señal,
   });
   if (res.status === 401) throw new SesionExpiradaError();
@@ -90,13 +88,12 @@ export async function preguntarAgente(
   return texto;
 }
 
-/** Atajo para el agente VIDA (con modelo elegible). */
+/** Atajo para el agente VIDA (el modelo lo asigna HL Servidor). */
 export function preguntarVida(
   pregunta: string,
   historial: MensajeHistorial[],
   eventos: EventosAgente,
-  señal?: AbortSignal,
-  modelo?: string
+  señal?: AbortSignal
 ): Promise<string> {
-  return preguntarAgente("/api/chat/vida", pregunta, historial, eventos, señal, modelo);
+  return preguntarAgente("/api/chat/vida", pregunta, historial, eventos, señal);
 }

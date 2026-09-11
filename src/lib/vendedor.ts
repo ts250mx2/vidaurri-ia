@@ -2,7 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { consultaBdav } from "@/lib/db";
 import { consultaUsadas } from "@/lib/db-usadas";
 import { precioAldo } from "@/lib/aldo";
-import { correrTurnoAgente, type UsoHerramienta } from "@/lib/agente-modelo";
+import { correrTurnoAgente, type CredencialIA, type UsoHerramienta } from "@/lib/agente-modelo";
 import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
 import { observacionOrigen } from "@/lib/origen-pieza";
 import {
@@ -673,7 +673,8 @@ export interface MensajeConversacion {
 export interface OpcionesVendedor {
   pregunta: string;
   historial: MensajeConversacion[];
-  modelo: string;
+  /** Proveedor, modelo y llave con que corre Vico (de HL Servidor, HL_AGENTE_VICO). */
+  credencial: CredencialIA;
   /** Canal de la conversación: 'web' muestra fotos, 'whatsapp' no. */
   canal?: CanalVendedor;
   /** Descuento del cliente identificado por su teléfono, en por ciento. Si es
@@ -740,7 +741,7 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     const ultimaRonda = ronda === MAX_ITERACIONES - 1;
     let textoRonda = "";
     const resultado = await correrTurnoAgente({
-      modelo: op.modelo,
+      ...op.credencial,
       sistema,
       herramientas,
       mensajes,

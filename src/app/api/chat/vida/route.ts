@@ -8,8 +8,7 @@ import {
   TABLAS_PERMITIDAS,
   TABLAS_PERMITIDAS_USADAS,
 } from "@/lib/agente-sql";
-import { correrTurnoAgente, claveFaltanteConRespaldo, type UsoHerramienta } from "@/lib/agente-modelo";
-import { esModeloVidaValido } from "@/lib/modelos-vida";
+import { correrTurnoAgente, credencialParaRuta, type UsoHerramienta } from "@/lib/agente-modelo";
 
 // Agente VIDA — Vidaurri Inteligencia de Datos Automotriz.
 // Protocolo de streaming NDJSON (patrón kyk-server-web):
@@ -226,7 +225,7 @@ export async function POST(request: Request) {
     );
   }
 
-  let cuerpo: { pregunta?: string; historial?: MensajeCliente[]; modelo?: string };
+  let cuerpo: { pregunta?: string; historial?: MensajeCliente[] };
   try {
     cuerpo = await request.json();
   } catch {
@@ -235,19 +234,11 @@ export async function POST(request: Request) {
   const pregunta = String(cuerpo.pregunta ?? "").trim().slice(0, MAX_PREGUNTA);
   if (!pregunta) return Response.json({ error: "Escribe una pregunta" }, { status: 400 });
 
-  // El usuario elige el modelo desde la interfaz (lista blanca); si no llega uno
-  // válido, se usa el del entorno.
-  const modeloElegido = String(cuerpo.modelo ?? "");
-  const modelo = esModeloVidaValido(modeloElegido)
-    ? modeloElegido
-    : process.env.AGENTES_MODELO || "claude-opus-5";
-  const claveEnv = claveFaltanteConRespaldo(modelo);
-  if (claveEnv) {
-    return Response.json(
-      { error: `Falta configurar ${claveEnv} en el servidor para el modelo seleccionado` },
-      { status: 500 }
-    );
-  }
+  // Proveedor, modelo y llave de VIDA salen de HL Servidor (HL_AGENTE_VIDA): ya
+  // no se eligen en la interfaz ni se leen del .env.
+  const ia = await credencialParaRuta("vida");
+  if (!ia.ok) return Response.json({ error: ia.error }, { status: 503 });
+  const { credencial } = ia;
 
   // Historial reciente (texto plano) → mensajes del modelo.
   const historial = (cuerpo.historial ?? []).slice(-MAX_HISTORIAL);
@@ -277,7 +268,7 @@ export async function POST(request: Request) {
         for (let ronda = 0; ronda < MAX_ITERACIONES; ronda++) {
           const ultimaRonda = ronda === MAX_ITERACIONES - 1;
           const resultado = await correrTurnoAgente({
-            modelo,
+            ...credencial,
             sistema,
             herramientas: HERRAMIENTAS,
             mensajes,

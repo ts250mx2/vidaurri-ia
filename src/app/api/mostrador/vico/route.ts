@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { claveFaltanteConRespaldo } from "@/lib/agente-modelo";
+import { credencialParaRuta } from "@/lib/agente-modelo";
 import { exigirMostrador } from "@/lib/auth-mostrador";
 import { obtenerClienteDescuento } from "@/lib/db-clientes-descuento";
 import { guardarIntercambio } from "@/lib/db-conversaciones";
@@ -88,10 +88,10 @@ export async function POST(request: Request) {
   if (!guardia.ok) return guardia.respuesta;
   const { sesion } = guardia;
 
-  const modelo = process.env.VENDEDOR_MODELO || "claude-sonnet-5";
-  if (claveFaltanteConRespaldo(modelo)) {
-    return NextResponse.json({ ok: false, error: "Servicio de IA no configurado" }, { status: 500 });
-  }
+  // Proveedor, modelo y llave de Vico salen de HL Servidor (HL_AGENTE_VICO).
+  const ia = await credencialParaRuta("vico");
+  if (!ia.ok) return NextResponse.json({ ok: false, error: ia.error }, { status: 503 });
+  const { credencial } = ia;
 
   let cuerpo: unknown;
   try {
@@ -151,7 +151,7 @@ export async function POST(request: Request) {
     const respuesta = await correrVendedor({
       pregunta: mensaje,
       historial: memoria.historialDe(clave),
-      modelo,
+      credencial,
       // Sin imágenes inline: las fotos van aparte, como en WhatsApp.
       canal: "whatsapp",
       descuentoCliente: actor.descuento,
