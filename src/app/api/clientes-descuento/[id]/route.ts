@@ -1,19 +1,23 @@
 import { NextResponse } from "next/server";
 import { sesionActual } from "@/lib/auth";
+import { obtenerClienteBdav } from "@/lib/clientes-bdav";
 import {
   leerIdRuta,
   leerPermitirPedido,
+  leerRelacionBdav,
   validarCapturaClienteDescuento,
 } from "@/lib/clientes-descuento";
 import {
   actualizarClienteDescuento,
+  cambiarClienteBdav,
   cambiarPermitirPedido,
   eliminarClienteDescuento,
   ReferenciaApvDuplicadaError,
   TelefonoDuplicadoError,
 } from "@/lib/db-clientes-descuento";
 
-// Edición, "permitir pedido" y baja de un cliente con descuento del Vendedor IA.
+// Edición, "permitir pedido", relación con el catálogo de bdav y baja de un
+// cliente con descuento del Vendedor IA.
 
 export const dynamic = "force-dynamic";
 
@@ -63,7 +67,12 @@ export async function PUT(request: Request, contexto: Contexto) {
   }
 }
 
-/** Solo cambia "permitir pedido": el check de la lista, sin pasar por el formulario. */
+/**
+ * Cambios sueltos desde la lista, sin pasar por el formulario: "permitir
+ * pedido" ({ permitirPedido }) o la relación con el catálogo de clientes de
+ * bdav ({ idClienteBdav: id | null }). Antes de ligar se comprueba que el
+ * cliente exista en bdav, y su nombre vuelve en la respuesta para el aviso.
+ */
 export async function PATCH(request: Request, contexto: Contexto) {
   const sesion = await sesionActual();
   if (!sesion) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
@@ -71,23 +80,38 @@ export async function PATCH(request: Request, contexto: Contexto) {
   const id = await leerId(contexto);
   if (id == null) return NextResponse.json({ error: "Identificador inválido" }, { status: 400 });
 
-  const permitir = leerPermitirPedido(await request.json().catch(() => null));
-  if (permitir === null) {
+  const cuerpo = await request.json().catch(() => null);
+  const permitir = leerPermitirPedido(cuerpo);
+  if (permitir !== null) {
+    try {
+      const registro = await cambiarPermitirPedido(id, permitir, sesion.usuario);
+      if (!registro) return NextResponse.json({ error: "El registro ya no existe" }, { status: 404 });
+      return NextResponse.json({ registro });
+    } catch (error) {
+      console.error(`Error cambiando permitir pedido del cliente ${id}:`, error);
+      return NextResponse.json({ error: "No se pudo guardar el cambio" }, { status: 502 });
+    }
+  }
+
+  const relacion = leerRelacionBdav(cuerpo);
+  if (relacion === undefined) {
     return NextResponse.json({ error: "Petición inválida" }, { status: 400 });
   }
 
   try {
-    const registro = await cambiarPermitirPedido(id, permitir, sesion.usuario);
-    if (!registro) {
-      return NextResponse.json({ error: "El registro ya no existe" }, { status: 404 });
+    const catalogo = relacion === null ? null : await obtenerClienteBdav(relacion);
+    if (relacion !== null && !catalogo) {
+      return NextResponse.json(
+        { error: `El cliente #${relacion} no existe en el catálogo de bdav` },
+        { status: 400 }
+      );
     }
-    return NextResponse.json({ registro });
+    const registro = await cambiarClienteBdav(id, relacion, sesion.usuario);
+    if (!registro) return NextResponse.json({ error: "El registro ya no existe" }, { status: 404 });
+    return NextResponse.json({ registro, catalogo });
   } catch (error) {
-    console.error(`Error cambiando permitir pedido del cliente ${id}:`, error);
-    return NextResponse.json(
-      { error: "No se pudo guardar el cambio" },
-      { status: 502 }
-    );
+    console.error(`Error relacionando el cliente con descuento ${id} con bdav:`, error);
+    return NextResponse.json({ error: "No se pudo guardar la relación" }, { status: 502 });
   }
 }
 

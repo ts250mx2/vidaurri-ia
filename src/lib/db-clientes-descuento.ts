@@ -8,9 +8,11 @@ import {
 import {
   condicionCelular,
   condicionesBusqueda,
+  condicionRelacionBdav,
   type CapturaClienteDescuento,
   type ClienteDescuento,
   type FiltroCelular,
+  type FiltroRelacionBdav,
 } from "./clientes-descuento";
 import type { FilaImportacion } from "./importar-clientes-descuento";
 
@@ -147,6 +149,8 @@ export interface FiltrosClientesDescuento {
   /** Parte del nombre, teléfono, RFC o email. */
   busqueda?: string;
   celular?: FiltroCelular;
+  /** Con o sin relación con el catálogo de clientes de bdav. */
+  relacion?: FiltroRelacionBdav;
   pagina: number;
   porPagina: number;
 }
@@ -157,6 +161,8 @@ export interface PaginaClientesDescuento {
   descuentoPromedio: number;
   /** Altas del mes en curso (horario de Monterrey) dentro del filtro. */
   altasMes: number;
+  /** Registros del filtro sin relación con el catálogo de bdav (id NULL o 0). */
+  sinRelacionBdav: number;
 }
 
 /** Página del padrón, altas más recientes primero, con totales del filtro. */
@@ -166,7 +172,7 @@ export async function listarClientesDescuento(
   await asegurarEsquema();
   const pool = poolConversaciones();
   const busqueda = condicionesBusqueda(filtros.busqueda ?? "");
-  const clausula = `${busqueda.clausula} AND ${condicionCelular(filtros.celular)}`;
+  const clausula = `${busqueda.clausula} AND ${condicionCelular(filtros.celular)} AND ${condicionRelacionBdav(filtros.relacion)}`;
   const mesActual = ahoraMonterrey().fecha.slice(0, 7);
 
   const [filas] = await pool.query<RowDataPacket[]>(
@@ -180,7 +186,8 @@ export async function listarClientesDescuento(
   const [totales] = await pool.query<RowDataPacket[]>(
     `SELECT COUNT(*) AS total,
             IFNULL(AVG(c.descuento), 0) AS descuentoPromedio,
-            IFNULL(SUM(DATE_FORMAT(c.creado_en, '%Y-%m') = ?), 0) AS altasMes
+            IFNULL(SUM(DATE_FORMAT(c.creado_en, '%Y-%m') = ?), 0) AS altasMes,
+            IFNULL(SUM(c.id_cliente_bdav IS NULL OR c.id_cliente_bdav = 0), 0) AS sinRelacionBdav
        FROM clientes_descuento c
       WHERE ${clausula}`,
     [mesActual, ...busqueda.parametros]
@@ -191,6 +198,7 @@ export async function listarClientesDescuento(
     total: Number(totales[0]?.total ?? 0),
     descuentoPromedio: Number(totales[0]?.descuentoPromedio ?? 0),
     altasMes: Number(totales[0]?.altasMes ?? 0),
+    sinRelacionBdav: Number(totales[0]?.sinRelacionBdav ?? 0),
   };
 }
 
@@ -315,6 +323,24 @@ export async function cambiarPermitirPedido(
         SET permitir_pedido = ?, actualizado_por = ?, actualizado_en = ?
       WHERE id = ?`,
     [permitir ? 1 : 0, usuario.slice(0, USUARIO_MAX), momento, id]
+  );
+  if (resultado.affectedRows === 0) return null;
+  return obtenerClienteDescuento(id);
+}
+
+/** Liga (o desliga, con null) el registro con un cliente del catálogo de bdav. null si el id no existe. */
+export async function cambiarClienteBdav(
+  id: number,
+  idClienteBdav: number | null,
+  usuario: string
+): Promise<ClienteDescuento | null> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+  const [resultado] = await poolConversaciones().query<ResultSetHeader>(
+    `UPDATE clientes_descuento
+        SET id_cliente_bdav = ?, actualizado_por = ?, actualizado_en = ?
+      WHERE id = ?`,
+    [idClienteBdav, usuario.slice(0, USUARIO_MAX), momento, id]
   );
   if (resultado.affectedRows === 0) return null;
   return obtenerClienteDescuento(id);

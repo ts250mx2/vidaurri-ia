@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Link2,
   Loader2,
   Pencil,
   Plus,
@@ -19,7 +20,16 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { entero, fechaCorta, porcentaje } from "@/lib/formato";
-import type { ClienteDescuento, FiltroCelular } from "@/lib/clientes-descuento";
+import {
+  tieneRelacionBdav,
+  type ClienteDescuento,
+  type FiltroCelular,
+  type FiltroRelacionBdav,
+} from "@/lib/clientes-descuento";
+import {
+  DialogoRelacionarBdav,
+  type ClienteCatalogoLigado,
+} from "@/components/dashboard/DialogoRelacionarBdav";
 import {
   resumenBienvenida,
   resumenReenvio,
@@ -42,6 +52,8 @@ interface PaginaClientesDescuento {
   total: number;
   descuentoPromedio: number;
   altasMes: number;
+  /** Registros del filtro sin relación con el catálogo de clientes de bdav. */
+  sinRelacionBdav: number;
   porPagina: number;
   descuentoDefault: number;
 }
@@ -107,6 +119,7 @@ export default function ClientesDescuentoPage() {
   const [busqueda, setBusqueda] = useState("");
   const [busquedaAplicada, setBusquedaAplicada] = useState("");
   const [celular, setCelular] = useState<FiltroCelular | "">("");
+  const [relacion, setRelacion] = useState<FiltroRelacionBdav | "">("");
   const [pagina, setPagina] = useState(1);
   /** Se incrementa para volver a consultar con los mismos filtros. */
   const [version, setVersion] = useState(0);
@@ -115,6 +128,8 @@ export default function ClientesDescuentoPage() {
 
   const [formulario, setFormulario] = useState<Formulario | null>(null);
   const [porEliminar, setPorEliminar] = useState<ClienteDescuento | null>(null);
+  /** Registro al que se le busca su cliente en el catálogo de bdav. */
+  const [relacionar, setRelacionar] = useState<ClienteDescuento | null>(null);
   const [eliminando, setEliminando] = useState(false);
   const [errorEliminar, setErrorEliminar] = useState("");
   /** id del cliente cuya bienvenida se está reenviando (uno a la vez). */
@@ -125,7 +140,7 @@ export default function ClientesDescuentoPage() {
   const [errorImportacion, setErrorImportacion] = useState("");
   const archivoRef = useRef<HTMLInputElement>(null);
 
-  const clave = `${version}|${pagina}|${busquedaAplicada}|${celular}`;
+  const clave = `${version}|${pagina}|${busquedaAplicada}|${celular}|${relacion}`;
 
   // La búsqueda se aplica cuando el usuario deja de teclear.
   useEffect(() => {
@@ -150,6 +165,7 @@ export default function ClientesDescuentoPage() {
     const parametros = new URLSearchParams({ pagina: String(pagina) });
     if (busquedaAplicada) parametros.set("busqueda", busquedaAplicada);
     if (celular) parametros.set("celular", celular);
+    if (relacion) parametros.set("relacion", relacion);
 
     (async () => {
       try {
@@ -186,7 +202,7 @@ export default function ClientesDescuentoPage() {
     return () => {
       cancelado = true;
     };
-  }, [clave, pagina, busquedaAplicada, celular, router]);
+  }, [clave, pagina, busquedaAplicada, celular, relacion, router]);
 
   const cargando = respuesta?.clave !== clave;
   // Mientras llega la consulta nueva se sigue mostrando la anterior.
@@ -198,6 +214,13 @@ export default function ClientesDescuentoPage() {
   const cerrarBaja = useCallback(() => {
     if (!eliminando) setPorEliminar(null);
   }, [eliminando]);
+  const cerrarRelacionar = useCallback(() => setRelacionar(null), []);
+
+  const alRelacionado = (registro: ClienteDescuento, catalogo: ClienteCatalogoLigado) => {
+    setRelacionar(null);
+    avisar(`Se relacionó a ${registro.cliente} con ${catalogo.nombre} (#${catalogo.id} del catálogo de bdav)`);
+    recargar();
+  };
 
   const avisar = (texto: string) => setAviso({ texto, tono: "ok" });
 
@@ -371,7 +394,11 @@ export default function ClientesDescuentoPage() {
             {cargando
               ? "Consultando..."
               : datos
-                ? `${entero(datos.total)} clientes en el padrón del Vendedor IA`
+                ? `${entero(datos.total)} clientes en el padrón del Vendedor IA${
+                    datos.sinRelacionBdav > 0
+                      ? ` · ${entero(datos.sinRelacionBdav)} sin relación con el catálogo de bdav`
+                      : ""
+                  }`
                 : "Sin datos"}
           </p>
         </div>
@@ -419,7 +446,7 @@ export default function ClientesDescuentoPage() {
 
       {/* Búsqueda y filtro */}
       <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4">
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_200px] gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_170px_210px] gap-3">
           <div>
             <label htmlFor="cd-busqueda" className={lbl}>
               Buscar
@@ -457,6 +484,30 @@ export default function ClientesDescuentoPage() {
               </option>
               <option value="sin" className="bg-[#0d1320] text-slate-100">
                 Sin celular
+              </option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="cd-relacion" className={lbl}>
+              Catálogo de bdav
+            </label>
+            <select
+              id="cd-relacion"
+              value={relacion}
+              onChange={(e) => {
+                setRelacion(e.target.value as FiltroRelacionBdav | "");
+                setPagina(1);
+              }}
+              className={cn(inputCls, "mt-1 appearance-none [color-scheme:dark]")}
+            >
+              <option value="" className="bg-[#0d1320] text-slate-100">
+                Todos
+              </option>
+              <option value="sin" className="bg-[#0d1320] text-slate-100">
+                Sin relación
+              </option>
+              <option value="con" className="bg-[#0d1320] text-slate-100">
+                Con relación
               </option>
             </select>
           </div>
@@ -567,15 +618,25 @@ export default function ClientesDescuentoPage() {
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-[12px] font-black text-slate-200 max-w-[320px]">
-                      <div className="truncate">
-                        {r.cliente}
-                        {r.idClienteBdav != null && (
+                      {/* La insignia va fuera del recorte: un nombre largo no debe esconderla. */}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="truncate">{r.cliente}</span>
+                        {tieneRelacionBdav(r.idClienteBdav) ? (
                           <span
-                            className="ml-2 text-[9px] font-black uppercase tracking-widest text-slate-500"
+                            className="shrink-0 text-[9px] font-black uppercase tracking-widest text-slate-500"
                             title={`Cliente #${r.idClienteBdav} del catálogo de bdav`}
                           >
                             catálogo
                           </span>
+                        ) : (
+                          <button
+                            onClick={() => setRelacionar(r)}
+                            title="Sin relación con el catálogo de clientes de bdav. Clic para relacionarlo con un cliente parecido"
+                            className="shrink-0 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-300 hover:text-amber-200"
+                          >
+                            <AlertTriangle className="h-3 w-3" />
+                            sin catálogo
+                          </button>
                         )}
                       </div>
                       {r.rfc && (
@@ -633,6 +694,16 @@ export default function ClientesDescuentoPage() {
                             ) : (
                               <Send className="h-4 w-4" />
                             )}
+                          </button>
+                        )}
+                        {!tieneRelacionBdav(r.idClienteBdav) && (
+                          <button
+                            onClick={() => setRelacionar(r)}
+                            aria-label={`Relacionar a ${r.cliente} con el catálogo de clientes de bdav`}
+                            title="Relacionar con el catálogo de clientes"
+                            className={cn(btnIcono, "text-amber-400/80 hover:text-amber-300")}
+                          >
+                            <Link2 className="h-4 w-4" />
                           </button>
                         )}
                         <button
@@ -696,6 +767,14 @@ export default function ClientesDescuentoPage() {
           onCerrar={cerrarFormulario}
           onGuardado={alGuardar}
           onEditarExistente={(registro) => setFormulario({ modo: "edicion", registro })}
+        />
+      )}
+
+      {relacionar && (
+        <DialogoRelacionarBdav
+          registro={relacionar}
+          onCerrar={cerrarRelacionar}
+          onRelacionado={alRelacionado}
         />
       )}
 

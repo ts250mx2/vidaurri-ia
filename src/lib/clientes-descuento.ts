@@ -251,3 +251,30 @@ export function leerIdRuta(id: string): number | null {
   const numero = Number.parseInt(id, 10);
   return Number.isInteger(numero) && numero > 0 && String(numero) === id ? numero : null;
 }
+
+export type FiltroRelacionBdav = "con" | "sin";
+
+/** Un registro sin relación con el catálogo de clientes de bdav: id_cliente_bdav NULL o 0. */
+export function tieneRelacionBdav(idClienteBdav: number | null): boolean {
+  return idClienteBdav !== null && idClienteBdav > 0;
+}
+
+/** Filtro "con / sin relación con el catálogo de bdav" del padrón; sin filtro no restringe. */
+export function condicionRelacionBdav(filtro: FiltroRelacionBdav | undefined): string {
+  if (filtro === "con") return "c.id_cliente_bdav > 0";
+  if (filtro === "sin") return "(c.id_cliente_bdav IS NULL OR c.id_cliente_bdav = 0)";
+  return "1 = 1";
+}
+
+/**
+ * El cuerpo de "relacionar con el catálogo": `idClienteBdav` entero positivo
+ * (ligar) o null (quitar la relación). undefined = no viene o es inválido.
+ */
+export function leerRelacionBdav(entrada: unknown): number | null | undefined {
+  if (!entrada || typeof entrada !== "object" || Array.isArray(entrada)) return undefined;
+  const cuerpo = entrada as Record<string, unknown>;
+  if (!("idClienteBdav" in cuerpo)) return undefined;
+  const valor = cuerpo.idClienteBdav;
+  if (valor === null) return null;
+  return typeof valor === "number" && Number.isSafeInteger(valor) && valor > 0 ? valor : undefined;
+}

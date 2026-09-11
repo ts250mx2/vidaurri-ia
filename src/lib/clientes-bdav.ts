@@ -1,4 +1,13 @@
 import { consultaBdav } from "./db";
+import {
+  ordenarSugerencias,
+  SUGERENCIAS_MAX,
+  type CandidatoBdav,
+  type CandidatoConMotivo,
+  type SugerenciaBdav,
+} from "./sugerencias-bdav";
+import { tokensParaBuscar } from "./similitud-nombres";
+import { normalizarTelefono } from "./telefono";
 
 // Búsqueda de un cliente del catálogo de bdav por teléfono. SOLO LECTURA.
 //
@@ -69,6 +78,142 @@ export async function buscarClienteBdavPorTelefono(
     },
     coincidencias: filas.length,
   };
+}
+
+/** RFC genérico de "público en general": no identifica a nadie. */
+const RFC_GENERICO = "XAXX010101000";
+const COLUMNAS_CANDIDATO = `c.id, c.nombre, c.telefono, c.rfc, c.ciudad,
+            IFNULL(c.descuento, 0) AS descuento, (c.activo + 0) AS activo`;
+/** Candidatos por palabras del nombre: se traen de más y se ordenan en JS. */
+const CANDIDATOS_POR_NOMBRE = 120;
+const CANDIDATOS_POR_LLAVE = 5;
+const CELULARES_A_BUSCAR = 3;
+/** Manual: más resultados, porque el usuario ya acotó. */
+const SUGERENCIAS_BUSQUEDA_MANUAL = 10;
+
+interface FilaCandidato {
+  id: number;
+  nombre: string | null;
+  telefono: string | null;
+  rfc: string | null;
+  ciudad: string | null;
+  descuento: number;
+  activo: number;
+}
+
+function aCandidato(fila: FilaCandidato): CandidatoBdav {
+  const rfc = String(fila.rfc ?? "").trim().toUpperCase();
+  return {
+    id: Number(fila.id),
+    nombre: String(fila.nombre ?? "").trim(),
+    telefono: String(fila.telefono ?? ""),
+    rfc: rfc || null,
+    ciudad: String(fila.ciudad ?? "").trim() || null,
+    descuento: Number(fila.descuento),
+    activo: Number(fila.activo),
+  };
+}
+
+async function candidatosPorTelefono(telefonoNormalizado: string): Promise<CandidatoBdav[]> {
+  if (!/^\d{7,20}$/.test(telefonoNormalizado)) return [];
+  const filas = await consultaBdav<FilaCandidato>(
+    `SELECT ${COLUMNAS_CANDIDATO}
+       FROM clientes c
+      WHERE ${TELEFONO_LIMPIO} = ?
+         OR ${TELEFONO_LIMPIO} LIKE ?
+         OR (LENGTH(${TELEFONO_LIMPIO}) >= ${MIN_DIGITOS_GUARDADOS}
+             AND ? LIKE CONCAT('%', ${TELEFONO_LIMPIO}))
+      ORDER BY (c.activo + 0) DESC, c.id DESC
+      LIMIT ${CANDIDATOS_POR_LLAVE}`,
+    [telefonoNormalizado, `%${telefonoNormalizado}`, telefonoNormalizado]
+  );
+  return filas.map(aCandidato);
+}
+
+async function candidatosPorRfc(rfc: string): Promise<CandidatoBdav[]> {
+  const limpio = rfc.trim().toUpperCase();
+  if (!limpio || limpio === RFC_GENERICO) return [];
+  const filas = await consultaBdav<FilaCandidato>(
+    `SELECT ${COLUMNAS_CANDIDATO}
+       FROM clientes c
+      WHERE UPPER(TRIM(c.rfc)) = ?
+      ORDER BY (c.activo + 0) DESC, c.id DESC
+      LIMIT ${CANDIDATOS_POR_LLAVE}`,
+    [limpio]
+  );
+  return filas.map(aCandidato);
+}
+
+/** Por palabras del nombre (la colación de bdav ya ignora mayúsculas y acentos). */
+async function candidatosPorNombre(texto: string): Promise<CandidatoBdav[]> {
+  const tokens = tokensParaBuscar(texto);
+  if (tokens.length === 0) return [];
+  const condiciones = tokens.map(() => "c.nombre LIKE ?").join(" OR ");
+  const filas = await consultaBdav<FilaCandidato>(
+    `SELECT ${COLUMNAS_CANDIDATO}
+       FROM clientes c
+      WHERE ${condiciones}
+      LIMIT ${CANDIDATOS_POR_NOMBRE}`,
+    tokens.map((t) => `%${t}%`)
+  );
+  return filas.map(aCandidato);
+}
+
+export interface ReferenciaSugerencias {
+  /** Nombre en el padrón, contra el que se mide el parecido. */
+  nombre: string;
+  /** Celulares del padrón, nacionales de 10 dígitos. */
+  telefonos: string[];
+  rfc: string | null;
+  /** Lo que tecleó el usuario para buscar a mano; si viene, manda sobre el nombre. */
+  busqueda?: string;
+}
+
+/**
+ * Candidatos del catálogo de bdav para relacionar un cliente del padrón: por
+ * sus celulares, por su RFC y por las palabras de su nombre (o de lo que el
+ * usuario busque a mano, que puede ser un nombre o un teléfono). SOLO LECTURA.
+ */
+export async function sugerirClientesBdav(referencia: ReferenciaSugerencias): Promise<SugerenciaBdav[]> {
+  const busqueda = referencia.busqueda?.trim() ?? "";
+  const consultas: Array<Promise<CandidatoConMotivo[]>> = [];
+  const conMotivo = (motivo: CandidatoConMotivo["motivo"]) => (lista: CandidatoBdav[]) =>
+    lista.map((candidato) => ({ candidato, motivo }));
+
+  if (busqueda) {
+    const telefono = normalizarTelefono(busqueda);
+    if (/^[\d\s\-+().]+$/.test(busqueda) && telefono.length >= MIN_DIGITOS_GUARDADOS) {
+      consultas.push(candidatosPorTelefono(telefono).then(conMotivo("celular")));
+    } else {
+      consultas.push(candidatosPorNombre(busqueda).then(conMotivo("nombre")));
+    }
+  } else {
+    for (const telefono of referencia.telefonos.slice(0, CELULARES_A_BUSCAR)) {
+      consultas.push(candidatosPorTelefono(telefono).then(conMotivo("celular")));
+    }
+    if (referencia.rfc) consultas.push(candidatosPorRfc(referencia.rfc).then(conMotivo("rfc")));
+    consultas.push(candidatosPorNombre(referencia.nombre).then(conMotivo("nombre")));
+  }
+
+  const candidatos = (await Promise.all(consultas)).flat();
+  // En la búsqueda manual el usuario ya acotó: se muestra lo que encontró
+  // aunque el nombre no se parezca al del padrón.
+  return busqueda
+    ? ordenarSugerencias(candidatos, referencia.nombre, {
+        maximo: SUGERENCIAS_BUSQUEDA_MANUAL,
+        soloParecidos: false,
+      })
+    : ordenarSugerencias(candidatos, referencia.nombre, { maximo: SUGERENCIAS_MAX });
+}
+
+/** Un cliente del catálogo por id, para validar una relación antes de guardarla. SOLO LECTURA. */
+export async function obtenerClienteBdav(id: number): Promise<CandidatoBdav | null> {
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const filas = await consultaBdav<FilaCandidato>(
+    `SELECT ${COLUMNAS_CANDIDATO} FROM clientes c WHERE c.id = ? LIMIT 1`,
+    [id]
+  );
+  return filas[0] ? aCandidato(filas[0]) : null;
 }
 
 /**

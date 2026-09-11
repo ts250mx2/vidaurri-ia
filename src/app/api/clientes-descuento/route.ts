@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { sesionActual } from "@/lib/auth";
-import { validarCapturaClienteDescuento, type FiltroCelular } from "@/lib/clientes-descuento";
+import {
+  validarCapturaClienteDescuento,
+  type FiltroCelular,
+  type FiltroRelacionBdav,
+} from "@/lib/clientes-descuento";
 import {
   crearClienteDescuento,
   listarClientesDescuento,
@@ -30,6 +34,9 @@ export async function GET(request: Request) {
   const celularCrudo = searchParams.get("celular");
   const celular: FiltroCelular | undefined =
     celularCrudo === "con" || celularCrudo === "sin" ? celularCrudo : undefined;
+  const relacionCruda = searchParams.get("relacion");
+  const relacion: FiltroRelacionBdav | undefined =
+    relacionCruda === "con" || relacionCruda === "sin" ? relacionCruda : undefined;
   const pagina = Math.min(
     PAGINA_MAX,
     Math.max(1, Number.parseInt(searchParams.get("pagina") ?? "1", 10) || 1)
@@ -39,6 +46,7 @@ export async function GET(request: Request) {
     const datos = await listarClientesDescuento({
       busqueda,
       celular,
+      relacion,
       pagina,
       porPagina: POR_PAGINA,
     });

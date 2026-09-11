@@ -3,9 +3,12 @@ import {
   CLIENTE_MAX,
   condicionCelular,
   condicionesBusqueda,
+  condicionRelacionBdav,
   leerIdRuta,
   leerPermitirPedido,
+  leerRelacionBdav,
   normalizarRfc,
+  tieneRelacionBdav,
   validarCapturaClienteDescuento,
 } from "./clientes-descuento";
 
@@ -262,6 +265,29 @@ describe("leerPermitirPedido", () => {
     expect(leerPermitirPedido({})).toBeNull();
     expect(leerPermitirPedido(null)).toBeNull();
     expect(leerPermitirPedido([])).toBeNull();
+  });
+});
+
+describe("relación con el catálogo de bdav", () => {
+  it("NULL y 0 cuentan como sin relación", () => {
+    expect(tieneRelacionBdav(null)).toBe(false);
+    expect(tieneRelacionBdav(0)).toBe(false);
+    expect(tieneRelacionBdav(42)).toBe(true);
+  });
+
+  it("el filtro distingue con y sin relación, y sin filtro no restringe", () => {
+    expect(condicionRelacionBdav("con")).toBe("c.id_cliente_bdav > 0");
+    expect(condicionRelacionBdav("sin")).toBe("(c.id_cliente_bdav IS NULL OR c.id_cliente_bdav = 0)");
+    expect(condicionRelacionBdav(undefined)).toBe("1 = 1");
+  });
+
+  it("el cuerpo de relacionar acepta un id positivo o null, y nada más", () => {
+    expect(leerRelacionBdav({ idClienteBdav: 6447 })).toBe(6447);
+    expect(leerRelacionBdav({ idClienteBdav: null })).toBeNull();
+    expect(leerRelacionBdav({ idClienteBdav: 0 })).toBeUndefined();
+    expect(leerRelacionBdav({ idClienteBdav: "6447" })).toBeUndefined();
+    expect(leerRelacionBdav({ permitirPedido: true })).toBeUndefined();
+    expect(leerRelacionBdav(null)).toBeUndefined();
   });
 });
 
