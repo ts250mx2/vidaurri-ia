@@ -58,17 +58,19 @@ punto de venta). Perfiles: Administrador, Operaciones, Ventas.
   [docs/AXON-LOGIC.md](docs/AXON-LOGIC.md)). **Créditos WhatsApp** (`/dashboard/axon`):
   saldo de tokens de la cuenta en Axon Logic (un token = una conversación de 24 h) y
   compra de packs vía Stripe; el encabezado del panel lleva un chip con el saldo.
-- **Modelos de IA (HL Servidor)**: proveedor, modelo y llave de VIDA y de Vico (mostrador, web y
-  WhatsApp) salen de HL Servidor, un agente por UUID (`HL_AGENTE_VIDA`, `HL_AGENTE_VICO`, con
-  `HL_URL` y `HL_API_KEY` en el `.env`); del `.env` ya no se lee ningún modelo ni llave de
-  Anthropic u OpenAI. Cambiar de modelo o rotar la llave se hace en el portal de HL, y la app lo
-  toma al vencer el cache (`HL_TTL_MIN`, 30 min). Si HL no contesta se reutiliza la última llave
-  que dio; si nunca dio una, el agente responde que la IA no está disponible (503). **Respaldo**
+- **Modelos de IA (HL Console)**: el proveedor y el modelo de VIDA y de Vico (mostrador, web y
+  WhatsApp) los fija HL Console, un agente por UUID (`HL_AGENTE_VIDA`, `HL_AGENTE_VICO`, con
+  `HL_URL` y `HL_API_KEY` en el `.env`). Las llamadas al proveedor van por el **proxy** de HL
+  (`/api/ws/proxy/<uuid>`), que inyecta la llave real y fija el modelo del agente: esta
+  aplicación nunca tiene en memoria una llave de Anthropic ni de OpenAI, y del `.env` no se lee
+  ningún modelo ni llave. Cambiar de modelo o rotar la llave se hace en el portal de HL, y la app
+  lo toma al vencer el cache (`HL_TTL_MIN`, 30 min). Si HL no contesta se reutiliza lo último que
+  dio; si nunca dio nada, el agente responde que la IA no está disponible (503). **Respaldo**
   (opcional, `HL_AGENTE_RESPALDO`): un tercer agente en HL, idealmente de otro proveedor. Si el
   proveedor de VIDA o de Vico falla antes de empezar a contestar (caída, sobrecarga, límite,
-  timeout, llave inválida o cuenta sin saldo), el turno se repite con él; y si HL no da la llave
-  del agente (caducada o desactivada en el portal), el agente corre directo con la de respaldo.
-  Cada desvío queda en el log.
+  timeout, llave inválida o cuenta sin saldo), el turno se repite con él; y si HL no da el agente
+  (llave caducada o desactivada en el portal), el agente corre directo con el de respaldo. Cada
+  desvío queda en el log.
 - **VIDA (agente IA)**: chat que consulta la base de datos en lenguaje natural (solo SELECT).
   Cada respuesta se puede exportar a PDF con la pregunta que la originó y su formato
   (tablas, listas, negritas, código).

@@ -1,15 +1,28 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { HlClienteError, agenteConfigurado, obtenerLlave, type AgenteHl, type EntornoHl } from "./hl-cliente";
+import {
+  HlClienteError,
+  agenteConfigurado,
+  configProxy,
+  obtenerAgente,
+  type AgenteHl,
+  type EntornoHl,
+} from "./hl-cliente";
 
 // Adaptador de proveedor para los agentes (patrón de kyk-server-web): el loop
 // del agente siempre habla "formato Anthropic" (mensajes con bloques tool_use /
 // tool_result) y aquí se enruta por proveedor.
 //
-// Proveedor, modelo y llave salen de HL Servidor (hl-cliente.ts), uno por
-// agente: VIDA con HL_AGENTE_VIDA y Vico —mostrador, página web y WhatsApp—
-// con HL_AGENTE_VICO. Del .env ya no se lee ningún modelo ni llave de
-// proveedor: cambiar de modelo o rotar la llave se hace en el portal de HL.
+// Proveedor y modelo salen de HL Console (hl-cliente.ts), uno por agente: VIDA
+// con HL_AGENTE_VIDA y Vico —mostrador, página web y WhatsApp— con
+// HL_AGENTE_VICO. Del .env ya no se lee ningún modelo ni llave de proveedor:
+// eso se administra en el portal de HL.
+//
+// Las llamadas van por el PROXY de HL: el SDK oficial apunta a
+// /api/ws/proxy/<uuid> con la key de la app, y HL inyecta la llave real y fija
+// el modelo del agente. Esta aplicación nunca tiene en memoria una llave de
+// Anthropic ni de OpenAI; si este servidor se vuelve a comprometer, no hay
+// llaves de proveedor que robarle.
 //
 // Respaldo: si HL_AGENTE_RESPALDO está configurado, la credencial de cada
 // agente lleva adentro la de respaldo. Si el turno falla por causas del
@@ -20,14 +33,21 @@ import { HlClienteError, agenteConfigurado, obtenerLlave, type AgenteHl, type En
 /** Proveedores que este adaptador sabe correr. */
 export type ProveedorIA = "claude" | "openai";
 
-/** Con qué corre un turno: lo que HL entrega para cada agente. */
+/** Con qué corre un turno: lo que HL dice del agente y su entrada al proxy. */
 export interface CredencialIA {
   proveedor: ProveedorIA;
   modelo: string;
-  llave: string;
+  /** Entrada del proxy de HL para este agente; la llave del proveedor no llega aquí. */
+  baseURL: string;
+  headers: Record<string, string>;
   /** A qué credencial cae el turno si esta falla (HL_AGENTE_RESPALDO); null o ausente = sin respaldo. */
   respaldo?: CredencialIA | null;
+  /** De qué agente de HL salió: permite volver a pedirla si HL avisa que cambió de proveedor. */
+  agente?: AgenteHl;
 }
+
+/** El SDK exige una llave; la real la pone HL en el proxy. */
+const LLAVE_DE_PASO = "hl";
 
 export interface UsoHerramienta {
   id: string;
@@ -59,23 +79,29 @@ export function proveedorSoportado(proveedor: string): ProveedorIA | null {
   return limpio === "claude" || limpio === "openai" ? limpio : null;
 }
 
+export interface DependenciasHl {
+  /** Quién le pregunta a HL por el agente (inyectable en pruebas). */
+  obtener?: typeof obtenerAgente;
+  env?: EntornoHl;
+}
+
 /**
- * Proveedor, modelo y llave con que corre el agente, según HL. Sube un
- * HlClienteError si HL no contesta (y no hay llave previa en cache) o si
+ * Proveedor, modelo y entrada al proxy con que corre el agente, según HL. Sube
+ * un HlClienteError si HL no contesta (y no hay nada previo en cache) o si
  * asigna un proveedor que aquí no se sabe correr.
  */
 export async function credencialDeAgente(
   agente: AgenteHl,
-  obtener: typeof obtenerLlave = obtenerLlave
+  { obtener = obtenerAgente, env = process.env }: DependenciasHl = {}
 ): Promise<CredencialIA> {
-  const { proveedor, modelo, llave } = await obtener(agente);
+  const { proveedor, modelo } = await obtener(agente, { env });
   const soportado = proveedorSoportado(proveedor);
   if (!soportado) {
     throw new HlClienteError(
       `HL asignó al agente ${agente} el proveedor "${proveedor}", que este sistema no sabe correr (solo claude u openai)`
     );
   }
-  return { proveedor: soportado, modelo, llave };
+  return { proveedor: soportado, modelo, ...configProxy(agente, env), agente };
 }
 
 /** Lo que ve quien usa el agente cuando HL no dio credencial; el detalle va al log. */
@@ -83,14 +109,8 @@ export const ERROR_SIN_IA = "El servicio de IA no está disponible en este momen
 
 export type CredencialParaRuta = { ok: true; credencial: CredencialIA } | { ok: false; error: string };
 
-export interface DependenciasRuta {
-  /** Quién pide las llaves a HL (inyectable en pruebas). */
-  obtener?: typeof obtenerLlave;
-  env?: EntornoHl;
-}
-
 function mismaCredencial(a: CredencialIA, b: CredencialIA): boolean {
-  return a.proveedor === b.proveedor && a.modelo === b.modelo && a.llave === b.llave;
+  return a.proveedor === b.proveedor && a.modelo === b.modelo && a.baseURL === b.baseURL;
 }
 
 /**
@@ -99,18 +119,20 @@ function mismaCredencial(a: CredencialIA, b: CredencialIA): boolean {
  * inválida, IP no autorizada, llave caducada, proveedor no soportado) queda en
  * el log, que es donde sirve.
  *
- * El respaldo es opcional (HL_AGENTE_RESPALDO) y se pide junto con la llave
- * del agente, sin sumar espera. Si HL no da la del agente pero sí la de
- * respaldo —la llave del agente caducó o está desactivada en el portal—, el
- * agente corre con la de respaldo en vez de quedarse mudo.
+ * El respaldo es opcional (HL_AGENTE_RESPALDO) y se pide junto con el agente,
+ * sin sumar espera. Si HL no da el del agente pero sí el de respaldo —la llave
+ * del agente caducó o está desactivada en el portal—, el agente corre con la de
+ * respaldo en vez de quedarse mudo.
  */
 export async function credencialParaRuta(
   agente: Exclude<AgenteHl, "respaldo">,
-  { obtener = obtenerLlave, env = process.env }: DependenciasRuta = {}
+  { obtener = obtenerAgente, env = process.env }: DependenciasHl = {}
 ): Promise<CredencialParaRuta> {
   const [principal, respaldo] = await Promise.allSettled([
-    credencialDeAgente(agente, obtener),
-    agenteConfigurado("respaldo", env) ? credencialDeAgente("respaldo", obtener) : Promise.resolve(null),
+    credencialDeAgente(agente, { obtener, env }),
+    agenteConfigurado("respaldo", env)
+      ? credencialDeAgente("respaldo", { obtener, env })
+      : Promise.resolve(null),
   ]);
 
   if (respaldo.status === "rejected") {
@@ -154,6 +176,35 @@ export function esFalloDelServicio(error: unknown): boolean {
   return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
+/** Header con que HL Console codifica el motivo de un rechazo del proxy. */
+const HL_ERROR_HEADER = "x-hl-error";
+const PROVEEDOR_CAMBIADO = "PROVEEDOR_CAMBIADO";
+
+function headerDeError(error: unknown, nombre: string): string | null {
+  const headers = (error as { headers?: unknown }).headers;
+  if (!headers) return null;
+  if (typeof (headers as Headers).get === "function") return (headers as Headers).get(nombre);
+  const plano = headers as Record<string, string | undefined>;
+  return plano[nombre] ?? plano[nombre.toLowerCase()] ?? null;
+}
+
+/**
+ * ¿HL avisó (422 + X-HL-Error: PROVEEDOR_CAMBIADO) que el agente ya corre en
+ * otro proveedor? Pasa cuando en el portal cambian la llave del agente de
+ * Claude a OpenAI (o al revés) y esta app aún tiene en cache el proveedor
+ * anterior: el SDK que se usó ya no es el que toca.
+ */
+export function esCambioDeProveedor(error: unknown): boolean {
+  const status =
+    error instanceof Anthropic.APIError || error instanceof OpenAI.APIError ? error.status : undefined;
+  return status === 422 && headerDeError(error, HL_ERROR_HEADER) === PROVEEDOR_CAMBIADO;
+}
+
+/** Vuelve a preguntar a HL por el agente saltándose el cache. */
+function refrescarCredencial(agente: AgenteHl): Promise<CredencialIA> {
+  return credencialDeAgente(agente, { obtener: (a, o) => obtenerAgente(a, { ...o, forzar: true }) });
+}
+
 function describirError(error: unknown): string {
   if (error instanceof Anthropic.APIError || error instanceof OpenAI.APIError) {
     return `${error.status ?? "sin conexión"}: ${error.message}`;
@@ -166,6 +217,8 @@ export interface OpcionesTurno {
   respaldo?: CredencialIA | null;
   /** Quién ejecuta el turno contra el proveedor (inyectable en pruebas). */
   ejecutar?: (turno: TurnoAgente) => Promise<ResultadoTurno>;
+  /** Quién vuelve a pedir la credencial a HL cuando avisa que el agente cambió de proveedor (inyectable en pruebas). */
+  refrescar?: (agente: AgenteHl) => Promise<CredencialIA>;
 }
 
 function ejecutarTurno(turno: TurnoAgente): Promise<ResultadoTurno> {
@@ -173,14 +226,16 @@ function ejecutarTurno(turno: TurnoAgente): Promise<ResultadoTurno> {
 }
 
 /**
- * Corre un turno del agente y, si hay respaldo y el principal falla antes de
- * empezar a contestar, lo repite con él. Con texto ya emitido no se reintenta:
- * el usuario lo vería dos veces.
+ * Corre un turno del agente. Si falla antes de empezar a contestar:
+ *   - con aviso de HL de que el agente cambió de proveedor, se refresca la
+ *     credencial y se repite el turno con el SDK que ahora toca;
+ *   - con fallo del servicio y respaldo disponible, se repite con el respaldo.
+ * Con texto ya emitido no se reintenta: el usuario lo vería dos veces.
  */
 export async function correrTurnoAgente(turno: TurnoAgente, opciones: OpcionesTurno = {}): Promise<ResultadoTurno> {
   const ejecutar = opciones.ejecutar ?? ejecutarTurno;
+  const refrescar = opciones.refrescar ?? refrescarCredencial;
   const respaldo = opciones.respaldo !== undefined ? opciones.respaldo : (turno.respaldo ?? null);
-  if (!respaldo) return ejecutar(turno);
 
   let emitido = false;
   const alTexto = (fragmento: string) => {
@@ -190,11 +245,19 @@ export async function correrTurnoAgente(turno: TurnoAgente, opciones: OpcionesTu
   try {
     return await ejecutar({ ...turno, alTexto });
   } catch (error) {
-    if (emitido || !esFalloDelServicio(error)) throw error;
+    if (emitido) throw error;
+
+    if (esCambioDeProveedor(error) && turno.agente) {
+      const nueva = await refrescar(turno.agente);
+      console.warn(`[hl] el agente ${turno.agente} ahora corre con ${nueva.proveedor} / ${nueva.modelo}; se repite el turno`);
+      return ejecutar({ ...turno, ...nueva, alTexto, respaldo: null });
+    }
+
+    if (!respaldo || !esFalloDelServicio(error)) throw error;
     console.warn(`[respaldo] ${turno.modelo} falló (${describirError(error)}); se repite el turno con ${respaldo.modelo}`);
     try {
       // El respaldo no encadena otro respaldo: un solo reintento por turno.
-      return await ejecutar({ ...turno, ...respaldo, respaldo: null });
+      return await ejecutar({ ...turno, ...respaldo, alTexto, respaldo: null });
     } catch (errorRespaldo) {
       console.error(`[respaldo] ${respaldo.modelo} también falló (${describirError(errorRespaldo)})`);
       throw errorRespaldo;
@@ -205,7 +268,12 @@ export async function correrTurnoAgente(turno: TurnoAgente, opciones: OpcionesTu
 // ---------- Anthropic ----------
 
 async function turnoAnthropic(turno: TurnoAgente): Promise<ResultadoTurno> {
-  const anthropic = new Anthropic({ apiKey: turno.llave });
+  // Por el proxy de HL: la llave va de paso y HL la sustituye por la real.
+  const anthropic = new Anthropic({
+    baseURL: turno.baseURL,
+    apiKey: LLAVE_DE_PASO,
+    defaultHeaders: turno.headers,
+  });
   const stream = anthropic.messages.stream({
     model: turno.modelo,
     max_tokens: turno.maxTokens,
@@ -273,7 +341,12 @@ function traducirMensajes(sistema: string, mensajes: Anthropic.MessageParam[]): 
 }
 
 async function turnoOpenAI(turno: TurnoAgente): Promise<ResultadoTurno> {
-  const openai = new OpenAI({ apiKey: turno.llave });
+  // El SDK de OpenAI cuelga las rutas de la baseURL, así que el proxy lleva /v1.
+  const openai = new OpenAI({
+    baseURL: `${turno.baseURL}/v1`,
+    apiKey: LLAVE_DE_PASO,
+    defaultHeaders: turno.headers,
+  });
   // Los modelos gpt-5.x son razonadores; chat.completions NO admite function
   // tools con reasoning_effort activo, así que se fuerza a 'none' (además va
   // más rápido para un agente con herramientas).

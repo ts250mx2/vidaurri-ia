@@ -6,16 +6,44 @@ import {
   correrTurnoAgente,
   credencialDeAgente,
   credencialParaRuta,
+  esCambioDeProveedor,
   esFalloDelServicio,
   proveedorSoportado,
   type CredencialIA,
   type ResultadoTurno,
   type TurnoAgente,
 } from "./agente-modelo";
-import { HlClienteError, type AgenteHl, type EntornoHl, type LlaveIA } from "./hl-cliente";
+import { HlClienteError, type AgenteHl, type AgenteIA, type EntornoHl } from "./hl-cliente";
 
-const PRINCIPAL: CredencialIA = { proveedor: "claude", modelo: "claude-sonnet-5", llave: "sk-ant-prueba" };
-const RESPALDO: CredencialIA = { proveedor: "openai", modelo: "gpt-5.6-sol", llave: "sk-prueba" };
+const UUID_VIDA = "11111111-2222-4333-8444-555555555555";
+const UUID_VICO = "66666666-7777-4888-9999-aaaaaaaaaaaa";
+const UUID_RESPALDO = "0b7e5f3c-1d2a-4c9e-8f00-6a5b4c3d2e1f";
+const HL_URL = "http://hl.prueba:3056";
+const HL_KEY = `hl_${"a".repeat(48)}`;
+
+const SIN_RESPALDO: EntornoHl = {
+  HL_URL,
+  HL_API_KEY: HL_KEY,
+  HL_AGENTE_VIDA: UUID_VIDA,
+  HL_AGENTE_VICO: UUID_VICO,
+};
+const CON_RESPALDO: EntornoHl = { ...SIN_RESPALDO, HL_AGENTE_RESPALDO: UUID_RESPALDO };
+
+const CABECERAS = { "X-HL-Key": HL_KEY };
+const PRINCIPAL: CredencialIA = {
+  proveedor: "claude",
+  modelo: "claude-sonnet-5",
+  baseURL: `${HL_URL}/api/ws/proxy/${UUID_VICO}`,
+  headers: CABECERAS,
+  agente: "vico",
+};
+const RESPALDO: CredencialIA = {
+  proveedor: "openai",
+  modelo: "gpt-5.6-sol",
+  baseURL: `${HL_URL}/api/ws/proxy/${UUID_RESPALDO}`,
+  headers: CABECERAS,
+  agente: "respaldo",
+};
 
 function turnoDePrueba(alTexto: (f: string) => void = () => {}): TurnoAgente {
   return {
@@ -36,22 +64,26 @@ function errorAnthropic(status: number, mensaje = "falla"): unknown {
   return Anthropic.APIError.generate(status, { type: "error", error: { type: "x", message: mensaje } }, mensaje, new Headers());
 }
 
-function llaveHl(parcial: Partial<LlaveIA> = {}): LlaveIA {
+function agenteHl(parcial: Partial<AgenteIA> = {}): AgenteIA {
   return {
-    uuid: "66666666-7777-4888-9999-aaaaaaaaaaaa",
-    agente: "Asistente VICO",
+    uuid: UUID_VICO,
+    nombre: "Asistente VICO",
     proveedor: "claude",
     modelo: "claude-sonnet-5",
-    llave: "sk-ant-prueba",
     caducidad: null,
     ...parcial,
   };
 }
 
-const LLAVE_RESPALDO = llaveHl({ agente: "Respaldo Vidaurri", proveedor: "openai", modelo: "gpt-5.6-sol", llave: "sk-prueba" });
+const AGENTE_RESPALDO = agenteHl({
+  uuid: UUID_RESPALDO,
+  nombre: "Respaldo Vidaurri",
+  proveedor: "openai",
+  modelo: "gpt-5.6-sol",
+});
 
-/** HL de mentiras: por agente, la llave que da o el error con que contesta. */
-function hlDoble(porAgente: Partial<Record<AgenteHl, LlaveIA | Error>>) {
+/** HL de mentiras: por agente, lo que responde o el error con que contesta. */
+function hlDoble(porAgente: Partial<Record<AgenteHl, AgenteIA | Error>>) {
   return vi.fn(async (agente: AgenteHl) => {
     const valor = porAgente[agente];
     if (valor instanceof Error) throw valor;
@@ -59,9 +91,6 @@ function hlDoble(porAgente: Partial<Record<AgenteHl, LlaveIA | Error>>) {
     return valor;
   });
 }
-
-const SIN_RESPALDO: EntornoHl = { HL_AGENTE_VIDA: "uuid-vida", HL_AGENTE_VICO: "uuid-vico" };
-const CON_RESPALDO: EntornoHl = { ...SIN_RESPALDO, HL_AGENTE_RESPALDO: "uuid-respaldo" };
 
 describe("credencial de cada agente desde HL", () => {
   it("claude y openai se corren; gemini u otro no", () => {
@@ -71,19 +100,20 @@ describe("credencial de cada agente desde HL", () => {
     expect(proveedorSoportado("otro")).toBeNull();
   });
 
-  it("arma la credencial del agente con el proveedor, el modelo y la llave que manda HL", async () => {
-    const obtener = vi.fn(async () => llaveHl());
+  it("la credencial lleva el proveedor y el modelo de HL, y la entrada al proxy del agente", async () => {
+    const obtener = hlDoble({ vico: agenteHl() });
 
-    const credencial = await credencialDeAgente("vico", obtener);
+    const credencial = await credencialDeAgente("vico", { obtener, env: SIN_RESPALDO });
 
     expect(credencial).toEqual(PRINCIPAL);
-    expect(obtener).toHaveBeenCalledWith("vico");
+    // La llave del proveedor no aparece por ningún lado: la pone HL en el proxy.
+    expect(JSON.stringify(credencial)).not.toContain("sk-");
   });
 
   it("un proveedor que no se sabe correr ni se intenta: sube HlClienteError", async () => {
-    const obtener = vi.fn(async () => llaveHl({ proveedor: "gemini", modelo: "gemini-3" }));
+    const obtener = hlDoble({ vida: agenteHl({ proveedor: "gemini", modelo: "gemini-3" }) });
 
-    await expect(credencialDeAgente("vida", obtener)).rejects.toBeInstanceOf(HlClienteError);
+    await expect(credencialDeAgente("vida", { obtener, env: SIN_RESPALDO })).rejects.toBeInstanceOf(HlClienteError);
   });
 });
 
@@ -92,8 +122,8 @@ describe("credencialParaRuta", () => {
     vi.restoreAllMocks();
   });
 
-  it("sin HL_AGENTE_RESPALDO solo se pide la llave del agente y no hay respaldo", async () => {
-    const obtener = hlDoble({ vico: llaveHl() });
+  it("sin HL_AGENTE_RESPALDO solo se pregunta por el agente y no hay respaldo", async () => {
+    const obtener = hlDoble({ vico: agenteHl() });
 
     const ruta = await credencialParaRuta("vico", { obtener, env: SIN_RESPALDO });
 
@@ -102,16 +132,16 @@ describe("credencialParaRuta", () => {
   });
 
   it("con respaldo configurado, la credencial del agente lleva adentro la de respaldo", async () => {
-    const obtener = hlDoble({ vico: llaveHl(), respaldo: LLAVE_RESPALDO });
+    const obtener = hlDoble({ vico: agenteHl(), respaldo: AGENTE_RESPALDO });
 
     const ruta = await credencialParaRuta("vico", { obtener, env: CON_RESPALDO });
 
     expect(ruta).toEqual({ ok: true, credencial: { ...PRINCIPAL, respaldo: RESPALDO } });
   });
 
-  it("si HL no da la de respaldo, el agente corre igual sin respaldo y el motivo queda en el log", async () => {
+  it("si HL no da el de respaldo, el agente corre igual sin respaldo y el motivo queda en el log", async () => {
     const registro = vi.spyOn(console, "error").mockImplementation(() => {});
-    const obtener = hlDoble({ vico: llaveHl() });
+    const obtener = hlDoble({ vico: agenteHl() });
 
     const ruta = await credencialParaRuta("vico", { obtener, env: CON_RESPALDO });
 
@@ -119,12 +149,12 @@ describe("credencialParaRuta", () => {
     expect(registro).toHaveBeenCalledWith(expect.stringContaining("respaldo"), expect.any(HlClienteError));
   });
 
-  it("si HL no da la del agente (llave caducada) pero sí la de respaldo, el agente corre con la de respaldo", async () => {
+  it("si HL no da el del agente (llave caducada) pero sí el de respaldo, el agente corre con ese", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const obtener = hlDoble({
       vida: new HlClienteError("La llave del agente ya caduco", 403),
-      respaldo: LLAVE_RESPALDO,
+      respaldo: AGENTE_RESPALDO,
     });
 
     const ruta = await credencialParaRuta("vida", { obtener, env: CON_RESPALDO });
@@ -132,7 +162,7 @@ describe("credencialParaRuta", () => {
     expect(ruta).toEqual({ ok: true, credencial: { ...RESPALDO, respaldo: null } });
   });
 
-  it("sin la del agente ni la de respaldo, la ruta recibe un mensaje presentable y no el detalle", async () => {
+  it("sin el del agente ni el de respaldo, la ruta recibe un mensaje presentable y no el detalle", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const obtener = hlDoble({ vida: new HlClienteError("IP no autorizada", 403) });
 
@@ -141,12 +171,27 @@ describe("credencialParaRuta", () => {
     expect(ruta).toEqual({ ok: false, error: ERROR_SIN_IA });
   });
 
-  it("un respaldo idéntico al principal no sirve de nada: se descarta", async () => {
-    const obtener = hlDoble({ vico: llaveHl(), respaldo: llaveHl({ agente: "Respaldo Vidaurri" }) });
+  it("si HL_AGENTE_RESPALDO apunta al mismo agente, no sirve de respaldo: se descarta", async () => {
+    const obtener = hlDoble({ vico: agenteHl(), respaldo: agenteHl() });
+    const mismoAgente: EntornoHl = { ...SIN_RESPALDO, HL_AGENTE_RESPALDO: UUID_VICO };
+
+    const ruta = await credencialParaRuta("vico", { obtener, env: mismoAgente });
+
+    expect(ruta.ok && ruta.credencial.respaldo).toBeNull();
+  });
+
+  it("otro agente de HL con el mismo proveedor y modelo sí sirve: detrás hay otra llave", async () => {
+    const obtener = hlDoble({
+      vico: agenteHl(),
+      respaldo: agenteHl({ uuid: UUID_RESPALDO, nombre: "Respaldo Vidaurri" }),
+    });
 
     const ruta = await credencialParaRuta("vico", { obtener, env: CON_RESPALDO });
 
-    expect(ruta).toEqual({ ok: true, credencial: { ...PRINCIPAL, respaldo: null } });
+    expect(ruta.ok && ruta.credencial.respaldo).toMatchObject({
+      modelo: "claude-sonnet-5",
+      baseURL: `${HL_URL}/api/ws/proxy/${UUID_RESPALDO}`,
+    });
   });
 });
 
@@ -176,9 +221,67 @@ describe("esFalloDelServicio", () => {
   });
 });
 
+/** Rechazo del proxy de HL cuando la app llamó con el SDK del proveedor anterior. */
+function errorProveedorCambiado(): unknown {
+  return OpenAI.APIError.generate(
+    422,
+    { error: "El agente ahora corre con OpenAI" },
+    "El agente ahora corre con OpenAI",
+    new Headers({ "x-hl-error": "PROVEEDOR_CAMBIADO" })
+  );
+}
+
+describe("esCambioDeProveedor", () => {
+  it("es el 422 de HL con X-HL-Error: PROVEEDOR_CAMBIADO, venga del SDK que venga", () => {
+    expect(esCambioDeProveedor(errorProveedorCambiado())).toBe(true);
+    const deAnthropic = Anthropic.APIError.generate(
+      422,
+      { type: "error", error: { type: "x", message: "cambió" } },
+      "cambió",
+      new Headers({ "X-HL-Error": "PROVEEDOR_CAMBIADO" })
+    );
+    expect(esCambioDeProveedor(deAnthropic)).toBe(true);
+  });
+
+  it("un 422 sin ese header es otra cosa (petición inválida del proveedor) y no lo es un 404", () => {
+    expect(esCambioDeProveedor(OpenAI.APIError.generate(422, {}, "invalid", new Headers()))).toBe(false);
+    expect(esCambioDeProveedor(errorAnthropic(404))).toBe(false);
+    expect(esCambioDeProveedor(new Error("x"))).toBe(false);
+  });
+});
+
 describe("correrTurnoAgente", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("si HL avisa que el agente cambió de proveedor, refresca la credencial y repite el turno con el SDK nuevo", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const nueva: CredencialIA = { ...PRINCIPAL, proveedor: "openai", modelo: "gpt-5.6-sol", agente: "vida" };
+    const refrescar = vi.fn(async () => nueva);
+    const ejecutar = vi
+      .fn<(t: TurnoAgente) => Promise<ResultadoTurno>>()
+      .mockRejectedValueOnce(errorProveedorCambiado())
+      .mockImplementationOnce(async (t) => resultado(t.modelo, "ya con openai"));
+
+    const salida = await correrTurnoAgente({ ...turnoDePrueba(), agente: "vida", respaldo: RESPALDO }, { ejecutar, refrescar });
+
+    expect(refrescar).toHaveBeenCalledWith("vida");
+    expect(salida.modelo).toBe("gpt-5.6-sol");
+    expect(ejecutar).toHaveBeenCalledTimes(2);
+    // Se repite con el proveedor nuevo del MISMO agente, no con el respaldo, y con la misma conversación.
+    expect(ejecutar.mock.calls[1][0]).toMatchObject({ proveedor: "openai", modelo: "gpt-5.6-sol", baseURL: PRINCIPAL.baseURL, respaldo: null });
+    expect(ejecutar.mock.calls[1][0].mensajes).toEqual(turnoDePrueba().mensajes);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("ahora corre con openai / gpt-5.6-sol"));
+  });
+
+  it("sin saber de qué agente salió la credencial, el aviso de cambio de proveedor sube tal cual", async () => {
+    const refrescar = vi.fn();
+    const ejecutar = vi.fn<(t: TurnoAgente) => Promise<ResultadoTurno>>().mockRejectedValue(errorProveedorCambiado());
+
+    await expect(correrTurnoAgente({ ...turnoDePrueba(), agente: undefined }, { ejecutar, refrescar })).rejects.toMatchObject({ status: 422 });
+    expect(refrescar).not.toHaveBeenCalled();
+    expect(ejecutar).toHaveBeenCalledTimes(1);
   });
 
   it("sin respaldo corre una sola vez con la credencial del agente y el error sube tal cual", async () => {
@@ -201,7 +304,7 @@ describe("correrTurnoAgente", () => {
     expect(salida.modelo).toBe("gpt-5.6-sol");
     expect(ejecutar).toHaveBeenCalledTimes(2);
     expect(ejecutar.mock.calls[0][0]).toMatchObject(PRINCIPAL);
-    // El respaldo corre con SU proveedor y SU llave, no con los del principal.
+    // El respaldo corre con SU proveedor y SU entrada al proxy, no con las del principal.
     expect(ejecutar.mock.calls[1][0]).toMatchObject(RESPALDO);
     expect(ejecutar.mock.calls[1][0].mensajes).toEqual(turnoDePrueba().mensajes);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("se repite el turno con gpt-5.6-sol"));

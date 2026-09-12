@@ -1,23 +1,28 @@
 /**
- * Cliente de HL Servidor: de ahí salen el proveedor, el modelo y la llave de
- * cada agente de IA. Del .env solo se leen los datos para hablar con HL:
- *   HL_URL          = http://localhost:3055         (sin diagonal final)
- *   HL_API_KEY      = hl_ + 48 hex                  (key de acceso de esta app)
- *   HL_AGENTE_VIDA  = UUID del agente VIDA
- *   HL_AGENTE_VICO  = UUID del agente Vico (mostrador, página web y WhatsApp)
- *   HL_AGENTE_RESPALDO = UUID del agente de respaldo (opcional: si el
- *                        proveedor de VIDA o de Vico falla, el turno se
- *                        repite con él)
- *   HL_TTL_MIN      = 30                            (opcional, minutos de cache)
+ * Cliente de HL Console: de ahí salen el proveedor y el modelo de cada agente
+ * de IA, y por ahí pasan las llamadas al proveedor. Del .env solo se leen los
+ * datos para hablar con HL:
+ *   HL_URL             = http://127.0.0.1:3056  (sin diagonal final; HL sirve HTTP plano)
+ *   HL_API_KEY         = hl_ + 48 hex           (key de acceso de esta app)
+ *   HL_AGENTE_VIDA     = UUID del agente VIDA
+ *   HL_AGENTE_VICO     = UUID del agente Vico (mostrador, página web y WhatsApp)
+ *   HL_AGENTE_RESPALDO = UUID del agente de respaldo (opcional: si el proveedor
+ *                        de VIDA o de Vico falla, el turno se repite con él)
+ *   HL_TTL_MIN         = 30                     (opcional, minutos de cache)
  *
- * Copia adaptada de hl-servidor/cliente/hl-cliente.ts. El original atiende un
+ * MODO PROXY: esta aplicación nunca recibe la llave del proveedor. El SDK
+ * oficial apunta a `/api/ws/proxy/<uuid>` (configProxy) y HL inyecta la llave y
+ * fija el modelo del agente. Por eso aquí no hace falta HL_SECRET ni se
+ * descifra nada: de `/api/ws/llave` solo se toman proveedor y modelo, para
+ * saber qué SDK usar y qué anotar en la bitácora.
+ *
+ * Copia adaptada de hl-servidor/cliente/hl-cliente.ts: el original atiende un
  * solo agente (HL_AGENTE) con un solo cache; aquí cada agente tiene su UUID y
- * su propio cache, porque VIDA y Vico corren en el mismo proceso y con un cache
- * compartido el segundo leería la llave del primero. La key de acceso se llama
- * HL_API_KEY en esta app.
+ * su propio cache, porque VIDA y Vico corren en el mismo proceso. La key de
+ * acceso se llama HL_API_KEY en esta app.
  *
- * Si rotas la llave o cambias el modelo en el portal, se toma al vencer el
- * cache (HL_TTL_MIN) o al llamar limpiarCacheLlave().
+ * Si cambias el modelo o rotas la llave en el portal, se toma al vencer el
+ * cache (HL_TTL_MIN) o al llamar limpiarCacheAgentes().
  */
 
 /** vida y vico son los agentes; respaldo es la credencial a la que caen los dos si su proveedor falla. */
@@ -34,12 +39,13 @@ export function agenteConfigurado(agente: AgenteHl, env: EntornoHl = process.env
   return (env[VARIABLE_AGENTE[agente]] ?? "").trim() !== "";
 }
 
-export interface LlaveIA {
+/** Lo que HL sabe del agente. La llave NO viene aquí: va por el proxy. */
+export interface AgenteIA {
   uuid: string;
-  agente: string;
+  /** Nombre del agente en el portal ("Asistente VIDA"). */
+  nombre: string;
   proveedor: "claude" | "openai" | "gemini" | "otro" | string;
   modelo: string;
-  llave: string;
   caducidad: string | null;
 }
 
@@ -57,7 +63,7 @@ export interface HlClienteConfig {
 /** Variables de entorno que importan aquí (process.env o un doble en pruebas). */
 export type EntornoHl = Record<string, string | undefined>;
 
-export interface OpcionesLlave {
+export interface OpcionesAgente {
   /** Ignora el cache y vuelve a preguntar a HL. */
   forzar?: boolean;
   env?: EntornoHl;
@@ -104,26 +110,63 @@ export function leerConfigHl(agente: AgenteHl, env: EntornoHl = process.env): Hl
   };
 }
 
+export interface ConfigProxy {
+  /** baseURL para el SDK del proveedor; al de OpenAI hay que agregarle /v1. */
+  baseURL: string;
+  headers: Record<string, string>;
+}
+
+/**
+ * Cómo apuntar el SDK oficial al proxy de HL. La llave que pide el SDK es de
+ * mentiras ("hl"): HL la sustituye por la real del agente, igual que el modelo.
+ */
+export function configProxy(agente: AgenteHl, env: EntornoHl = process.env): ConfigProxy {
+  const config = leerConfigHl(agente, env);
+  return {
+    baseURL: `${config.url}/api/ws/proxy/${config.agente}`,
+    headers: { "X-HL-Key": config.key },
+  };
+}
+
 function esTexto(valor: unknown): valor is string {
   return typeof valor === "string" && valor.trim() !== "";
 }
 
-/** Lo que manda HL no se confía sin revisar su forma: sin proveedor, modelo o llave no sirve. */
-function validarLlave(data: unknown): LlaveIA | null {
+/**
+ * Lo que manda HL no se confía sin revisar su forma. La llave no se mira
+ * siquiera: en modo proxy no sale del servidor de HL.
+ */
+function validarAgente(data: unknown): AgenteIA | null {
   if (typeof data !== "object" || data === null) return null;
   const d = data as Record<string, unknown>;
-  if (!esTexto(d.proveedor) || !esTexto(d.modelo) || !esTexto(d.llave)) return null;
+  if (!esTexto(d.proveedor) || !esTexto(d.modelo)) return null;
   return {
     uuid: typeof d.uuid === "string" ? d.uuid : "",
-    agente: typeof d.agente === "string" ? d.agente : "",
+    nombre: typeof d.agente === "string" ? d.agente : "",
     proveedor: d.proveedor.trim().toLowerCase(),
     modelo: d.modelo.trim(),
-    llave: d.llave.trim(),
     caducidad: typeof d.caducidad === "string" ? d.caducidad : null,
   };
 }
 
-async function consultarWs(config: HlClienteConfig, pedir: typeof fetch): Promise<LlaveIA> {
+/**
+ * "fetch failed" solo dice que no hubo respuesta: el motivo real (ECONNREFUSED,
+ * ENOTFOUND, un https:// contra un puerto que habla http…) viene en `cause`.
+ */
+function detalleDeRed(error: unknown, url: string): string {
+  if (!(error instanceof Error)) return "error de red";
+  const causa = error.cause;
+  if (!(causa instanceof Error)) return error.message;
+  const codigo = (causa as { code?: unknown }).code;
+  const detalle = `${error.message} (${typeof codigo === "string" ? `${codigo}: ` : ""}${causa.message})`;
+  // El tropiezo más común al configurar: HL sirve HTTP plano.
+  if (url.startsWith("https://") && /ssl|tls|wrong version|certificate|EPROTO/i.test(causa.message)) {
+    return `${detalle}. HL Console sirve HTTP plano: si no está detrás de un proxy con certificado, usa http:// en HL_URL`;
+  }
+  return detalle;
+}
+
+async function consultarWs(config: HlClienteConfig, pedir: typeof fetch): Promise<AgenteIA> {
   const url = `${config.url}/api/ws/llave/${config.agente}`;
   let response: Response;
   try {
@@ -133,42 +176,41 @@ async function consultarWs(config: HlClienteConfig, pedir: typeof fetch): Promis
       cache: "no-store",
     });
   } catch (error) {
-    const detalle = error instanceof Error ? error.message : "error de red";
-    throw new HlClienteError(`No se pudo conectar con HL Servidor (${url}): ${detalle}`);
+    throw new HlClienteError(`No se pudo conectar con HL Console (${url}): ${detalleDeRed(error, config.url)}`);
   }
 
   let body: { success?: unknown; data?: unknown; error?: unknown };
   try {
     body = (await response.json()) as typeof body;
   } catch {
-    throw new HlClienteError(`HL Servidor respondió ${response.status} sin JSON válido`, response.status);
+    throw new HlClienteError(`HL Console respondió ${response.status} sin JSON válido`, response.status);
   }
 
   if (!response.ok || body.success !== true) {
-    const mensaje = esTexto(body.error) ? body.error : `HL Servidor respondió ${response.status}`;
+    const mensaje = esTexto(body.error) ? body.error : `HL Console respondió ${response.status}`;
     throw new HlClienteError(mensaje, response.status);
   }
-  const llave = validarLlave(body.data);
-  if (!llave) throw new HlClienteError("HL Servidor respondió sin proveedor, modelo o llave", response.status);
-  return llave;
+  const agente = validarAgente(body.data);
+  if (!agente) throw new HlClienteError("HL Console respondió sin proveedor o sin modelo", response.status);
+  return agente;
 }
 
 interface EntradaCache {
-  valor: LlaveIA;
+  valor: AgenteIA;
   expira: number;
 }
 
-/** Por UUID del agente: VIDA y Vico nunca comparten entrada. */
+/** Por UUID del agente: VIDA, Vico y el respaldo nunca comparten entrada. */
 const cache = new Map<string, EntradaCache>();
-const enCurso = new Map<string, Promise<LlaveIA>>();
+const enCurso = new Map<string, Promise<AgenteIA>>();
 
 /**
- * Proveedor, modelo y llave del agente. Cachea en memoria durante HL_TTL_MIN
+ * Proveedor y modelo del agente, según HL. Cachea en memoria durante HL_TTL_MIN
  * minutos y junta las peticiones simultáneas del mismo agente en una sola. Si
  * el refresco falla y hay un valor previo, lo reutiliza para no dejar mudo al
  * agente mientras HL vuelve.
  */
-export async function obtenerLlave(agente: AgenteHl, opciones: OpcionesLlave = {}): Promise<LlaveIA> {
+export async function obtenerAgente(agente: AgenteHl, opciones: OpcionesAgente = {}): Promise<AgenteIA> {
   const config = leerConfigHl(agente, opciones.env ?? process.env);
   const ahora = opciones.ahora ?? Date.now;
   const clave = config.agente;
@@ -186,7 +228,7 @@ export async function obtenerLlave(agente: AgenteHl, opciones: OpcionesLlave = {
     .catch((error: unknown) => {
       const previa = cache.get(clave);
       if (previa) {
-        console.error(`[hl] falló el refresco de la llave de ${agente}; se reutiliza la anterior.`, error);
+        console.error(`[hl] falló el refresco del agente ${agente}; se reutiliza lo anterior.`, error);
         return previa.valor;
       }
       throw error;
@@ -198,7 +240,7 @@ export async function obtenerLlave(agente: AgenteHl, opciones: OpcionesLlave = {
   return peticion;
 }
 
-/** Descarta el cache de todos los agentes. Útil después de rotar la llave en el portal. */
-export function limpiarCacheLlave(): void {
+/** Descarta el cache de todos los agentes. Útil tras cambiar el modelo en el portal. */
+export function limpiarCacheAgentes(): void {
   cache.clear();
 }

@@ -216,7 +216,7 @@ describe("correrVendedor → alResultados", () => {
     const texto = await correrVendedor({
       pregunta: "busca facia versa",
       historial: [],
-      credencial: { proveedor: "claude", modelo: "claude-test", llave: "sk-ant-prueba" },
+      credencial: { proveedor: "claude", modelo: "claude-test", baseURL: "http://hl/api/ws/proxy/prueba", headers: {} },
       alResultados,
       alCodigos,
     });
@@ -242,7 +242,7 @@ describe("correrVendedor → alResultados", () => {
       .mockResolvedValueOnce({ contenido: [], usos: [] });
     const alResultados = vi.fn();
 
-    await correrVendedor({ pregunta: "x", historial: [], credencial: { proveedor: "claude", modelo: "claude-test", llave: "sk-ant-prueba" }, alResultados });
+    await correrVendedor({ pregunta: "x", historial: [], credencial: { proveedor: "claude", modelo: "claude-test", baseURL: "http://hl/api/ws/proxy/prueba", headers: {} }, alResultados });
 
     expect(alResultados).not.toHaveBeenCalled();
   });
