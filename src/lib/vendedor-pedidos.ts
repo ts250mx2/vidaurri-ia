@@ -59,6 +59,10 @@ export type ActorVendedor =
       telefono: string;
       descuento: number;
       permitirPedido: boolean;
+      /** Por dónde habla: WhatsApp (por defecto) o el área de clientes de la
+       *  web. Es el MISMO cliente y el mismo borrador (c:<telefono>); solo
+       *  cambia el canal con el que nace el pedido y se firma la bitácora. */
+      canal?: "whatsapp" | "web";
     }
   | {
       tipo: "vendedor";
@@ -73,16 +77,27 @@ export type ActorVendedor =
       descuento: number | null;
     }
   | {
-      /** Kiosco de autoservicio del piso: el cliente se atiende solo. No hay
-       *  padron ni descuento (precio de mostrador) y el pedido se manda con
-       *  un BOTON de la pantalla, nunca desde el chat. */
+      /** Kiosco de autoservicio del piso: el cliente se atiende solo y el
+       *  pedido se manda con un BOTON de la pantalla, nunca desde el chat.
+       *  Sin `cliente` es público general a precio de mostrador; con él, el
+       *  cliente del padrón que entró con su celular, con su descuento. */
       tipo: "kiosco";
       kiosco: string;
       sucursal: SucursalEntrega;
+      cliente: ClienteKiosco | null;
     };
 
+/** El cliente del padrón que entró al kiosco con su celular: lo justo para
+ *  que Vico sepa a quién atiende y con qué descuento cotiza. Sin celular ni
+ *  nada más: el pedido lo sella la ruta de envío con el padrón, no el chat. */
+export interface ClienteKiosco {
+  idCliente: number;
+  nombre: string;
+  descuento: number;
+}
+
 /** Actor que sí puede levantar pedidos (lo que despachan las tools). */
-type ActorConPedido = Exclude<ActorVendedor, { tipo: "anonimo" }>;
+export type ActorConPedido = Exclude<ActorVendedor, { tipo: "anonimo" }>;
 
 /** El vendedor y el kiosco siempre; el cliente solo si el padrón lo autoriza;
  *  el anónimo nunca. */
@@ -254,12 +269,22 @@ const HERRAMIENTAS_KIOSCO = [AGREGAR_AL_PEDIDO, VER_PEDIDO, QUITAR_DEL_PEDIDO];
  *  modelo podría inventarse el nombre de una tool que no le tocaba. */
 const PERMITIDAS_KIOSCO: ReadonlySet<string> = new Set(HERRAMIENTAS_KIOSCO.map((h) => h.name));
 
+/** ¿El pedido se manda con un BOTÓN de la pantalla y no desde el chat? El
+ *  kiosco del piso y el cliente del área de clientes de la web (actor cliente
+ *  en canal web): en los dos, Vico solo arma la lista; enviar, elegir la
+ *  sucursal y cancelar son de la pantalla. Por WhatsApp (canal por defecto)
+ *  el cliente sí confirma desde el chat, como siempre. */
+export function armaSoloEnPantalla(actor: ActorVendedor | undefined): boolean {
+  if (!actor) return false;
+  return actor.tipo === "kiosco" || (actor.tipo === "cliente" && actor.canal === "web");
+}
+
 /** Las tools de pedido que le tocan al actor: ninguna si no puede pedir;
  *  seleccionar_cliente solo para el vendedor (un cliente pide para sí mismo);
- *  el kiosco solo las tres de armar el pedido. */
+ *  el kiosco y el cliente web solo las tres de armar el pedido. */
 export function herramientasPedidoPara(actor: ActorVendedor | undefined): Anthropic.Tool[] {
   if (!puedePedir(actor)) return [];
-  if (actor.tipo === "kiosco") return [...HERRAMIENTAS_KIOSCO];
+  if (armaSoloEnPantalla(actor)) return [...HERRAMIENTAS_KIOSCO];
   const comunes = [AGREGAR_AL_PEDIDO, VER_PEDIDO, QUITAR_DEL_PEDIDO, CAMBIAR_SUCURSAL, CONFIRMAR_PEDIDO, CANCELAR_PEDIDO];
   return actor.tipo === "vendedor" ? [SELECCIONAR_CLIENTE, ...comunes] : comunes;
 }
@@ -378,12 +403,14 @@ function capturaDe(actor: ActorConPedido): ActorCaptura {
 }
 
 /** El vendedor captura desde el POS de vidaurri-page; el cliente, por
- *  WhatsApp; el kiosco, desde el aparato del piso. */
-function canalDe(actor: ActorConPedido): CanalPedido {
+ *  WhatsApp o desde el área de clientes de la web; el kiosco, desde el
+ *  aparato del piso. Pura: la prueban los tests. */
+export function canalDelActor(actor: ActorConPedido): CanalPedido {
   if (actor.tipo === "vendedor") return "mostrador";
   if (actor.tipo === "kiosco") return "kiosco";
-  return "whatsapp";
+  return actor.canal ?? "whatsapp";
 }
+const canalDe = canalDelActor;
 
 function usuarioDe(actor: ActorConPedido): string {
   if (actor.tipo === "vendedor") return actor.usuario;
@@ -392,10 +419,10 @@ function usuarioDe(actor: ActorConPedido): string {
 }
 
 /** Descuento con el que se cotiza la partida: el del cliente atendido (o
- *  ninguno = precio de mostrador, que es SIEMPRE el caso del kiosco). Nunca
- *  sale de lo que diga el modelo. */
+ *  ninguno = precio de mostrador, que en el kiosco es el caso mientras nadie
+ *  haya entrado con su celular). Nunca sale de lo que diga el modelo. */
 function descuentoDe(actor: ActorConPedido): number | null {
-  return actor.tipo === "kiosco" ? null : actor.descuento;
+  return actor.tipo === "kiosco" ? (actor.cliente?.descuento ?? null) : actor.descuento;
 }
 
 /** Dónde recoge por defecto: la sucursal del aparato en el kiosco; la casa en
@@ -406,20 +433,22 @@ function sucursalPorDefecto(actor: ActorConPedido): SucursalEntrega {
 
 function datosBorradorDe(actor: ActorConPedido, sucursal: SucursalEntrega): DatosBorrador {
   if (actor.tipo === "kiosco") {
-    // El kiosco no sabe a quién atiende hasta el final: el pedido nace como
-    // público general y la pantalla le pone nombre y celular al enviarlo.
+    // Sin cliente el kiosco no sabe a quién atiende hasta el final: el pedido
+    // nace como público general y la pantalla le pone nombre y celular al
+    // enviarlo. Con cliente nace a su nombre y con su descuento; el celular lo
+    // sella la ruta de envío desde el padrón (el actor no lo carga).
     return {
       canal: "kiosco",
-      idCliente: null,
-      cliente: PUBLICO_GENERAL,
+      idCliente: actor.cliente?.idCliente ?? null,
+      cliente: actor.cliente?.nombre ?? PUBLICO_GENERAL,
       telefono: null,
-      descuentoPct: 0,
+      descuentoPct: actor.cliente?.descuento ?? 0,
       sucursal,
     };
   }
   if (actor.tipo === "cliente") {
     return {
-      canal: "whatsapp",
+      canal: canalDe(actor),
       idCliente: actor.idCliente,
       cliente: actor.nombre,
       telefono: actor.telefono,
@@ -448,16 +477,30 @@ function borradorDe(actor: ActorConPedido): Promise<PedidoDetalle | null> {
  * llevan el descuento de aquel y no sirven para este.
  */
 function esDelClienteAtendido(pedido: PedidoDetalle, actor: ActorConPedido): boolean {
-  // El cliente de WhatsApp y el kiosco solo tienen borradores suyos.
-  if (actor.tipo !== "vendedor") return true;
+  // El cliente de WhatsApp solo tiene borradores suyos.
+  if (actor.tipo === "cliente") return true;
+  // En el kiosco el borrador es del APARATO: si alguien entró con su celular,
+  // el que quedó de antes (anónimo o de otro cliente) no es suyo.
+  if (actor.tipo === "kiosco") return pedido.idCliente === (actor.cliente?.idCliente ?? null);
   return pedido.idCliente === actor.idCliente;
+}
+
+/** A quién atiende el actor ahora, para hablarle al modelo de un borrador ajeno. */
+function nombreAtendido(actor: ActorConPedido): string {
+  if (actor.tipo === "vendedor") return actor.clienteNombre ?? PUBLICO_GENERAL;
+  if (actor.tipo === "kiosco") return actor.cliente?.nombre ?? PUBLICO_GENERAL;
+  return actor.nombre;
 }
 
 /** Error para el modelo cuando el borrador vivo no es del cliente en pantalla. */
 function errorClienteDistinto(pedido: PedidoDetalle, actor: ActorConPedido): string | null {
   if (esDelClienteAtendido(pedido, actor)) return null;
-  const atendido =
-    actor.tipo === "vendedor" ? (actor.clienteNombre ?? PUBLICO_GENERAL) : actor.tipo === "cliente" ? actor.nombre : PUBLICO_GENERAL;
+  const atendido = nombreAtendido(actor);
+  if (actor.tipo === "kiosco") {
+    // En el kiosco no hay vendedor que elija ni cancelar_pedido: la pantalla
+    // descarta el borrador al entrar, y agregar una pieza abre el suyo.
+    return `El pedido en pantalla era de ${pedido.cliente}, no de ${atendido}; al agregar una pieza se abre el pedido de ${atendido}.`;
+  }
   return `El pedido en captura es para ${pedido.cliente}, pero en pantalla está seleccionado ${atendido}. Pídele al vendedor que elija al cliente correcto, o cancela el pedido con cancelar_pedido para empezar otro.`;
 }
 
@@ -771,10 +814,12 @@ export async function ejecutarHerramientaPedido(uso: UsoHerramienta, actor: Acto
   if (!puedePedir(actor)) return JSON.stringify(conError("Este cliente no puede levantar pedidos por este canal"));
   // El kiosco solo arma el pedido: enviarlo, cancelarlo o cambiar de sucursal
   // no son suyas aunque el modelo se invente la llamada.
-  if (actor.tipo === "kiosco" && !PERMITIDAS_KIOSCO.has(uso.name)) {
+  if (armaSoloEnPantalla(actor) && !PERMITIDAS_KIOSCO.has(uso.name)) {
     return JSON.stringify(
       conError(
-        "Desde esta pantalla solo puedes armar el pedido: para mandarlo, el cliente toca el botón de enviar y captura sus datos."
+        actor.tipo === "kiosco"
+          ? "Desde esta pantalla solo puedes armar el pedido: para mandarlo, el cliente toca el botón de enviar y captura sus datos."
+          : "Desde este chat solo puedes armar el pedido: para mandarlo, el cliente toca el botón de enviar en la pantalla y ahí elige la sucursal."
       )
     );
   }

@@ -1,5 +1,6 @@
 import type { SesionKiosco } from "@/lib/auth-kiosco";
 import type { ArticuloParaPedido } from "@/lib/articulos-pedido";
+import type { ClienteDescuento } from "@/lib/clientes-descuento";
 import type { ActorCaptura, DatosBorrador } from "@/lib/db-pedidos";
 import {
   excedeLimite,
@@ -36,16 +37,18 @@ export const CLIENTE_KIOSCO = "Público general";
 
 export const ERROR_SIN_PEDIDO_KIOSCO = "Todavía no tienes piezas en tu pedido";
 
-/** Cabecera del borrador del kiosco: sin padrón, sin descuento y en la
- *  sucursal del aparato. Es la MISMA que arma Vico en vendedor-pedidos.ts:
+/** Cabecera del borrador del kiosco, en la sucursal del aparato. Sin cliente:
+ *  público general, sin padrón ni descuento. Con el cliente que entró con su
+ *  celular, gana él: el pedido nace a su nombre, con su celular y su
+ *  descuento del padrón. Es la MISMA que arma Vico en vendedor-pedidos.ts:
  *  los dos caminos tienen que abrir el mismo pedido. */
-export function datosBorradorKiosco(sesion: SesionKiosco): DatosBorrador {
+export function datosBorradorKiosco(sesion: SesionKiosco, cliente: ClienteDescuento | null = null): DatosBorrador {
   return {
     canal: CANAL_KIOSCO,
-    idCliente: null,
-    cliente: CLIENTE_KIOSCO,
-    telefono: null,
-    descuentoPct: 0,
+    idCliente: cliente?.id ?? null,
+    cliente: cliente?.cliente ?? CLIENTE_KIOSCO,
+    telefono: cliente?.telefono ?? null,
+    descuentoPct: cliente?.descuento ?? 0,
     sucursal: sesion.sucursal,
   };
 }
@@ -55,9 +58,15 @@ export function actorCapturaKiosco(sesion: SesionKiosco): ActorCaptura {
   return { tipo: "kiosco", kiosco: sesion.kiosco };
 }
 
-/** El mismo aparato, como actor de Vico (lleva la sucursal para el pedido). */
-export function actorVicoKiosco(sesion: SesionKiosco): ActorVendedor {
-  return { tipo: "kiosco", kiosco: sesion.kiosco, sucursal: sesion.sucursal };
+/** El mismo aparato, como actor de Vico (lleva la sucursal para el pedido y,
+ *  si alguien entró con su celular, a quién atiende y con qué descuento). */
+export function actorVicoKiosco(sesion: SesionKiosco, cliente: ClienteDescuento | null = null): ActorVendedor {
+  return {
+    tipo: "kiosco",
+    kiosco: sesion.kiosco,
+    sucursal: sesion.sucursal,
+    cliente: cliente ? { idCliente: cliente.id, nombre: cliente.cliente, descuento: cliente.descuento } : null,
+  };
 }
 
 // ---------------------------------------------------------------------------

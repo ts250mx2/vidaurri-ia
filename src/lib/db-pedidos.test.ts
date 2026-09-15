@@ -77,6 +77,10 @@ async function responder(sql: string, params: unknown[] = []): Promise<unknown[]
   if (s.includes("FROM pedidos_mostrador p WHERE p.id = ?")) return [[PEDIDO]];
   if (s.includes("FROM pedidos_mostrador_partidas WHERE id_pedido = ? ORDER BY")) return [[PARTIDA]];
   if (s.includes("FROM pedidos_mostrador_eventos")) return [[]];
+  // Los pedidos del cliente del kiosco: la lista trae `piezas` calculado; el
+  // folio solo "existe" si es del cliente 4 (así se prueba el 404 del ajeno).
+  if (s.includes("WHERE p.id_cliente = ?")) return [[{ ...PEDIDO, piezas: 3 }]];
+  if (s.includes("WHERE folio = ? AND id_cliente = ?")) return params[1] === 4 ? [[{ id: 41 }]] : [[]];
   if (/^(UPDATE|INSERT)/i.test(s)) return [{ affectedRows: 1, insertId: 99 }];
   return [[]];
 }
@@ -89,8 +93,14 @@ vi.mock("@/lib/db-conversaciones", () => ({
   poolConversaciones: () => ({ query: responder }),
 }));
 
-const { cambiarCantidadPartida, claveBorradorDe, confirmarPartidas, marcarSobrePedidoPorFaltante } =
-  await import("./db-pedidos");
+const {
+  cambiarCantidadPartida,
+  claveBorradorDe,
+  confirmarPartidas,
+  marcarSobrePedidoPorFaltante,
+  pedidoDeClientePorFolio,
+  pedidosDeCliente,
+} = await import("./db-pedidos");
 
 /** Las consultas ejecutadas, con los espacios normalizados para poder buscar. */
 const ejecutadas = () => registro.consultas.map((c) => ({ sql: c.sql.replace(/\s+/g, " ").trim(), params: c.params }));
@@ -180,5 +190,51 @@ describe("claveBorradorDe", () => {
     expect(claveBorradorDe({ tipo: "kiosco", kiosco: "jperez" })).not.toBe(
       claveBorradorDe({ tipo: "vendedor", usuario: "jperez" })
     );
+  });
+});
+
+describe("pedidosDeCliente (lo que el cliente ve en el kiosco)", () => {
+  it("filtra por id_cliente en el SQL, solo lo que salió de captura, con las piezas sumadas y el tope pedido", async () => {
+    const pedidos = await pedidosDeCliente(4, 20);
+
+    const consulta = ejecutadas().find((c) => c.sql.includes("WHERE p.id_cliente = ?"));
+    expect(consulta).toBeDefined();
+    expect(consulta?.sql).toContain("p.folio IS NOT NULL");
+    expect(consulta?.sql).toContain("SUM(pp.cantidad)");
+    expect(consulta?.sql).toContain("ORDER BY p.id DESC");
+    expect(consulta?.params).toEqual([4, 20]);
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]).toMatchObject({ id: 41, folio: "P-000041", piezas: 3 });
+  });
+
+  it("nunca consulta con un id que no sea entero positivo, y el tope se acota", async () => {
+    for (const malo of [0, -1, 1.5, Number.NaN]) {
+      expect(await pedidosDeCliente(malo, 20)).toEqual([]);
+    }
+    expect(registro.consultas).toHaveLength(0);
+
+    await pedidosDeCliente(4, 5000);
+    expect(ejecutadas()[0].params).toEqual([4, 50]);
+  });
+});
+
+describe("pedidoDeClientePorFolio", () => {
+  it("busca el folio Y el cliente en la misma consulta: un folio ajeno es un pedido que no existe", async () => {
+    const propio = await pedidoDeClientePorFolio(4, "P-000041");
+    const ajeno = await pedidoDeClientePorFolio(9, "P-000041");
+
+    expect(propio?.id).toBe(41);
+    expect(ajeno).toBeNull();
+    const busquedas = ejecutadas().filter((c) => c.sql.includes("WHERE folio = ? AND id_cliente = ?"));
+    expect(busquedas.map((c) => c.params)).toEqual([
+      ["P-000041", 4],
+      ["P-000041", 9],
+    ]);
+  });
+
+  it("con un folio vacío o un cliente inválido no toca la base", async () => {
+    expect(await pedidoDeClientePorFolio(4, "  ")).toBeNull();
+    expect(await pedidoDeClientePorFolio(0, "P-000041")).toBeNull();
+    expect(registro.consultas).toHaveLength(0);
   });
 });

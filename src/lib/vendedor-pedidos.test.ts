@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { PedidoDetalle } from "./pedidos";
 import {
   NOMBRES_HERRAMIENTAS_PEDIDO,
+  armaSoloEnPantalla,
   avisoExistencia,
+  canalDelActor,
   ejecutarHerramientaPedido,
   esHerramientaPedido,
   formatearRespuestaPedido,
@@ -22,7 +24,7 @@ const CLIENTE: ActorVendedor = {
   permitirPedido: true,
 };
 const CLIENTE_SIN_PERMISO: ActorVendedor = { ...CLIENTE, permitirPedido: false };
-const KIOSCO: ActorVendedor = { tipo: "kiosco", kiosco: "piso-1", sucursal: "matriz" };
+const KIOSCO: ActorVendedor = { tipo: "kiosco", kiosco: "piso-1", sucursal: "matriz", cliente: null };
 const VENDEDOR: ActorVendedor = {
   tipo: "vendedor",
   usuario: "jperez",
@@ -288,5 +290,35 @@ describe("ejecutarHerramientaPedido en el kiosco", () => {
     const salida = JSON.parse(await ejecutarHerramientaPedido({ id: "t1", name: "borrar_todo", input: {} }, KIOSCO));
 
     expect(salida).toEqual({ error: expect.stringContaining("solo puedes armar el pedido") });
+  });
+});
+
+describe("canalDelActor", () => {
+  it("el cliente habla por WhatsApp salvo que venga del área de clientes de la web (canal web)", () => {
+    expect(canalDelActor(CLIENTE)).toBe("whatsapp");
+    expect(canalDelActor({ ...CLIENTE, canal: "web" })).toBe("web");
+    expect(canalDelActor(VENDEDOR)).toBe("mostrador");
+    expect(canalDelActor(KIOSCO)).toBe("kiosco");
+  });
+});
+
+describe("el cliente del área de clientes de la web (canal web) arma solo en pantalla", () => {
+  const CLIENTE_WEB: ActorVendedor = { ...CLIENTE, canal: "web" };
+
+  it("recibe solo las tres tools de armar el pedido, como el kiosco; el de WhatsApp sigue con seis", () => {
+    expect(armaSoloEnPantalla(CLIENTE_WEB)).toBe(true);
+    expect(armaSoloEnPantalla(CLIENTE)).toBe(false);
+    expect(armaSoloEnPantalla(KIOSCO)).toBe(true);
+    expect(herramientasPedidoPara(CLIENTE_WEB).map((h) => h.name)).toEqual(["agregar_al_pedido", "ver_pedido", "quitar_del_pedido"]);
+    expect(herramientasPedidoPara(CLIENTE).map((h) => h.name)).toEqual(
+      NOMBRES_HERRAMIENTAS_PEDIDO.filter((n) => n !== "seleccionar_cliente")
+    );
+  });
+
+  it("aunque el modelo invente confirmar_pedido, cambiar_sucursal o cancelar_pedido, no se ejecutan y lo manda al botón", async () => {
+    for (const name of ["confirmar_pedido", "cambiar_sucursal", "cancelar_pedido"]) {
+      const salida = JSON.parse(await ejecutarHerramientaPedido({ id: "t1", name, input: {} }, CLIENTE_WEB));
+      expect(salida.error, name).toContain("toca el botón de enviar en la pantalla");
+    }
   });
 });

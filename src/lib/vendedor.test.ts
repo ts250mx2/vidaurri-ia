@@ -47,6 +47,29 @@ const HASH_PROMPT_KIOSCO: Record<CanalVendedor, string> = {
   web: "c3a7194ec12e6a8ecf95c046b92f4fe99916f71182867b36c6cb0938783f44ab",
 };
 
+// SHA-256 del prompt del actor KIOSCO con un CLIENTE DEL PADRÓN (Taller
+// López, 38%), por canal, con hoy = 2026-09-02. Es el de arriba con un solo
+// renglón distinto (el del precio): si este cambia y el de arriba no, alguien
+// tocó lo que Vico le dice al cliente que entró con su celular. Si lo cambias
+// a propósito, regenera el hash y di por qué.
+// Última regeneración: 15 sep 2026, al dejar entrar al cliente con su celular.
+const HASH_PROMPT_KIOSCO_CLIENTE: Record<CanalVendedor, string> = {
+  whatsapp: "cfbde32393c2ea08e4f3b8fe28e741502efe6118a0a375fa9deecc17fe4c05d1",
+  web: "6a8ddd865a28ecf711898bfe4569e9a30e31b48fd3c765ffd10bef3086238ae5",
+};
+
+// SHA-256 del prompt del CLIENTE DEL PADRÓN en el ÁREA DE CLIENTES de la web
+// (actor cliente con canal "web"; Taller López, 38%), por canal, con hoy =
+// 2026-09-02. Misma regla que el kiosco: Vico solo arma la lista y el pedido
+// se registra con el botón de la pantalla; si este prompt cambia sin querer,
+// el cliente puede irse creyendo que su pedido ya se mandó. El cliente por
+// WhatsApp (sin canal) NO cambia. Si lo cambias a propósito, regenera el hash
+// y di por qué. Última regeneración: 15 sep 2026, al crear el área de clientes.
+const HASH_PROMPT_CLIENTE_WEB: Record<CanalVendedor, string> = {
+  whatsapp: "6827d65fdede6e5903afb8ef97242998bb504ddc6a0a8f5edd9380265eea3971",
+  web: "e0bf57d58263d2063ded49ffdb93d83883375ecc1e6997ae26379b4f740e4717",
+};
+
 const CANALES: CanalVendedor[] = ["whatsapp", "web"];
 
 const ANONIMO: ActorVendedor = { tipo: "anonimo" };
@@ -58,7 +81,12 @@ const CLIENTE: ActorVendedor = {
   descuento: 38,
   permitirPedido: true,
 };
-const KIOSCO: ActorVendedor = { tipo: "kiosco", kiosco: "piso-1", sucursal: "matriz" };
+const CLIENTE_WEB: ActorVendedor = { ...CLIENTE, canal: "web" };
+const KIOSCO: ActorVendedor = { tipo: "kiosco", kiosco: "piso-1", sucursal: "matriz", cliente: null };
+const KIOSCO_CLIENTE: ActorVendedor = {
+  ...KIOSCO,
+  cliente: { idCliente: 4, nombre: "Taller López", descuento: 38 },
+};
 const VENDEDOR: ActorVendedor = {
   tipo: "vendedor",
   usuario: "jperez",
@@ -182,6 +210,104 @@ describe("promptSistema del kiosco de autoservicio", () => {
 
   it("el prompt del anónimo sigue intacto pese al actor nuevo", () => {
     for (const canal of CANALES) {
+      expect(sha256(promptSistema(HOY, canal))).toBe(HASH_PROMPT_ORIGINAL[canal]);
+    }
+  });
+});
+
+describe("promptSistema del cliente en el área de clientes de la web", () => {
+  it.each(CANALES)("canal %s: es byte a byte el prompt acordado", (canal) => {
+    expect(sha256(promptSistema(HOY, canal, CLIENTE_WEB))).toBe(HASH_PROMPT_CLIENTE_WEB[canal]);
+  });
+
+  it("misma regla que el kiosco: prohibido decir que quedó enviado, el botón y la sucursal son de la pantalla", () => {
+    const prompt = promptSistema(HOY, "whatsapp", CLIENTE_WEB);
+
+    expect(prompt).toContain("PEDIDOS (área de clientes de la web):");
+    expect(prompt).toContain("PROHIBIDO decir que el pedido quedó registrado");
+    expect(prompt).toContain('SOLO se registra cuando el cliente toca el botón "Enviar pedido"');
+    expect(prompt).toContain("la elige él ahí, no en este chat");
+    expect(prompt).toContain("Taller López");
+    expect(prompt).toContain("38% de descuento");
+    expect(prompt).toContain("IVA incluido");
+    expect(prompt).not.toContain("confirmar_pedido");
+    expect(prompt).not.toContain("cambiar_sucursal");
+    expect(prompt).not.toContain("cancelar_pedido");
+    expect(prompt).not.toContain("ofrece tomar sus datos");
+    expect(prompt).not.toContain("atendiendo a un cliente por WhatsApp");
+  });
+
+  it("solo tiene las tres tools de armar el pedido", () => {
+    expect(herramientasPara(CLIENTE_WEB).map((h) => h.name)).toEqual([
+      ...herramientasPara().map((h) => h.name),
+      "agregar_al_pedido",
+      "ver_pedido",
+      "quitar_del_pedido",
+    ]);
+  });
+
+  it("el cliente por WhatsApp (sin canal) sigue con su prompt y sus seis tools", () => {
+    const prompt = promptSistema(HOY, "whatsapp", CLIENTE);
+
+    expect(prompt).toContain("PEDIDOS (puedes levantar pedidos):");
+    expect(prompt).toContain("confirmar_pedido");
+    expect(prompt).not.toContain("área de clientes");
+    expect(herramientasPara(CLIENTE).map((h) => h.name)).toEqual([
+      ...herramientasPara().map((h) => h.name),
+      ...NOMBRES_HERRAMIENTAS_PEDIDO.filter((n) => n !== "seleccionar_cliente"),
+    ]);
+  });
+
+  it("el anónimo y el kiosco siguen intactos", () => {
+    for (const canal of CANALES) {
+      expect(sha256(promptSistema(HOY, canal))).toBe(HASH_PROMPT_ORIGINAL[canal]);
+      expect(sha256(promptSistema(HOY, canal, KIOSCO))).toBe(HASH_PROMPT_KIOSCO[canal]);
+      expect(sha256(promptSistema(HOY, canal, KIOSCO_CLIENTE))).toBe(HASH_PROMPT_KIOSCO_CLIENTE[canal]);
+    }
+  });
+});
+
+describe("promptSistema del kiosco con el cliente que entró con su celular", () => {
+  it.each(CANALES)("canal %s: es byte a byte el prompt acordado", (canal) => {
+    expect(sha256(promptSistema(HOY, canal, KIOSCO_CLIENTE))).toBe(HASH_PROMPT_KIOSCO_CLIENTE[canal]);
+  });
+
+  it("sabe a quién atiende y con qué descuento, con la misma frase que ve el vendedor", () => {
+    const prompt = promptSistema(HOY, "whatsapp", KIOSCO_CLIENTE);
+
+    expect(prompt).toContain("Está atendiendo a Taller López con 38% de descuento del padrón");
+    expect(prompt).toContain("YA lo llevan");
+    expect(prompt).toContain("IVA incluido");
+    expect(prompt).toContain("Salúdalo por su nombre");
+    // Ya no es precio de mostrador ni "aquí no existen los descuentos".
+    expect(prompt).not.toContain("NUNCA apliques ni menciones descuentos");
+    expect(prompt).not.toContain("son los de MOSTRADOR");
+  });
+
+  it("todo lo demás del kiosco sigue igual: sin datos personales, sin registrar, sin plazos, mismas tools", () => {
+    const conCliente = promptSistema(HOY, "whatsapp", KIOSCO_CLIENTE);
+    const sinCliente = promptSistema(HOY, "whatsapp", KIOSCO);
+
+    for (const regla of [
+      "PEDIDOS (kiosco de autoservicio):",
+      "PROHIBIDO decir que el pedido quedó registrado",
+      "NO le pidas su nombre, su celular ni ningún dato personal",
+      "No prometas plazos, días de entrega ni apartados",
+      "PARADO EN EL MOSTRADOR",
+    ]) {
+      expect(conCliente).toContain(regla);
+    }
+    expect(conCliente).not.toContain("confirmar_pedido");
+    expect(conCliente).not.toContain("seleccionar_cliente");
+    // Solo difieren en un renglón: el del precio.
+    const distintos = conCliente.split("\n").filter((linea) => !sinCliente.includes(linea));
+    expect(distintos).toHaveLength(1);
+    expect(distintos[0]).toContain("Taller López");
+  });
+
+  it("el kiosco sin cliente y el anónimo siguen intactos pese al cliente nuevo", () => {
+    for (const canal of CANALES) {
+      expect(sha256(promptSistema(HOY, canal, KIOSCO))).toBe(HASH_PROMPT_KIOSCO[canal]);
       expect(sha256(promptSistema(HOY, canal))).toBe(HASH_PROMPT_ORIGINAL[canal]);
     }
   });

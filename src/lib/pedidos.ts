@@ -226,6 +226,20 @@ export function folioDeId(id: number): string {
   return `P-${String(id).padStart(FOLIO_DIGITOS, "0")}`;
 }
 
+/** La forma exacta de folioDeId: 'P-' y de 6 a 10 dígitos (cabe en VARCHAR(12)). */
+const FOLIO_PUBLICO = /^P-\d{6,10}$/;
+
+/**
+ * El folio que llega en una ruta pública ([folio]), normalizado como lo
+ * imprime la hoja, o null si no tiene esa forma. Lo que no es un folio no
+ * llega a la base: así un 404 por folio malformado y uno por folio ajeno son
+ * el mismo 404 y no se distingue nada.
+ */
+export function leerFolioRuta(crudo: string): string | null {
+  const folio = crudo.trim().toUpperCase();
+  return FOLIO_PUBLICO.test(folio) ? folio : null;
+}
+
 export function esEstatusPedido(x: unknown): x is EstatusPedido {
   return typeof x === "string" && (ESTATUS_PEDIDO as ReadonlyArray<string>).includes(x);
 }
@@ -863,10 +877,29 @@ export function validarDatosClienteKiosco(entrada: unknown): Validacion<DatosCli
     return { ok: false, error: ERROR_NOMBRE_KIOSCO };
   }
 
-  const telefono = normalizarTelefono(String(cuerpo.telefono ?? ""));
-  if (!TELEFONO_NACIONAL.test(telefono)) {
-    return { ok: false, error: ERROR_TELEFONO_KIOSCO };
-  }
+  const telefono = telefonoNacionalDe(cuerpo.telefono);
+  if (telefono === null) return { ok: false, error: ERROR_TELEFONO_KIOSCO };
 
   return { ok: true, datos: { nombre, telefono } };
+}
+
+/** El celular tecleado, normalizado a 10 dígitos, o null si no queda así. */
+function telefonoNacionalDe(crudo: unknown): string | null {
+  const telefono = normalizarTelefono(String(crudo ?? ""));
+  return TELEFONO_NACIONAL.test(telefono) ? telefono : null;
+}
+
+/**
+ * `{ telefono }` con el que el cliente registrado entra al kiosco (usuario y
+ * contraseña son el mismo celular). Mismo criterio que la pantalla de datos:
+ * se normaliza y tiene que quedar en 10 dígitos, que es como está guardado en
+ * el padrón (clientes_descuento_telefonos); lo demás ni se busca.
+ */
+export function validarTelefonoKiosco(entrada: unknown): Validacion<{ telefono: string }> {
+  const cuerpo = entrada == null ? {} : entrada;
+  if (!esObjeto(cuerpo)) return { ok: false, error: "Petición inválida" };
+
+  const telefono = telefonoNacionalDe(cuerpo.telefono);
+  if (telefono === null) return { ok: false, error: ERROR_TELEFONO_KIOSCO };
+  return { ok: true, datos: { telefono } };
 }

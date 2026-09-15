@@ -39,6 +39,8 @@ import {
   NOMBRE_KIOSCO_MAX,
   NOMBRE_KIOSCO_MIN,
   esCanalPedido,
+  leerFolioRuta,
+  validarTelefonoKiosco,
 } from "./pedidos";
 
 const PERFILES: PerfilPos[] = ["Administrador", "Operaciones", "Ventas"];
@@ -963,5 +965,39 @@ describe("validarDatosClienteKiosco", () => {
     expect(validarDatosClienteKiosco("hola")).toMatchObject({ ok: false });
     expect(validarDatosClienteKiosco([])).toMatchObject({ ok: false });
     expect(validarDatosClienteKiosco(null)).toMatchObject({ ok: false });
+  });
+});
+
+describe("validarTelefonoKiosco", () => {
+  it("acepta el celular como lo teclea la gente y lo devuelve a 10 dígitos", () => {
+    for (const crudo of ["8112345678", "81-1234-5678", "044 81 1234 5678", "+52 81 1234 5678", "5218112345678"]) {
+      expect(validarTelefonoKiosco({ telefono: crudo })).toEqual({ ok: true, datos: { telefono: "8112345678" } });
+    }
+  });
+
+  it("rechaza lo que no quede en 10 dígitos, con el mismo texto que la pantalla de datos", () => {
+    for (const telefono of ["", "811234567", "81123456789", "letras", "+1 415 555 0101", undefined]) {
+      expect(validarTelefonoKiosco({ telefono })).toEqual({ ok: false, error: "Escribe tu celular a 10 dígitos" });
+    }
+  });
+
+  it("un cuerpo que no es objeto no pasa", () => {
+    expect(validarTelefonoKiosco("8112345678")).toMatchObject({ ok: false });
+    expect(validarTelefonoKiosco([])).toMatchObject({ ok: false });
+    expect(validarTelefonoKiosco(null)).toMatchObject({ ok: false });
+  });
+});
+
+describe("leerFolioRuta", () => {
+  it("acepta el folio público tal como lo imprime la hoja, sin importar mayúsculas ni espacios", () => {
+    expect(leerFolioRuta("P-000131")).toBe("P-000131");
+    expect(leerFolioRuta(" p-000131 ")).toBe("P-000131");
+    expect(leerFolioRuta(folioDeId(123456789))).toBe("P-123456789");
+  });
+
+  it("rechaza lo que no tiene la forma del folio (nunca llega a la consulta)", () => {
+    for (const malo of ["", "131", "P-131", "P000131", "P-00013a", "P-000131'--", "P-" + "1".repeat(11), "X-000131"]) {
+      expect(leerFolioRuta(malo)).toBeNull();
+    }
   });
 });

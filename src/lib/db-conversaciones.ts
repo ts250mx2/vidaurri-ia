@@ -10,6 +10,9 @@ import mysql from "mysql2/promise";
 //   conversacion_mensajes   — detalle: cada mensaje (cliente o vendedor)
 //   clientes_descuento      — padrón teléfono → cliente y % de descuento
 //                             (CRUD en db-clientes-descuento.ts)
+//   clientes_acceso         — usuario y contraseña (hash) con los que el
+//                             cliente del padrón entra al área de clientes
+//                             (db-clientes-acceso.ts)
 //   pedidos_mostrador       — pedidos para recoger en sucursal (mostrador,
 //                             WhatsApp o web) con sus partidas y bitácora de
 //                             eventos (capa de datos en db-pedidos.ts)
@@ -34,7 +37,9 @@ const globalConPool = globalThis as unknown as {
 // bko_pos_compromiso) y tabla vendedores_pos.
 // v8: cantidad_aldo en pedidos_mostrador_partidas (las piezas que van a la
 // back order cuando el sistema marca el renglón por faltante).
-const VERSION_ESQUEMA = 8;
+// v9: clientes_acceso (usuario y contraseña con hash del cliente del padrón
+// para el área de clientes; capa de datos en db-clientes-acceso.ts).
+const VERSION_ESQUEMA = 9;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -133,6 +138,25 @@ const TABLAS = [
      KEY idx_cliente (id_cliente),
      CONSTRAINT fk_tel_cliente FOREIGN KEY (id_cliente)
        REFERENCES clientes_descuento (id) ON DELETE CASCADE
+   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  // La cuenta con la que el cliente del padrón entra al área de clientes (y al
+  // kiosco). Una fila por cliente, creada la primera vez que entra con su
+  // celular como contraseña. El hash es scrypt (clientes-acceso.ts): la
+  // contraseña nunca está en claro. Si el cliente se borra del padrón, la
+  // cuenta se va con él (CASCADE).
+  `CREATE TABLE IF NOT EXISTS clientes_acceso (
+     id_cliente BIGINT UNSIGNED NOT NULL COMMENT 'clientes_descuento.id',
+     telefono VARCHAR(10) NOT NULL COMMENT 'Celular nacional: la identidad del cliente',
+     usuario VARCHAR(50) NOT NULL COMMENT 'Con qué entra; hoy es el celular',
+     password_hash VARCHAR(255) NOT NULL COMMENT 'scrypt$sal$hash; nunca en claro',
+     password_por_defecto TINYINT(1) NOT NULL DEFAULT 1 COMMENT '1 = sigue siendo el celular',
+     creado_en DATETIME NOT NULL,
+     cambiado_en DATETIME NULL COMMENT 'Última vez que cambió la contraseña',
+     ultimo_acceso DATETIME NULL,
+     PRIMARY KEY (id_cliente),
+     UNIQUE KEY uk_acceso_telefono (telefono),
+     UNIQUE KEY uk_acceso_usuario (usuario),
+     CONSTRAINT fk_acceso_cliente FOREIGN KEY (id_cliente) REFERENCES clientes_descuento (id) ON DELETE CASCADE
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   // Pedidos para recoger en sucursal. Van DESPUÉS de clientes_descuento porque
   // la FK del cliente exige que esa tabla ya exista. El folio se asigna al

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ClienteDescuento } from "./clientes-descuento";
 import {
   LIMITE_ENVIOS_KIOSCO,
   LIMITE_VICO_KIOSCO,
@@ -7,6 +8,7 @@ import {
   actorVicoKiosco,
   articuloParaKiosco,
   crearCupo,
+  datosBorradorKiosco,
   pedidoParaKiosco,
   productoParaKiosco,
 } from "./kiosco-api";
@@ -204,6 +206,25 @@ describe("productoParaKiosco", () => {
   });
 });
 
+/** Un cliente del padrón tal como lo devuelve db-clientes-descuento. */
+const CLIENTE_PADRON: ClienteDescuento = {
+  id: 4,
+  telefono: "8112345678",
+  telefonos: ["8112345678", "8187654321"],
+  cliente: "Taller López",
+  descuento: 38,
+  rfc: "LOPJ800101XX1",
+  telefono2: null,
+  email: "taller@lopez.mx",
+  idClienteApv: 77,
+  idClienteBdav: 501,
+  permitirPedido: false,
+  creadoPor: "ruben",
+  creadoEn: "2026-09-01 10:00:00",
+  actualizadoPor: null,
+  actualizadoEn: "2026-09-01 10:00:00",
+};
+
 describe("actores del kiosco", () => {
   it("el borrador es del aparato y el pedido nace sin descuento ni vendedor", () => {
     expect(actorCapturaKiosco({ kiosco: "piso-1", sucursal: "fierro" })).toEqual({
@@ -214,6 +235,44 @@ describe("actores del kiosco", () => {
       tipo: "kiosco",
       kiosco: "piso-1",
       sucursal: "fierro",
+      cliente: null,
+    });
+  });
+
+  it("con el cliente que entró con su celular, Vico sabe a quién atiende y con qué descuento (nada más)", () => {
+    const actor = actorVicoKiosco({ kiosco: "piso-1", sucursal: "fierro" }, CLIENTE_PADRON);
+
+    expect(actor).toEqual({
+      tipo: "kiosco",
+      kiosco: "piso-1",
+      sucursal: "fierro",
+      cliente: { idCliente: 4, nombre: "Taller López", descuento: 38 },
+    });
+    // El borrador sigue siendo del APARATO: entrar con el celular no cambia la clave.
+    expect(actorCapturaKiosco({ kiosco: "piso-1", sucursal: "fierro" })).toEqual({ tipo: "kiosco", kiosco: "piso-1" });
+  });
+});
+
+describe("datosBorradorKiosco", () => {
+  it("sin cliente: público general, sin descuento, en la sucursal del aparato", () => {
+    expect(datosBorradorKiosco({ kiosco: "piso-1", sucursal: "fierro" })).toEqual({
+      canal: "kiosco",
+      idCliente: null,
+      cliente: "Público general",
+      telefono: null,
+      descuentoPct: 0,
+      sucursal: "fierro",
+    });
+  });
+
+  it("con cliente gana el padrón: el pedido nace a su nombre, con su celular y su descuento", () => {
+    expect(datosBorradorKiosco({ kiosco: "piso-1", sucursal: "matriz" }, CLIENTE_PADRON)).toEqual({
+      canal: "kiosco",
+      idCliente: 4,
+      cliente: "Taller López",
+      telefono: "8112345678",
+      descuentoPct: 38,
+      sucursal: "matriz",
     });
   });
 });

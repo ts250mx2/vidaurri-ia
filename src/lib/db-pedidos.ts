@@ -1635,6 +1635,60 @@ export async function ultimosPedidosDeTelefono(
   return filas.map(aResumen);
 }
 
+/** Un pedido de la lista del cliente: el resumen más las piezas sumadas
+ *  (numPartidas cuenta renglones; al cliente se le habla de piezas, igual
+ *  que en el acuse del kiosco). */
+export interface PedidoDeCliente extends PedidoResumen {
+  piezas: number;
+}
+
+function esIdCliente(idCliente: number): boolean {
+  return Number.isInteger(idCliente) && idCliente > 0;
+}
+
+/**
+ * Últimos pedidos (ya enviados: con folio) de un cliente del padrón, para
+ * "Mis pedidos" del kiosco. El filtro es id_cliente en el SQL, nunca lo que
+ * mande la pantalla: el cliente solo ve lo suyo. Los borradores van por
+ * obtenerBorrador y los descartados (cancelados sin folio) no son pedidos.
+ */
+export async function pedidosDeCliente(
+  idCliente: number,
+  limite: number = ULTIMOS_PEDIDOS_DEFAULT
+): Promise<PedidoDeCliente[]> {
+  if (!esIdCliente(idCliente)) return [];
+  await asegurarEsquema();
+  const tope = Number.isInteger(limite) && limite > 0 ? Math.min(limite, ULTIMOS_PEDIDOS_MAX) : ULTIMOS_PEDIDOS_DEFAULT;
+  const [filas] = await poolConversaciones().query<RowDataPacket[]>(
+    `SELECT ${COLUMNAS_PEDIDO},
+            (SELECT COALESCE(SUM(pp.cantidad), 0) FROM pedidos_mostrador_partidas pp WHERE pp.id_pedido = p.id) AS piezas
+       FROM pedidos_mostrador p
+      WHERE p.id_cliente = ? AND ${CONDICION_SALIO_DE_CAPTURA}
+      ORDER BY p.id DESC
+      LIMIT ?`,
+    [idCliente, tope]
+  );
+  return filas.map((fila) => ({ ...aResumen(fila), piezas: Number(fila.piezas) }));
+}
+
+/**
+ * UN pedido del cliente por su folio. Folio y cliente van juntos en la misma
+ * consulta a propósito: un folio de otro cliente no se lee (ni siquiera para
+ * después negarlo), así la respuesta es la misma que para un folio que no
+ * existe y desde el kiosco no se puede saber cuál de las dos fue.
+ */
+export async function pedidoDeClientePorFolio(idCliente: number, folio: string): Promise<PedidoDetalle | null> {
+  const limpio = folio.trim().toUpperCase();
+  if (!esIdCliente(idCliente) || !limpio) return null;
+  await asegurarEsquema();
+  const [filas] = await poolConversaciones().query<RowDataPacket[]>(
+    `SELECT id FROM pedidos_mostrador WHERE folio = ? AND id_cliente = ? LIMIT 1`,
+    [limpio, idCliente]
+  );
+  if (filas.length === 0) return null;
+  return leerDetalle(poolConversaciones(), Number(filas[0].id));
+}
+
 /**
  * El actor descarta su borrador (botón "Descartar" del mostrador o "cancela
  * el pedido" antes de enviarlo). Queda cancelado con su bitácora, nunca se

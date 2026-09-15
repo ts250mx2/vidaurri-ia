@@ -13,11 +13,13 @@ import {
   type CifrasInventadas,
 } from "@/lib/vendedor-cifras";
 import {
+  armaSoloEnPantalla,
   ejecutarHerramientaPedido,
   esHerramientaPedido,
   herramientasPedidoPara,
   puedePedir,
   type ActorVendedor,
+  type ClienteKiosco,
 } from "@/lib/vendedor-pedidos";
 
 // Núcleo del agente "Vendedor IA": prompt, herramientas de catálogo y el loop
@@ -61,22 +63,52 @@ export function urlFotoUsadaPublica(nombreImagen: string): string {
 }
 
 /**
- * Sección PEDIDOS del kiosco de autoservicio. Es fija (el aparato no atiende a
- * un cliente del padrón ni tiene vendedor detrás) y dice tres cosas que aquí
- * no se pueden equivocar: que el precio es el de mostrador, que el pedido NO
- * queda registrado por lo que Vico haga —se registra cuando el cliente toca el
- * botón de la pantalla y teclea sus datos— y que los datos personales los pide
- * la pantalla, no el chat.
+ * Sección PEDIDOS del kiosco de autoservicio. Dice tres cosas que aquí no se
+ * pueden equivocar: con qué precio cotiza (el de mostrador, o el del cliente
+ * del padrón que entró con su celular), que el pedido NO queda registrado por
+ * lo que Vico haga —se registra cuando el cliente toca el botón de la
+ * pantalla— y que los datos personales los pide la pantalla, no el chat. Sin
+ * cliente el texto es fijo y está candado por hash en vendedor.test.ts; con
+ * cliente solo cambia el renglón del precio.
  */
-const SECCION_PEDIDOS_KIOSCO = `PEDIDOS (kiosco de autoservicio):
+const LINEA_PRECIO_MOSTRADOR_KIOSCO = `- Los precios que devuelven las herramientas son los de MOSTRADOR y ya llevan IVA: di siempre "IVA incluido". NUNCA apliques ni menciones descuentos, precios de padrón, precios especiales o de mayoreo: aquí no existen.`;
+
+/** Misma frase que ve el vendedor del mostrador con un cliente elegido. */
+function lineaPrecioClienteKiosco(cliente: ClienteKiosco): string {
+  return `- Está atendiendo a ${cliente.nombre} con ${cliente.descuento}% de descuento del padrón: entró con su celular y el pedido es suyo. Los precios que devuelven las herramientas YA lo llevan y ya incluyen IVA (di siempre "IVA incluido"); no lo vuelvas a aplicar ni lo menciones como si faltara. Salúdalo por su nombre.`;
+}
+
+function seccionPedidosKiosco(cliente: ClienteKiosco | null): string {
+  const lineaPrecio = cliente ? lineaPrecioClienteKiosco(cliente) : LINEA_PRECIO_MOSTRADOR_KIOSCO;
+  return `PEDIDOS (kiosco de autoservicio):
 - Estás atendiendo a un cliente que está PARADO EN EL MOSTRADOR, frente a una pantalla de la refaccionaria, buscando su pieza él solo. Háblale de tú, corto y claro.
-- Los precios que devuelven las herramientas son los de MOSTRADOR y ya llevan IVA: di siempre "IVA incluido". NUNCA apliques ni menciones descuentos, precios de padrón, precios especiales o de mayoreo: aquí no existen.
+${lineaPrecio}
 - Ayúdale a armar su pedido con agregar_al_pedido (código EXACTO de buscar_productos o idPieza de buscar_piezas_usadas), ver_pedido para repasarlo y quitar_del_pedido para sacar algo. Nada que él no haya pedido.
 - PROHIBIDO decir que el pedido quedó registrado, enviado, hecho, levantado, apartado o confirmado: lo que armas aquí es una lista en pantalla. El pedido SOLO se registra cuando el cliente toca el botón de enviar y captura su nombre y su celular. Cuando termine de agregar piezas, dile que toque ese botón para mandarlo al mostrador.
 - NO le pidas su nombre, su celular ni ningún dato personal: eso lo pide la pantalla al final.
 - No prometas plazos, días de entrega ni apartados, y no digas que la pieza está guardada o separada. Si la hay en tienda, dilo; si va sobre pedido, dilo así, sin fecha.
 - No des cantidades exactas de existencia: basta con "sí la tengo aquí" o "va sobre pedido".
 - Si no encuentras la pieza después de intentarlo con otras palabras, dile que le pregunte al mostrador; ahí le ayudan a identificarla.`;
+}
+
+/**
+ * Sección PEDIDOS del cliente del padrón en el ÁREA DE CLIENTES de la web
+ * (actor cliente en canal web). Misma regla que el kiosco: Vico solo arma la
+ * lista; el pedido se registra cuando el cliente toca el botón de la pantalla,
+ * y la sucursal la elige ahí. Está candada por hash en vendedor.test.ts; el
+ * cliente por WhatsApp (canal por defecto) sigue con seccionPedidos de siempre.
+ */
+function seccionPedidosClienteWeb(actor: { nombre: string; descuento: number }): string {
+  return `PEDIDOS (área de clientes de la web):
+- Estás atendiendo a ${actor.nombre}, cliente del padrón con ${actor.descuento}% de descuento, que entró con su celular y su contraseña al área de clientes desde su propio dispositivo y arma su pedido él solo. Háblale de tú, corto y claro, y salúdalo por su nombre.
+- Los precios que devuelven las herramientas YA llevan su descuento y ya incluyen IVA (di siempre "IVA incluido"); no lo vuelvas a aplicar ni lo menciones como si faltara.
+- Ayúdale a armar su pedido con agregar_al_pedido (código EXACTO de buscar_productos o idPieza de buscar_piezas_usadas), ver_pedido para repasarlo y quitar_del_pedido para sacar algo. Nada que él no haya pedido.
+- PROHIBIDO decir que el pedido quedó registrado, enviado, hecho, levantado, apartado o confirmado: lo que armas aquí es una lista en pantalla. El pedido SOLO se registra cuando el cliente toca el botón "Enviar pedido" de la pantalla, y la sucursal donde lo recoge (Matriz o Sucursal Fierro) la elige él ahí, no en este chat. Si te pide que lo mandes, dile que toque ese botón.
+- NO le pidas su nombre, su celular ni ningún dato personal: ya entró con su cuenta.
+- No prometas plazos, días de entrega ni apartados, y no digas que la pieza está guardada o separada. Si la hay en tienda, dilo; si va sobre pedido, dilo así, sin fecha. El mostrador confirma existencia y le avisa por WhatsApp cuando esté listo.
+- No des cantidades exactas de existencia: basta con "sí la tenemos" o "va sobre pedido".
+- Si no encuentras la pieza después de intentarlo con otras palabras, dile que nos escriba por WhatsApp o pregunte en el mostrador; ahí le ayudan a identificarla.`;
+}
 
 /**
  * Sección PEDIDOS del prompt: solo existe cuando el actor puede pedir. Le dice
@@ -87,7 +119,8 @@ const SECCION_PEDIDOS_KIOSCO = `PEDIDOS (kiosco de autoservicio):
  */
 function seccionPedidos(actor: ActorVendedor | undefined): string {
   if (!puedePedir(actor)) return "";
-  if (actor.tipo === "kiosco") return SECCION_PEDIDOS_KIOSCO;
+  if (actor.tipo === "kiosco") return seccionPedidosKiosco(actor.cliente);
+  if (actor.tipo === "cliente" && actor.canal === "web") return seccionPedidosClienteWeb(actor);
   const esVendedor = actor.tipo === "vendedor";
   const quien = esVendedor ? "el vendedor" : "el cliente";
   let contexto: string;
@@ -122,6 +155,9 @@ export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp", ac
   } else if (conPedidos && actor.tipo === "kiosco") {
     apertura =
       "Eres Vico, el asistente de AUTO PARTES VIDAURRI en la pantalla de autoservicio de la tienda: le ayudas a encontrar su pieza al cliente que la está usando, parado en el mostrador.";
+  } else if (conPedidos && armaSoloEnPantalla(actor)) {
+    apertura =
+      "Eres Vico, el asistente de AUTO PARTES VIDAURRI en el área de clientes de la web: le ayudas a encontrar su pieza a un cliente del padrón que arma su pedido desde su celular o su computadora.";
   }
   // Sin permiso de pedidos NO hay dónde guardar nada: el modelo no tiene
   // herramienta de pedido ni de "tomar datos". Dejarle "ofrecer tomar sus
@@ -136,6 +172,10 @@ export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp", ac
     // pidiera, el cliente creería que ya dejó un encargo que nadie recibió.
     sinOpciones =
       "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y dile que le pregunte al mostrador, que está a unos pasos; esa pieza NO se agrega al pedido y tú no le pides datos.";
+  } else if (conPedidos && armaSoloEnPantalla(actor)) {
+    // El cliente web tampoco deja encargos por el chat: el camino es WhatsApp o el mostrador.
+    sinOpciones =
+      "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y dile que nos escriba por WhatsApp o pregunte en el mostrador; esa pieza NO se agrega al pedido y tú no le pides datos.";
   } else if (conPedidos) {
     sinOpciones =
       "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla; esa pieza NO se agrega al pedido.";
