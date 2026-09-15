@@ -22,6 +22,7 @@ const CLIENTE: ActorVendedor = {
   permitirPedido: true,
 };
 const CLIENTE_SIN_PERMISO: ActorVendedor = { ...CLIENTE, permitirPedido: false };
+const KIOSCO: ActorVendedor = { tipo: "kiosco", kiosco: "piso-1", sucursal: "matriz" };
 const VENDEDOR: ActorVendedor = {
   tipo: "vendedor",
   usuario: "jperez",
@@ -81,6 +82,7 @@ const PEDIDO: PedidoDetalle = {
       existenciaAlPedir: 3,
       estatusPartida: "pendiente",
       diasEntrega: null,
+      cantidadAldo: null,
       nota: null,
     },
     {
@@ -96,6 +98,7 @@ const PEDIDO: PedidoDetalle = {
       existenciaAlPedir: 1,
       estatusPartida: "pendiente",
       diasEntrega: null,
+      cantidadAldo: null,
       nota: null,
     },
   ],
@@ -113,6 +116,10 @@ describe("puedePedir", () => {
   it("el cliente solo si el padrón lo autoriza", () => {
     expect(puedePedir(CLIENTE)).toBe(true);
     expect(puedePedir(CLIENTE_SIN_PERMISO)).toBe(false);
+  });
+
+  it("el kiosco siempre puede: para eso está en el piso", () => {
+    expect(puedePedir(KIOSCO)).toBe(true);
   });
 
   it("el anónimo y la ausencia de actor nunca", () => {
@@ -134,6 +141,12 @@ describe("herramientasPedidoPara", () => {
 
     expect(vendedor).toEqual([...NOMBRES_HERRAMIENTAS_PEDIDO]);
     expect(cliente).toEqual(NOMBRES_HERRAMIENTAS_PEDIDO.filter((n) => n !== "seleccionar_cliente"));
+  });
+
+  it("al kiosco solo las tres de armar el pedido: nada de enviar, cancelar o cambiar de sucursal", () => {
+    const kiosco = herramientasPedidoPara(KIOSCO).map((h) => h.name);
+
+    expect(kiosco).toEqual(["agregar_al_pedido", "ver_pedido", "quitar_del_pedido"]);
   });
 
   it("los esquemas son JSON Schema de objeto (válidos para Anthropic y OpenAI) y sin cache_control fijo", () => {
@@ -259,5 +272,21 @@ describe("ejecutarHerramientaPedido con quien no puede pedir", () => {
 
     expect(anonimo).toEqual({ error: expect.stringContaining("no puede levantar pedidos") });
     expect(sinPermiso).toEqual({ error: expect.stringContaining("no puede levantar pedidos") });
+  });
+});
+
+describe("ejecutarHerramientaPedido en el kiosco", () => {
+  it("rechaza sin tocar la base las tools que no le tocan, aunque el modelo se invente la llamada", async () => {
+    for (const name of ["confirmar_pedido", "cancelar_pedido", "cambiar_sucursal", "seleccionar_cliente"]) {
+      const salida = JSON.parse(await ejecutarHerramientaPedido({ id: "t1", name, input: {} }, KIOSCO));
+
+      expect(salida).toEqual({ error: expect.stringContaining("solo puedes armar el pedido") });
+    }
+  });
+
+  it("una herramienta inventada tampoco pasa", async () => {
+    const salida = JSON.parse(await ejecutarHerramientaPedido({ id: "t1", name: "borrar_todo", input: {} }, KIOSCO));
+
+    expect(salida).toEqual({ error: expect.stringContaining("solo puedes armar el pedido") });
   });
 });

@@ -61,6 +61,24 @@ export function urlFotoUsadaPublica(nombreImagen: string): string {
 }
 
 /**
+ * Sección PEDIDOS del kiosco de autoservicio. Es fija (el aparato no atiende a
+ * un cliente del padrón ni tiene vendedor detrás) y dice tres cosas que aquí
+ * no se pueden equivocar: que el precio es el de mostrador, que el pedido NO
+ * queda registrado por lo que Vico haga —se registra cuando el cliente toca el
+ * botón de la pantalla y teclea sus datos— y que los datos personales los pide
+ * la pantalla, no el chat.
+ */
+const SECCION_PEDIDOS_KIOSCO = `PEDIDOS (kiosco de autoservicio):
+- Estás atendiendo a un cliente que está PARADO EN EL MOSTRADOR, frente a una pantalla de la refaccionaria, buscando su pieza él solo. Háblale de tú, corto y claro.
+- Los precios que devuelven las herramientas son los de MOSTRADOR y ya llevan IVA: di siempre "IVA incluido". NUNCA apliques ni menciones descuentos, precios de padrón, precios especiales o de mayoreo: aquí no existen.
+- Ayúdale a armar su pedido con agregar_al_pedido (código EXACTO de buscar_productos o idPieza de buscar_piezas_usadas), ver_pedido para repasarlo y quitar_del_pedido para sacar algo. Nada que él no haya pedido.
+- PROHIBIDO decir que el pedido quedó registrado, enviado, hecho, levantado, apartado o confirmado: lo que armas aquí es una lista en pantalla. El pedido SOLO se registra cuando el cliente toca el botón de enviar y captura su nombre y su celular. Cuando termine de agregar piezas, dile que toque ese botón para mandarlo al mostrador.
+- NO le pidas su nombre, su celular ni ningún dato personal: eso lo pide la pantalla al final.
+- No prometas plazos, días de entrega ni apartados, y no digas que la pieza está guardada o separada. Si la hay en tienda, dilo; si va sobre pedido, dilo así, sin fecha.
+- No des cantidades exactas de existencia: basta con "sí la tengo aquí" o "va sobre pedido".
+- Si no encuentras la pieza después de intentarlo con otras palabras, dile que le pregunte al mostrador; ahí le ayudan a identificarla.`;
+
+/**
  * Sección PEDIDOS del prompt: solo existe cuando el actor puede pedir. Le dice
  * al modelo qué es un pedido (NO un apartado), de dónde salen los códigos que
  * agrega, que confirme solo con un sí explícito, y a quién tiene enfrente: al
@@ -69,6 +87,7 @@ export function urlFotoUsadaPublica(nombreImagen: string): string {
  */
 function seccionPedidos(actor: ActorVendedor | undefined): string {
   if (!puedePedir(actor)) return "";
+  if (actor.tipo === "kiosco") return SECCION_PEDIDOS_KIOSCO;
   const esVendedor = actor.tipo === "vendedor";
   const quien = esVendedor ? "el vendedor" : "el cliente";
   let contexto: string;
@@ -97,18 +116,30 @@ export function promptSistema(hoy: string, canal: CanalVendedor = "whatsapp", ac
   // autorización) el prompt es el de siempre salvo por los segmentos de abajo,
   // que solo cambian cuando puedePedir. Hay un test que lo comprueba por hash.
   const conPedidos = puedePedir(actor);
-  const apertura =
-    conPedidos && actor.tipo === "vendedor"
-      ? `Eres Vico, el asistente de ventas de AUTO PARTES VIDAURRI, y en este chat apoyas a ${actor.nombre} (vendedor del mostrador) mientras atiende a un cliente en persona.`
-      : "Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp.";
+  let apertura = "Eres el vendedor de AUTO PARTES VIDAURRI atendiendo a un cliente por WhatsApp.";
+  if (conPedidos && actor.tipo === "vendedor") {
+    apertura = `Eres Vico, el asistente de ventas de AUTO PARTES VIDAURRI, y en este chat apoyas a ${actor.nombre} (vendedor del mostrador) mientras atiende a un cliente en persona.`;
+  } else if (conPedidos && actor.tipo === "kiosco") {
+    apertura =
+      "Eres Vico, el asistente de AUTO PARTES VIDAURRI en la pantalla de autoservicio de la tienda: le ayudas a encontrar su pieza al cliente que la está usando, parado en el mostrador.";
+  }
   // Sin permiso de pedidos NO hay dónde guardar nada: el modelo no tiene
   // herramienta de pedido ni de "tomar datos". Dejarle "ofrecer tomar sus
   // datos" acababa en un "quedó registrado tu pedido" que nadie ve (pasó en la
   // página pública). La regla honesta: por este chat no se levantan pedidos, y
   // el camino que sí existe es WhatsApp con el número registrado o el mostrador.
-  const sinOpciones = conPedidos
-    ? "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla; esa pieza NO se agrega al pedido."
-    : "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y sugiere que lo consulte con el mostrador (por WhatsApp o por teléfono): tú no puedes tomar datos ni dejar encargos.";
+  const esKiosco = conPedidos && actor.tipo === "kiosco";
+  let sinOpciones =
+    "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y sugiere que lo consulte con el mostrador (por WhatsApp o por teléfono): tú no puedes tomar datos ni dejar encargos.";
+  if (esKiosco) {
+    // En el kiosco los datos los pide la PANTALLA al enviar; si el chat los
+    // pidiera, el cliente creería que ya dejó un encargo que nadie recibió.
+    sinOpciones =
+      "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y dile que le pregunte al mostrador, que está a unos pasos; esa pieza NO se agrega al pedido y tú no le pides datos.";
+  } else if (conPedidos) {
+    sinOpciones =
+      "- Si no hay entrega inmediata, ni sobre pedido, ni usado, dilo claro y ofrece tomar sus datos para conseguirla; esa pieza NO se agrega al pedido.";
+  }
   const reglaApartado = conPedidos
     ? `- NUNCA digas "apartar", "reservar" ni "separar": lo que levantas es un PEDIDO sujeto a
   confirmación del mostrador (ver PEDIDOS). Cierra preguntando el dato que te falte (lado,

@@ -30,6 +30,7 @@ const CANAL_TEXTO: Record<PedidoDetalle["canal"], string> = {
   mostrador: "Mostrador",
   whatsapp: "WhatsApp",
   web: "Página web",
+  kiosco: "Kiosco de autoservicio",
 };
 
 const NOTA_SUJETO =

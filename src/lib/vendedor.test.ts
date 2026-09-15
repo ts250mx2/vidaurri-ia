@@ -36,6 +36,17 @@ const HASH_PROMPT_ORIGINAL: Record<CanalVendedor, string> = {
   web: "b1f4fc34eaa0a910be096882feaa4ecd88d0c17b0a231e6a482092f9549faf9c",
 };
 
+// SHA-256 del prompt del actor KIOSCO, por canal, con hoy = 2026-09-02. El
+// kiosco es una pantalla sola en el piso de la tienda: si este prompt cambia
+// sin querer, nadie se entera hasta que un cliente se va creyendo que su
+// pedido "quedó registrado" (que es justo lo que este prompt prohíbe). Si lo
+// cambias a propósito, regenera el hash y di por qué.
+// Última regeneración: 15 sep 2026, al crear el kiosco de autoservicio.
+const HASH_PROMPT_KIOSCO: Record<CanalVendedor, string> = {
+  whatsapp: "21d5daad995f7e860ffab210275b8581e21d8d84a069dbf901007233734d7cb1",
+  web: "c3a7194ec12e6a8ecf95c046b92f4fe99916f71182867b36c6cb0938783f44ab",
+};
+
 const CANALES: CanalVendedor[] = ["whatsapp", "web"];
 
 const ANONIMO: ActorVendedor = { tipo: "anonimo" };
@@ -47,6 +58,7 @@ const CLIENTE: ActorVendedor = {
   descuento: 38,
   permitirPedido: true,
 };
+const KIOSCO: ActorVendedor = { tipo: "kiosco", kiosco: "piso-1", sucursal: "matriz" };
 const VENDEDOR: ActorVendedor = {
   tipo: "vendedor",
   usuario: "jperez",
@@ -131,6 +143,50 @@ describe("promptSistema con permiso de pedidos", () => {
   });
 });
 
+describe("promptSistema del kiosco de autoservicio", () => {
+  it.each(CANALES)("canal %s: es byte a byte el prompt acordado", (canal) => {
+    expect(sha256(promptSistema(HOY, canal, KIOSCO))).toBe(HASH_PROMPT_KIOSCO[canal]);
+  });
+
+  it("prohíbe decir que el pedido quedó registrado y manda al botón de la pantalla", () => {
+    const prompt = promptSistema(HOY, "whatsapp", KIOSCO);
+
+    expect(prompt).toContain("PEDIDOS (kiosco de autoservicio):");
+    expect(prompt).toContain("PROHIBIDO decir que el pedido quedó registrado");
+    expect(prompt).toContain("SOLO se registra cuando el cliente toca el botón de enviar");
+  });
+
+  it("no pide datos personales, no promete plazos ni apartados y no cita descuentos", () => {
+    const prompt = promptSistema(HOY, "whatsapp", KIOSCO);
+
+    expect(prompt).toContain("NO le pidas su nombre, su celular ni ningún dato personal");
+    expect(prompt).toContain("No prometas plazos, días de entrega ni apartados");
+    expect(prompt).toContain("NUNCA apliques ni menciones descuentos");
+    expect(prompt).toContain("IVA incluido");
+    // Nada de tomar datos para conseguir la pieza: eso es del chat con vendedor.
+    expect(prompt).not.toContain("ofrece tomar sus datos");
+    // Y nada de las tools que no tiene.
+    expect(prompt).not.toContain("confirmar_pedido");
+    expect(prompt).not.toContain("seleccionar_cliente");
+    expect(prompt).not.toContain("cambiar_sucursal");
+  });
+
+  it("le habla al cliente de la pantalla, no a un vendedor ni a un chat de WhatsApp", () => {
+    const prompt = promptSistema(HOY, "whatsapp", KIOSCO);
+
+    expect(prompt).toContain("pantalla de autoservicio");
+    expect(prompt).toContain("PARADO EN EL MOSTRADOR");
+    expect(prompt).not.toContain("atendiendo a un cliente por WhatsApp");
+    expect(prompt).not.toContain("vendedor del mostrador");
+  });
+
+  it("el prompt del anónimo sigue intacto pese al actor nuevo", () => {
+    for (const canal of CANALES) {
+      expect(sha256(promptSistema(HOY, canal))).toBe(HASH_PROMPT_ORIGINAL[canal]);
+    }
+  });
+});
+
 describe("herramientasPara", () => {
   const nombres = (actor?: ActorVendedor) => herramientasPara(actor).map((h) => h.name);
   const conCache = (actor?: ActorVendedor) =>
@@ -163,6 +219,23 @@ describe("herramientasPara", () => {
     expect(nombres(CLIENTE)).not.toContain("seleccionar_cliente");
     expect(nombres(CLIENTE)).toHaveLength(10);
     expect(nombres({ ...CLIENTE, permitirPedido: false })).toEqual(nombres());
+  });
+
+  it("kiosco: catálogo + SOLO las tres de armar el pedido", () => {
+    expect(nombres(KIOSCO)).toEqual([
+      "buscar_productos",
+      "listar_marcas",
+      "listar_tipos_parte",
+      "buscar_piezas_usadas",
+      "agregar_al_pedido",
+      "ver_pedido",
+      "quitar_del_pedido",
+    ]);
+    // Mandar el pedido es un botón de la pantalla, no del chat.
+    for (const prohibida of ["confirmar_pedido", "cancelar_pedido", "cambiar_sucursal", "seleccionar_cliente"]) {
+      expect(nombres(KIOSCO)).not.toContain(prohibida);
+    }
+    expect(conCache(KIOSCO)).toEqual(["quitar_del_pedido"]);
   });
 
   it("no muta el literal al poner el cache_control", () => {

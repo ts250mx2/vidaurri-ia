@@ -32,7 +32,9 @@ const globalConPool = globalThis as unknown as {
 // v7: columnas de la back order a Aldo en pedidos_mostrador (num_bko_pos,
 // id_bko_pos, bko_pos_estado, bko_pos_error, bko_pos_en, bko_pos_firma,
 // bko_pos_compromiso) y tabla vendedores_pos.
-const VERSION_ESQUEMA = 7;
+// v8: cantidad_aldo en pedidos_mostrador_partidas (las piezas que van a la
+// back order cuando el sistema marca el renglón por faltante).
+const VERSION_ESQUEMA = 8;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -196,6 +198,7 @@ const TABLAS = [
   existencia_al_pedir INT NULL COMMENT 'existencia en bdav/usadas al agregar',
   estatus_partida VARCHAR(16) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | confirmada | sin_existencia | sobre_pedido',
   dias_entrega SMALLINT NULL COMMENT 'Solo sobre_pedido: días que promete el mostrador',
+  cantidad_aldo INT NULL COMMENT 'Piezas que van a la back order de Aldo cuando el sistema marcó el renglón por faltante; NULL = va la cantidad completa',
   nota VARCHAR(200) NULL COMMENT 'Nota del vendedor al confirmar',
   creado_en DATETIME NOT NULL,
   actualizado_en DATETIME NOT NULL,
@@ -405,6 +408,16 @@ const COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR: ReadonlyArray<ColumnaNueva> = [
   },
 ];
 
+// v8: las piezas que van a Aldo cuando el sistema marca el renglón por
+// faltante. Va después de dias_entrega, como en el CREATE TABLE.
+const COLUMNAS_NUEVAS_PARTIDAS: ReadonlyArray<ColumnaNueva> = [
+  {
+    columna: "cantidad_aldo",
+    alter:
+      "ALTER TABLE pedidos_mostrador_partidas ADD COLUMN cantidad_aldo INT NULL COMMENT 'Piezas que van a la back order de Aldo cuando el sistema marcó el renglón por faltante; NULL = va la cantidad completa' AFTER dias_entrega",
+  },
+];
+
 export function asegurarEsquema(): Promise<void> {
   if (
     !globalConPool.__esquemaConversaciones ||
@@ -417,6 +430,7 @@ export function asegurarEsquema(): Promise<void> {
       }
       await migrarClientesDescuento(poolConversaciones());
       await agregarColumnasFaltantes(poolConversaciones(), "pedidos_mostrador", COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR);
+      await agregarColumnasFaltantes(poolConversaciones(), "pedidos_mostrador_partidas", COLUMNAS_NUEVAS_PARTIDAS);
     })().catch((error) => {
       // Si falló, se permite reintentar en la siguiente llamada.
       globalConPool.__esquemaConversaciones = undefined;
@@ -456,8 +470,9 @@ export function ahoraMonterrey(): { fecha: string; momento: string } {
 }
 
 /** Por dónde entró la conversación. 'mostrador' = Vico en modo vendedor desde
- *  el POS de vidaurri-page (el "teléfono" es m:<usuario>). */
-export type CanalConversacion = "whatsapp" | "web" | "mostrador";
+ *  el POS de vidaurri-page (el "teléfono" es m:<usuario>); 'kiosco' = Vico en
+ *  la pantalla de autoservicio del piso (el "teléfono" es k:<kiosco>). */
+export type CanalConversacion = "whatsapp" | "web" | "mostrador" | "kiosco";
 
 export interface IntercambioConversacion {
   telefono: string;
@@ -591,7 +606,7 @@ export interface PaginaConversaciones {
   conversaciones: ConversacionResumen[];
   total: number;
   totalMensajes: number;
-  porCanal: { whatsapp: number; web: number; mostrador: number };
+  porCanal: { whatsapp: number; web: number; mostrador: number; kiosco: number };
 }
 
 interface CondicionesArmadas {
@@ -665,7 +680,8 @@ export async function listarConversaciones(
     `SELECT COUNT(*) AS total,
             COALESCE(SUM(c.mensajes), 0) AS totalMensajes,
             COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'web' THEN 1 ELSE 0 END), 0) AS web,
-            COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'mostrador' THEN 1 ELSE 0 END), 0) AS mostrador
+            COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'mostrador' THEN 1 ELSE 0 END), 0) AS mostrador,
+            COALESCE(SUM(CASE WHEN ${CANAL_REAL} = 'kiosco' THEN 1 ELSE 0 END), 0) AS kiosco
        FROM conversaciones c
        ${JOIN_PADRON}
       WHERE ${clausula}`,
@@ -675,13 +691,16 @@ export async function listarConversaciones(
   const total = Number(totales[0]?.total ?? 0);
   const web = Number(totales[0]?.web ?? 0);
   const mostrador = Number(totales[0]?.mostrador ?? 0);
+  const kiosco = Number(totales[0]?.kiosco ?? 0);
   // WhatsApp es el resto: las filas viejas de la web quedaron con canal
   // 'whatsapp' y CANAL_REAL las reclasifica, así que no se cuenta por columna.
+  // Todo canal nuevo (como el kiosco) SÍ se cuenta aparte: si no, se sumaría
+  // a WhatsApp e inflaría el único total que se calcula por resta.
   return {
     conversaciones: filas as ConversacionResumen[],
     total,
     totalMensajes: Number(totales[0]?.totalMensajes ?? 0),
-    porCanal: { whatsapp: total - web - mostrador, web, mostrador },
+    porCanal: { whatsapp: total - web - mostrador - kiosco, web, mostrador, kiosco },
   };
 }
 

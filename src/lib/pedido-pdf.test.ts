@@ -51,6 +51,7 @@ const PEDIDO: PedidoDetalle = {
       existenciaAlPedir: 3,
       estatusPartida: "pendiente",
       diasEntrega: null,
+      cantidadAldo: null,
       nota: null,
     },
     {
@@ -66,6 +67,7 @@ const PEDIDO: PedidoDetalle = {
       existenciaAlPedir: 1,
       estatusPartida: "pendiente",
       diasEntrega: null,
+      cantidadAldo: null,
       nota: null,
     },
   ],

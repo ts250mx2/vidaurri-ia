@@ -58,7 +58,11 @@ import {
 
 export type ActorCaptura =
   | { tipo: "vendedor"; usuario: string }
-  | { tipo: "cliente"; telefono: string };
+  | { tipo: "cliente"; telefono: string }
+  /** Kiosco de autoservicio del piso: el borrador es del APARATO, no de una
+   *  persona, porque quien lo usa no tiene sesión ni se identifica hasta el
+   *  final (el nombre y el celular se piden al enviar). */
+  | { tipo: "kiosco"; kiosco: string };
 
 export class PedidoNoEncontradoError extends Error {
   constructor(mensaje = "El pedido no existe") {
@@ -156,6 +160,9 @@ const ULTIMOS_PEDIDOS_DEFAULT = 5;
 const ULTIMOS_PEDIDOS_MAX = 50;
 /** Usuario con el que se firman los eventos que dispara el propio cliente. */
 const USUARIO_CLIENTE = "cliente";
+/** Usuario con el que se firman los eventos que dispara el kiosco del piso
+ *  (capturado_por se queda NULL: no hay vendedor detrás). */
+const USUARIO_KIOSCO = "kiosco";
 
 const COLUMNAS_PEDIDO = `p.id, p.folio, p.estatus, p.canal, p.id_cliente AS idCliente, p.cliente,
        p.telefono, p.descuento_pct AS descuentoPct, p.sucursal,
@@ -175,7 +182,7 @@ const COLUMNAS_PEDIDO = `p.id, p.folio, p.estatus, p.canal, p.id_cliente AS idCl
 const COLUMNAS_PARTIDA = `id, partida, origen, codigo, id_pieza_usada AS idPiezaUsada, descripcion,
        cantidad, precio_unitario AS precioUnitario, importe,
        existencia_al_pedir AS existenciaAlPedir, estatus_partida AS estatusPartida,
-       dias_entrega AS diasEntrega, nota`;
+       dias_entrega AS diasEntrega, cantidad_aldo AS cantidadAldo, nota`;
 
 const COLUMNAS_EVENTO = `id, evento, estatus_anterior AS estatusAnterior, estatus_nuevo AS estatusNuevo,
        detalle, usuario, canal, creado_en AS creadoEn`;
@@ -198,7 +205,9 @@ function escaparLike(valor: string): string {
 }
 
 export function claveBorradorDe(actor: ActorCaptura): string {
-  return actor.tipo === "vendedor" ? `v:${actor.usuario}` : `c:${actor.telefono}`;
+  if (actor.tipo === "vendedor") return `v:${actor.usuario}`;
+  if (actor.tipo === "kiosco") return `k:${actor.kiosco}`;
+  return `c:${actor.telefono}`;
 }
 
 function aResumen(fila: RowDataPacket): PedidoResumen {
@@ -250,6 +259,7 @@ function aPartida(fila: RowDataPacket): PartidaPedido {
     existenciaAlPedir: numero(fila.existenciaAlPedir),
     estatusPartida: String(fila.estatusPartida) as EstatusPartida,
     diasEntrega: numero(fila.diasEntrega),
+    cantidadAldo: numero(fila.cantidadAldo),
     nota: texto(fila.nota),
   };
 }
@@ -435,7 +445,9 @@ function mismoCliente(previo: CabeceraBloqueada, datos: DatosBorrador): boolean 
 }
 
 function usuarioDe(actor: ActorCaptura): string {
-  return actor.tipo === "vendedor" ? actor.usuario : USUARIO_CLIENTE;
+  if (actor.tipo === "vendedor") return actor.usuario;
+  if (actor.tipo === "kiosco") return USUARIO_KIOSCO;
+  return USUARIO_CLIENTE;
 }
 
 /** Cómo se nombra un renglón en la bitácora: su código de bdav o 'usada #id'. */
@@ -478,11 +490,13 @@ async function bloquearPartida(conexion: Connection, idPedido: number, idPartida
  * a la cantidad nueva. Una partida que era sobre pedido vuelve a nueva (igual
  * que al desmarcarla en confirmarPartidas); una usada conserva su origen. La
  * nota se queda: es contexto que el mostrador querrá releer al reconfirmar.
+ * cantidad_aldo se borra: la que el sistema había calculado era para la
+ * cantidad vieja y el renglón se vuelve a medir desde cero.
  */
 async function regresarAPendiente(conexion: Connection, idPartida: number, momento: string): Promise<void> {
   await conexion.query(
     `UPDATE pedidos_mostrador_partidas
-        SET estatus_partida = 'pendiente', dias_entrega = NULL,
+        SET estatus_partida = 'pendiente', dias_entrega = NULL, cantidad_aldo = NULL,
             origen = IF(origen = 'sobre_pedido', 'nueva', origen), actualizado_en = ?
       WHERE id = ?`,
     [momento, idPartida]
@@ -690,7 +704,7 @@ export async function agregarPartida(
       await conexion.query(
         `UPDATE pedidos_mostrador_partidas
             SET cantidad = ?, precio_unitario = ?, importe = ?, existencia_al_pedir = ?,
-                descripcion = ?, actualizado_en = ?
+                descripcion = ?, cantidad_aldo = NULL, actualizado_en = ?
           WHERE id = ?`,
         [
           cantidad,
@@ -866,8 +880,13 @@ export async function cambiarCantidadPartida(
       if (sobra) throw new LimitePedidoError(sobra);
     }
 
+    // cantidad_aldo se borra siempre: se calculó para la cantidad anterior y
+    // con otra cantidad el faltante es otro (aunque el renglón no vuelva a
+    // pendiente, como en un borrador).
     await conexion.query(
-      `UPDATE pedidos_mostrador_partidas SET cantidad = ?, importe = ?, actualizado_en = ? WHERE id = ?`,
+      `UPDATE pedidos_mostrador_partidas
+          SET cantidad = ?, importe = ?, cantidad_aldo = NULL, actualizado_en = ?
+        WHERE id = ?`,
       [cantidad, redondear2(cantidad * partida.precioUnitario), momento, idPartida]
     );
     const vuelve = partidaVuelveAPendiente(pedido.estatus, partida.estatusPartida);
@@ -923,6 +942,42 @@ export async function actualizarObservaciones(
         usuario,
         canal,
       },
+      momento
+    );
+    return detalleEscrito(conexion, idPedido);
+  });
+}
+
+/**
+ * Pone nombre y celular al borrador justo antes de enviarlo. Es lo que hace
+ * el kiosco del piso: el pedido se arma sin saber quién es el cliente
+ * (público general) y sus datos se teclean al final, en la pantalla de
+ * "tus datos". No pasa por crearBorrador a propósito: ahí un nombre distinto
+ * cuenta como OTRO cliente y tiraría las partidas ya capturadas.
+ */
+export async function fijarClienteBorrador(
+  idPedido: number,
+  datos: { cliente: string; telefono: string | null },
+  usuario: string | null,
+  canal: CanalPedido
+): Promise<PedidoDetalle> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+  const cliente = datos.cliente.slice(0, CLIENTE_MAX);
+  const telefono = datos.telefono?.slice(0, TELEFONO_MAX) ?? null;
+
+  return enTransaccion(async (conexion) => {
+    const pedido = await bloquearPedido(conexion, idPedido);
+    if (pedido.estatus !== "borrador") throw new PedidoNoEditableError(pedido.estatus);
+
+    await conexion.query(
+      `UPDATE pedidos_mostrador SET cliente = ?, telefono = ?, actualizado_en = ? WHERE id = ?`,
+      [cliente, telefono, momento, idPedido]
+    );
+    await registrarEvento(
+      conexion,
+      idPedido,
+      { evento: "cliente_capturado", detalle: cliente, usuario, canal },
       momento
     );
     return detalleEscrito(conexion, idPedido);
@@ -1127,7 +1182,7 @@ export async function confirmarPartidas(
       const esSobrePedido = cambio.estatusPartida === "sobre_pedido";
       const [resultado] = await conexion.query<ResultSetHeader>(
         `UPDATE pedidos_mostrador_partidas
-            SET estatus_partida = ?, dias_entrega = ?, nota = ?,
+            SET estatus_partida = ?, dias_entrega = ?, nota = ?, cantidad_aldo = NULL,
                 origen = CASE
                   WHEN origen = 'usada' THEN origen
                   WHEN ? THEN 'sobre_pedido'
@@ -1159,6 +1214,71 @@ export async function confirmarPartidas(
       momento
     );
     return detalleEscrito(conexion, idPedido);
+  });
+}
+
+/** Renglón que el faltante manda a Aldo: qué partida y cuántas piezas van. */
+export interface FaltanteAldo {
+  partida: number;
+  cantidad: number;
+}
+
+/**
+ * Marca como sobre pedido los renglones que el faltante manda a Aldo (los que
+ * eligió partidasAMarcarSobrePedido al confirmar) y guarda en cada uno las
+ * piezas que van (`cantidad_aldo`), que es lo que hace que un segundo intento
+ * pida exactamente lo mismo en vez de la cantidad completa. Solo toca los que
+ * sigan en `pendiente`: lo que el mostrador ya decidió no se pisa nunca, y una
+ * usada jamás entra. No mueve el estatus del pedido ni los totales, solo deja
+ * el renglón dicho y UN evento en la bitácora para que se vea por qué se pidió
+ * y se pueda corregir renglón por renglón. Devuelve cuántos marcó.
+ */
+export async function marcarSobrePedidoPorFaltante(
+  idPedido: number,
+  partidas: ReadonlyArray<FaltanteAldo>,
+  usuario: string | null
+): Promise<number> {
+  if (partidas.length === 0) return 0;
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+
+  return enTransaccion(async (conexion) => {
+    await bloquearPedido(conexion, idPedido);
+    let marcadas = 0;
+    // Piezas que de verdad se van a pedir, para que la bitácora diga "2 piezas
+    // de 1 renglón" y no confunda renglones con piezas.
+    let piezas = 0;
+    for (const { partida, cantidad } of partidas) {
+      // Un faltante que no es un entero de al menos una pieza no se escribe:
+      // antes de inventar una cantidad, el renglón se deja como está.
+      if (!Number.isInteger(cantidad) || cantidad < 1) continue;
+      const [resultado] = await conexion.query<ResultSetHeader>(
+        `UPDATE pedidos_mostrador_partidas
+            SET estatus_partida = 'sobre_pedido', origen = 'sobre_pedido',
+                cantidad_aldo = ?, actualizado_en = ?
+          WHERE id_pedido = ? AND partida = ? AND estatus_partida = 'pendiente' AND origen <> 'usada'`,
+        [cantidad, momento, idPedido, partida]
+      );
+      marcadas += resultado.affectedRows;
+      if (resultado.affectedRows > 0) piezas += cantidad;
+    }
+    if (marcadas === 0) return 0;
+
+    await conexion.query(`UPDATE pedidos_mostrador SET actualizado_en = ? WHERE id = ?`, [momento, idPedido]);
+    await registrarEvento(
+      conexion,
+      idPedido,
+      {
+        evento: "sobre_pedido_automatico",
+        detalle:
+          `${marcadas} ${marcadas === 1 ? "renglón" : "renglones"} sin existencia suficiente: ` +
+          `${piezas} ${piezas === 1 ? "pieza va" : "piezas van"} a back order con Aldo`,
+        usuario,
+        canal: "mostrador",
+      },
+      momento
+    );
+    return marcadas;
   });
 }
 
@@ -1414,6 +1534,11 @@ function armarCondiciones(filtros: FiltrosPedidos): CondicionesArmadas {
   if (filtros.hasta) {
     condiciones.push("p.creado_en <= ?");
     parametros.push(`${filtros.hasta} 23:59:59`);
+  }
+  if (filtros.backorder === "si") {
+    // Con back order: la que tiene número en el POS y la que se quedó a medias
+    // (simulada o con error), que es justo la que el mostrador debe revisar.
+    condiciones.push("(p.num_bko_pos IS NOT NULL OR p.bko_pos_estado IN ('insertada', 'simulada', 'error'))");
   }
   if (filtros.busqueda) {
     // Folio (con o sin 'P-' y ceros), nombre del cliente o teléfono. Un número

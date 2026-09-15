@@ -10,6 +10,7 @@ import {
   fechaCompromisoAldo,
   firmaBackorder,
   folioDeId,
+  partidasAMarcarSobrePedido,
   partidasParaBackorder,
   partidaVuelveAPendiente,
   perfilDe,
@@ -19,9 +20,11 @@ import {
   puedeEditarPedido,
   puedeFijarDescuento,
   puedeTenerBackorder,
+  renglonesParaBackorder,
   validarAperturaBorrador,
   validarCambioEstatus,
   validarCantidad,
+  validarDatosClienteKiosco,
   validarEnvioBorrador,
   validarCapturaPartida,
   validarConfirmacionPartidas,
@@ -31,6 +34,11 @@ import {
   type EstatusPedido,
   type PartidaPedido,
   type PerfilPos,
+  type RenglonAldo,
+  CANALES_PEDIDO,
+  NOMBRE_KIOSCO_MAX,
+  NOMBRE_KIOSCO_MIN,
+  esCanalPedido,
 } from "./pedidos";
 
 const PERFILES: PerfilPos[] = ["Administrador", "Operaciones", "Ventas"];
@@ -51,6 +59,7 @@ function partida(numero: number, extra: Partial<PartidaPedido> = {}): PartidaPed
     existenciaAlPedir: null,
     estatusPartida: "pendiente",
     diasEntrega: null,
+    cantidadAldo: null,
     nota: null,
     ...extra,
   };
@@ -67,7 +76,13 @@ describe("partidasParaBackorder", () => {
     expect(partidasParaBackorder([pendiente])).toEqual([pendiente]);
   });
 
-  it("nunca usadas, confirmadas ni sin existencia; una nueva pendiente tampoco", () => {
+  it("toma la nueva pendiente cuya existencia al pedir no alcanzaba (vista optimista)", () => {
+    const faltaba = partida(1, { cantidad: 3, existenciaAlPedir: 1 });
+    const alcanzaba = partida(2, { cantidad: 3, existenciaAlPedir: 3 });
+    expect(partidasParaBackorder([faltaba, alcanzaba])).toEqual([faltaba]);
+  });
+
+  it("nunca usadas, confirmadas ni sin existencia; una nueva pendiente con existencia tampoco", () => {
     const fuera = [
       partida(1, { origen: "usada", codigo: null, idPiezaUsada: 18639, estatusPartida: "pendiente" }),
       partida(2, { origen: "usada", codigo: null, idPiezaUsada: 18640, estatusPartida: "confirmada" }),
@@ -75,6 +90,7 @@ describe("partidasParaBackorder", () => {
       partida(4, { origen: "sobre_pedido", estatusPartida: "sin_existencia" }),
       partida(5, { origen: "nueva", estatusPartida: "pendiente" }),
       partida(6, { origen: "nueva", estatusPartida: "sin_existencia" }),
+      partida(7, { origen: "usada", codigo: null, idPiezaUsada: 18641, cantidad: 2, existenciaAlPedir: 1 }),
     ];
     expect(partidasParaBackorder(fuera)).toEqual([]);
   });
@@ -89,26 +105,26 @@ describe("partidasParaBackorder", () => {
 });
 
 describe("firmaBackorder", () => {
-  it("'CODIGO×cant|CODIGO×cant' en orden de partida, aunque lleguen desordenadas", () => {
-    const partidas = [
-      partida(2, { codigo: "DDNVE15M", cantidad: 2, origen: "sobre_pedido", estatusPartida: "sobre_pedido" }),
-      partida(1, { codigo: "FAC123", cantidad: 1, origen: "sobre_pedido", estatusPartida: "pendiente" }),
-    ];
-    expect(firmaBackorder(partidas)).toBe("FAC123×1|DDNVE15M×2");
+  /** Renglón ya calculado, tal como sale de renglonesParaBackorder. */
+  const renglon = (numero: number, codigo: string | null, cantidad: number): RenglonAldo => ({
+    partida: numero,
+    codigo,
+    cantidad,
   });
 
-  it("solo firma las partidas sobre pedido; sin ninguna es ''", () => {
-    const partidas = [
-      partida(1, { codigo: "DDNVE15", estatusPartida: "confirmada" }),
-      partida(2, { codigo: "DDNVE15M", cantidad: 2, origen: "sobre_pedido", estatusPartida: "sobre_pedido" }),
-    ];
-    expect(firmaBackorder(partidas)).toBe("DDNVE15M×2");
-    expect(firmaBackorder([partida(1, { estatusPartida: "confirmada" })])).toBe("");
+  it("'CODIGO×cant|CODIGO×cant' en orden de partida, aunque lleguen desordenados", () => {
+    expect(firmaBackorder([renglon(2, "DDNVE15M", 2), renglon(1, "FAC123", 1)])).toBe("FAC123×1|DDNVE15M×2");
+  });
+
+  it("firma la cantidad que va a Aldo, no la del pedido; sin renglones es ''", () => {
+    const pendiente = partida(1, { codigo: "FAC123", cantidad: 3 });
+    expect(firmaBackorder(renglonesParaBackorder([pendiente], new Map([[1, 1]])))).toBe("FAC123×2");
+    expect(firmaBackorder(renglonesParaBackorder([pendiente], new Map([[1, 3]])))).toBe("");
     expect(firmaBackorder([])).toBe("");
   });
 
   it("cambia si cambia la cantidad o el código, y normaliza el código a mayúsculas", () => {
-    const base = partida(1, { codigo: "ddnve15m", cantidad: 2, origen: "sobre_pedido", estatusPartida: "sobre_pedido" });
+    const base = renglon(1, "ddnve15m", 2);
     expect(firmaBackorder([base])).toBe("DDNVE15M×2");
     expect(firmaBackorder([{ ...base, cantidad: 3 }])).not.toBe(firmaBackorder([base]));
     expect(firmaBackorder([{ ...base, codigo: "DDNVE15" }])).not.toBe(firmaBackorder([base]));
@@ -608,6 +624,17 @@ describe("validarFiltrosPedidos", () => {
     ).toEqual({ pagina: 1, porPagina: POR_PAGINA_PEDIDOS });
   });
 
+  it("backorder: solo 'si' filtra; cualquier otra cosa se ignora", () => {
+    expect(validarFiltrosPedidos({ backorder: "si" })).toEqual({
+      backorder: "si",
+      pagina: 1,
+      porPagina: POR_PAGINA_PEDIDOS,
+    });
+    for (const crudo of ["", "no", "sí", "SI", "1", "true", undefined]) {
+      expect(validarFiltrosPedidos({ backorder: crudo }).backorder, String(crudo)).toBeUndefined();
+    }
+  });
+
   it("acota la página y endereza un rango de fechas al revés", () => {
     expect(validarFiltrosPedidos({ pagina: "0" }).pagina).toBe(1);
     expect(validarFiltrosPedidos({ pagina: "-4" }).pagina).toBe(1);
@@ -726,5 +753,215 @@ describe("validarSucursal", () => {
     }
     expect(validarSucursal(null)).toEqual({ ok: false, error: "Petición inválida" });
     expect(validarSucursal("matriz")).toEqual({ ok: false, error: "Petición inválida" });
+  });
+});
+
+describe("renglonesParaBackorder", () => {
+  /** Existencias por número de partida, como las lee bdav al confirmar. */
+  const existencias = (pares: Array<[number, number | null]>) => new Map<number, number | null>(pares);
+
+  it("lo que el mostrador marcó a mano sobre pedido va completo, sin mirar la existencia", () => {
+    const marcada = partida(1, { codigo: "DDNVE15M", cantidad: 3, origen: "sobre_pedido", estatusPartida: "sobre_pedido" });
+    expect(renglonesParaBackorder([marcada], existencias([[1, 2]]))).toEqual([
+      { partida: 1, codigo: "DDNVE15M", cantidad: 3 },
+    ]);
+  });
+
+  it("lo que marcó el sistema va con la cantidad guardada, no con la del pedido", () => {
+    const delSistema = partida(1, {
+      codigo: "DDNVE15M",
+      cantidad: 3,
+      origen: "sobre_pedido",
+      estatusPartida: "sobre_pedido",
+      cantidadAldo: 2,
+    });
+    expect(renglonesParaBackorder([delSistema], existencias([[1, 1]]))).toEqual([
+      { partida: 1, codigo: "DDNVE15M", cantidad: 2 },
+    ]);
+  });
+
+  it("el segundo intento pide lo mismo que el primero: la back order no cambia sola", () => {
+    // Piden 3, hay 1: el primer sync manda 2 y marca el renglón con esa cantidad.
+    const antes = partida(1, { codigo: "FAC123", cantidad: 3 });
+    const hayUna = existencias([[1, 1]]);
+    const primero = renglonesParaBackorder([antes], hayUna);
+    expect(primero).toEqual([{ partida: 1, codigo: "FAC123", cantidad: 2 }]);
+
+    // Así queda el renglón en la base tras marcarlo (marcarSobrePedidoPorFaltante).
+    const despues = partida(1, {
+      codigo: "FAC123",
+      cantidad: 3,
+      origen: "sobre_pedido",
+      estatusPartida: "sobre_pedido",
+      cantidadAldo: 2,
+    });
+    const segundo = renglonesParaBackorder([despues], hayUna);
+    expect(segundo).toEqual(primero);
+    expect(firmaBackorder(segundo)).toBe(firmaBackorder(primero));
+  });
+
+  it("un pendiente cuya existencia actual no alcanza va por el faltante: piden 3, hay 1, van 2", () => {
+    const pendiente = partida(1, { codigo: "FAC123", cantidad: 3 });
+    expect(renglonesParaBackorder([pendiente], existencias([[1, 1]]))).toEqual([
+      { partida: 1, codigo: "FAC123", cantidad: 2 },
+    ]);
+  });
+
+  it("nunca las usadas, ni lo confirmado, ni lo que el mostrador dijo que no se consigue", () => {
+    const fuera = [
+      partida(1, { origen: "usada", codigo: null, idPiezaUsada: 18639, cantidad: 2 }),
+      partida(2, { origen: "usada", codigo: null, idPiezaUsada: 18640, estatusPartida: "sobre_pedido" }),
+      partida(3, { cantidad: 3, estatusPartida: "confirmada" }),
+      partida(4, { cantidad: 3, estatusPartida: "sin_existencia" }),
+      partida(5, { origen: "sobre_pedido", cantidad: 3, estatusPartida: "confirmada" }),
+    ];
+    const todas = existencias([
+      [1, 0],
+      [2, 0],
+      [3, 0],
+      [4, 0],
+      [5, 0],
+    ]);
+    expect(renglonesParaBackorder(fuera, todas)).toEqual([]);
+  });
+
+  it("la existencia que alcanza no pide nada; la negativa (descuadre del POS) cuenta como cero", () => {
+    const tres = partida(1, { codigo: "A", cantidad: 3 });
+    expect(renglonesParaBackorder([tres], existencias([[1, 3]]))).toEqual([]);
+    expect(renglonesParaBackorder([tres], existencias([[1, 9]]))).toEqual([]);
+    expect(renglonesParaBackorder([tres], existencias([[1, -4]]))).toEqual([
+      { partida: 1, codigo: "A", cantidad: 3 },
+    ]);
+  });
+
+  it("existencia que no se pudo leer (null o ausente): no se deduce, el renglón se queda como estaba", () => {
+    const nueva = partida(1, { codigo: "A", cantidad: 3 });
+    const yaSobrePedido = partida(2, { codigo: "B", cantidad: 3, origen: "sobre_pedido" });
+    const conNull = existencias([
+      [1, null],
+      [2, null],
+    ]);
+    // La nueva pendiente no se pide (nadie ha dicho que falte); la que ya venía
+    // sobre pedido sigue yendo completa, como antes de leer existencias.
+    const esperado = [{ partida: 2, codigo: "B", cantidad: 3 }];
+    expect(renglonesParaBackorder([nueva, yaSobrePedido], conNull)).toEqual(esperado);
+    expect(renglonesParaBackorder([nueva, yaSobrePedido], existencias([]))).toEqual(esperado);
+  });
+
+  it("conserva el orden del pedido y no toca la lista original", () => {
+    const original = [
+      partida(3, { codigo: "C", cantidad: 2 }),
+      partida(1, { codigo: "A", cantidad: 1, estatusPartida: "confirmada" }),
+      partida(2, { codigo: "B", cantidad: 5 }),
+    ];
+    const resultado = renglonesParaBackorder(
+      original,
+      existencias([
+        [1, 0],
+        [2, 1],
+        [3, 0],
+      ])
+    );
+    expect(resultado).toEqual([
+      { partida: 3, codigo: "C", cantidad: 2 },
+      { partida: 2, codigo: "B", cantidad: 4 },
+    ]);
+    expect(original).toHaveLength(3);
+  });
+});
+
+describe("partidasAMarcarSobrePedido", () => {
+  const existencias = (pares: Array<[number, number | null]>) => new Map<number, number | null>(pares);
+
+  it("solo los pendientes que el faltante manda a Aldo, en orden de partida", () => {
+    const partidas = [
+      partida(1, { cantidad: 3 }),
+      partida(2, { cantidad: 1, origen: "sobre_pedido" }),
+      partida(3, { cantidad: 2 }),
+    ];
+    expect(
+      partidasAMarcarSobrePedido(
+        partidas,
+        existencias([
+          [1, 1],
+          [2, 0],
+          [3, 5],
+        ])
+      )
+    ).toEqual([1, 2]);
+  });
+
+  it("no toca lo que el mostrador ya decidió, ni las usadas, ni lo que no se pudo leer", () => {
+    const partidas = [
+      partida(1, { cantidad: 3, estatusPartida: "sobre_pedido" }),
+      partida(2, { cantidad: 3, estatusPartida: "confirmada" }),
+      partida(3, { cantidad: 3, estatusPartida: "sin_existencia" }),
+      partida(4, { cantidad: 3, origen: "usada", codigo: null, idPiezaUsada: 18639 }),
+      partida(5, { cantidad: 3 }),
+    ];
+    const todas = existencias([
+      [1, 0],
+      [2, 0],
+      [3, 0],
+      [4, 0],
+      [5, null],
+    ]);
+    expect(partidasAMarcarSobrePedido(partidas, todas)).toEqual([]);
+  });
+});
+
+describe("canal kiosco", () => {
+  it("es un canal de pedido más, sin quitar los que ya había", () => {
+    expect(CANALES_PEDIDO).toEqual(["mostrador", "whatsapp", "web", "kiosco"]);
+    expect(esCanalPedido("kiosco")).toBe(true);
+    expect(esCanalPedido("piso")).toBe(false);
+  });
+});
+
+describe("validarDatosClienteKiosco", () => {
+  it("acepta nombre y celular y los devuelve normalizados", () => {
+    // Arrange / Act
+    const resultado = validarDatosClienteKiosco({ nombre: "  Juan   Pérez ", telefono: "+52 81 1234 5678" });
+
+    // Assert
+    expect(resultado).toEqual({ ok: true, datos: { nombre: "Juan Pérez", telefono: "8112345678" } });
+  });
+
+  it("normaliza las formas con que la gente escribe su celular", () => {
+    for (const crudo of ["8112345678", "81-1234-5678", "044 81 1234 5678", "5218112345678"]) {
+      expect(validarDatosClienteKiosco({ nombre: "Ana", telefono: crudo })).toMatchObject({
+        ok: true,
+        datos: { telefono: "8112345678" },
+      });
+    }
+  });
+
+  it("rechaza un nombre corto, vacío o pasado de largo", () => {
+    const corto = "a".repeat(NOMBRE_KIOSCO_MIN - 1);
+    const largo = "a".repeat(NOMBRE_KIOSCO_MAX + 1);
+    for (const nombre of ["", "  ", corto, largo]) {
+      expect(validarDatosClienteKiosco({ nombre, telefono: "8112345678" })).toMatchObject({ ok: false });
+    }
+    expect(validarDatosClienteKiosco({ nombre: "a".repeat(NOMBRE_KIOSCO_MAX), telefono: "8112345678" })).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("no deja pasar caracteres invisibles como si fueran nombre", () => {
+    expect(validarDatosClienteKiosco({ nombre: "​​​", telefono: "8112345678" })).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it("rechaza un celular que no quede en 10 dígitos", () => {
+    for (const telefono of ["", "811234567", "81123456789", "letras", "+1 415 555 0101"]) {
+      expect(validarDatosClienteKiosco({ nombre: "Juan Pérez", telefono })).toMatchObject({ ok: false });
+    }
+  });
+
+  it("un cuerpo que no es objeto no pasa", () => {
+    expect(validarDatosClienteKiosco("hola")).toMatchObject({ ok: false });
+    expect(validarDatosClienteKiosco([])).toMatchObject({ ok: false });
+    expect(validarDatosClienteKiosco(null)).toMatchObject({ ok: false });
   });
 });

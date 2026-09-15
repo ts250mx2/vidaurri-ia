@@ -5,6 +5,7 @@
 // tipos públicos tal cual en src/lib/mostrador/tipos.ts).
 
 import { limpiarTexto } from "./clientes-descuento";
+import { normalizarTelefono } from "./telefono";
 
 export type EstatusPedido =
   | "borrador"
@@ -13,7 +14,7 @@ export type EstatusPedido =
   | "listo"
   | "entregado"
   | "cancelado";
-export type CanalPedido = "mostrador" | "whatsapp" | "web";
+export type CanalPedido = "mostrador" | "whatsapp" | "web" | "kiosco";
 export type SucursalEntrega = "matriz" | "fierro";
 export type OrigenPartida = "nueva" | "usada" | "sobre_pedido";
 export type EstatusPartida = "pendiente" | "confirmada" | "sin_existencia" | "sobre_pedido";
@@ -40,7 +41,7 @@ export const ESTATUS_PEDIDO: ReadonlyArray<EstatusPedido> = [
   "entregado",
   "cancelado",
 ];
-export const CANALES_PEDIDO: ReadonlyArray<CanalPedido> = ["mostrador", "whatsapp", "web"];
+export const CANALES_PEDIDO: ReadonlyArray<CanalPedido> = ["mostrador", "whatsapp", "web", "kiosco"];
 export const ORIGENES_PARTIDA: ReadonlyArray<OrigenPartida> = ["nueva", "usada", "sobre_pedido"];
 export const ESTATUS_PARTIDA: ReadonlyArray<EstatusPartida> = [
   "pendiente",
@@ -120,6 +121,10 @@ export interface PartidaPedido {
   estatusPartida: EstatusPartida;
   /** Solo sobre_pedido: días que promete el mostrador. */
   diasEntrega: number | null;
+  /** Piezas que van a la back order cuando el SISTEMA marcó el renglón por
+   *  faltante; null = lo marcó el mostrador (o nadie) y va la cantidad
+   *  completa. Manda sobre `cantidad` al pedirle a Aldo. */
+  cantidadAldo: number | null;
   nota: string | null;
 }
 
@@ -199,6 +204,8 @@ export interface FiltrosPedidos {
   hasta?: string;
   /** Folio, nombre del cliente o teléfono. */
   busqueda?: string;
+  /** "si" = solo pedidos con back order a Aldo (la pantalla /mostrador/backorders). */
+  backorder?: "si";
   pagina: number;
   porPagina: number;
 }
@@ -303,37 +310,116 @@ export function partidaVuelveAPendiente(estatusPedido: EstatusPedido, estatusPar
 
 // --- Back order a Aldo (pos-backorder.ts escribe en el POS; aquí solo las reglas puras).
 
-type PartidaSobrePedido = Pick<PartidaPedido, "origen" | "estatusPartida">;
+type PartidaSobrePedido = Pick<PartidaPedido, "origen" | "estatusPartida" | "cantidad" | "existenciaAlPedir">;
 
 /**
- * Las partidas que se le piden a Aldo: las que el mostrador marcó sobre pedido
- * al confirmar y las que ya venían sobre pedido y nadie ha dicho que sí hay en
- * tienda (siguen pendientes). Nunca usadas (Aldo no las surte) ni confirmadas
- * o sin existencia (esas ya se resolvieron aquí). Devuelve una lista nueva en
- * el orden del pedido.
+ * VISTA OPTIMISTA, no la verdad: ¿este pedido PODRÍA acabar con back order?
+ * La usa la pantalla para decidir si pinta el panel de Aldo y para avisar
+ * antes de confirmar. Toma lo que el mostrador marcó sobre pedido, lo que ya
+ * venía sobre pedido y sigue pendiente, y lo pendiente cuya existencia AL
+ * PEDIR no alcanzaba (la de cuando se capturó, que pudo cambiar). Nunca
+ * usadas (Aldo no las surte) ni confirmadas o sin existencia (ya se
+ * resolvieron aquí). Lo que de verdad se le pide a Aldo lo decide
+ * renglonesParaBackorder con la existencia leída en el momento.
  */
 export function partidasParaBackorder<T extends PartidaSobrePedido>(partidas: readonly T[]): T[] {
   return partidas.filter(
     (p) =>
       p.origen !== "usada" &&
-      (p.estatusPartida === "sobre_pedido" || (p.origen === "sobre_pedido" && p.estatusPartida === "pendiente"))
+      (p.estatusPartida === "sobre_pedido" ||
+        (p.estatusPartida === "pendiente" && (p.origen === "sobre_pedido" || noAlcanzabaAlPedir(p))))
   );
 }
 
-type PartidaFirmable = PartidaSobrePedido & Pick<PartidaPedido, "partida" | "codigo" | "cantidad">;
+/** La existencia que se guardó al capturar el renglón no cubría lo que se pidió. */
+function noAlcanzabaAlPedir(partida: Pick<PartidaPedido, "cantidad" | "existenciaAlPedir">): boolean {
+  return partida.existenciaAlPedir !== null && partida.existenciaAlPedir < partida.cantidad;
+}
+
+/** Lo que se le pide a Aldo de un renglón: la partida y cuántas piezas van. */
+export interface RenglonAldo {
+  partida: number;
+  codigo: string | null;
+  cantidad: number;
+}
+
+/**
+ * Cuántas piezas de este renglón van a la back order (0 = ninguna), con la
+ * existencia ACTUAL en bdav (null si no se pudo leer). Las cinco reglas que
+ * autorizó el dueño el 14 sep 2026:
+ *   1. Usada: nunca (Aldo no las surte).
+ *   2. Marcada sobre pedido: las piezas que se guardaron para Aldo
+ *      (`cantidadAldo`) si la marcó el sistema por faltante, y si no la
+ *      completa, sin mirar existencia (el vendedor ya decidió; la de tienda
+ *      puede estar apartada). Guardar la cantidad es lo que hace que un
+ *      segundo intento pida exactamente lo mismo que el primero.
+ *   3. Pendiente (nadie la revisó) que no alcanza: el faltante. Piden 3, hay
+ *      1, van 2. Una existencia negativa (descuadre del POS) cuenta como 0.
+ *   4. Confirmada o sin existencia: nunca, eso ya se resolvió aquí.
+ *   5. Existencia que no se pudo leer: NO se deduce nada, el renglón se queda
+ *      como estaba antes de esta regla (el que ya venía sobre pedido va
+ *      completo; una nueva pendiente no se pide). Nunca se inventa un número.
+ */
+function piezasParaAldo(
+  partida: Pick<PartidaPedido, "origen" | "estatusPartida" | "cantidad" | "cantidadAldo">,
+  existencia: number | null
+): number {
+  if (partida.origen === "usada") return 0;
+  if (partida.estatusPartida === "confirmada" || partida.estatusPartida === "sin_existencia") return 0;
+  if (partida.estatusPartida === "sobre_pedido") return partida.cantidadAldo ?? partida.cantidad;
+  if (existencia === null) return partida.origen === "sobre_pedido" ? partida.cantidad : 0;
+  return partida.cantidad - Math.max(0, existencia);
+}
+
+/**
+ * Renglones que van a la back order, en el orden del pedido. `existencias` va
+ * por número de partida: la existencia ACTUAL en bdav, o null si no se pudo
+ * leer (entonces ese renglón no se deduce). Las reglas, en piezasParaAldo.
+ */
+export function renglonesParaBackorder(
+  partidas: readonly PartidaPedido[],
+  existencias: ReadonlyMap<number, number | null>
+): RenglonAldo[] {
+  const renglones: RenglonAldo[] = [];
+  for (const partida of partidas) {
+    const cantidad = piezasParaAldo(partida, existencias.get(partida.partida) ?? null);
+    if (cantidad > 0) renglones.push({ partida: partida.partida, codigo: partida.codigo, cantidad });
+  }
+  return renglones;
+}
+
+/**
+ * Partidas `pendiente` que el faltante convierte en sobre pedido: se marcan
+ * solas en el pedido para que el mostrador vea por qué se pidieron y pueda
+ * corregirlas renglón por renglón. Solo las que se pudieron medir: sin
+ * existencia leída no se toca nada. Devuelve números de partida.
+ */
+export function partidasAMarcarSobrePedido(
+  partidas: readonly PartidaPedido[],
+  existencias: ReadonlyMap<number, number | null>
+): number[] {
+  const marcar: number[] = [];
+  for (const partida of partidas) {
+    if (partida.origen === "usada" || partida.estatusPartida !== "pendiente") continue;
+    const existencia = existencias.get(partida.partida) ?? null;
+    if (existencia === null) continue;
+    if (piezasParaAldo(partida, existencia) > 0) marcar.push(partida.partida);
+  }
+  return marcar;
+}
 
 /**
  * Huella de los renglones que van a la back order, 'CODIGO×2|CODIGO×1' en
  * orden de partida: si la vigente en el POS tiene la misma huella no hay que
- * volver a pedirla; si cambió, se cancela y se pide otra. Aplica
- * partidasParaBackorder, así que se le puede dar el pedido completo. Sin
- * renglones es ''.
+ * volver a pedirla; si cambió, se cancela y se pide otra. Recibe los renglones
+ * ya calculados (renglonesParaBackorder), así que la cantidad que firma es la
+ * que va a Aldo, no la del pedido. Sin renglones es ''.
  */
-export function firmaBackorder(partidas: readonly PartidaFirmable[]): string {
-  return partidasParaBackorder(partidas)
+export function firmaBackorder(renglones: readonly RenglonAldo[]): string {
+  return renglones
     .slice()
     .sort((a, b) => a.partida - b.partida)
-    .map((p) => `${(p.codigo ?? "").toUpperCase()}×${p.cantidad}`)
+    .map((r) => `${(r.codigo ?? "").toUpperCase()}×${r.cantidad}`)
     .join("|");
 }
 
@@ -637,6 +723,7 @@ export function validarFiltrosPedidos(sp: Record<string, string | undefined>): F
     ...(desde !== undefined ? { desde } : {}),
     ...(hasta !== undefined ? { hasta } : {}),
     ...(busqueda ? { busqueda } : {}),
+    ...(sp.backorder === "si" ? { backorder: "si" as const } : {}),
     pagina: leerPagina(sp.pagina),
     porPagina: leerPorPagina(sp.porPagina),
   };
@@ -736,4 +823,50 @@ export function validarSucursal(entrada: unknown): Validacion<{ sucursal: Sucurs
   if (!esObjeto(entrada)) return { ok: false, error: "Petición inválida" };
   if (!esSucursal(entrada.sucursal)) return { ok: false, error: ERROR_SUCURSAL };
   return { ok: true, datos: { sucursal: entrada.sucursal } };
+}
+
+// ---------------------------------------------------------------------------
+// Cuerpo del envío desde el kiosco de autoservicio (POST /api/kiosco/borrador/
+// enviar). El cliente teclea su nombre y su celular en la pantalla del piso:
+// no hay padrón, ni descuento, ni vendedor que corrija lo que capturó, así que
+// aquí se valida con más cuidado que en el mostrador.
+// ---------------------------------------------------------------------------
+
+/** Nombre del cliente del kiosco: lo suficiente para hablarle en el mostrador. */
+export const NOMBRE_KIOSCO_MIN = 3;
+export const NOMBRE_KIOSCO_MAX = 60;
+/** Celular nacional de 10 dígitos: la forma canónica del sistema (telefono.ts). */
+const TELEFONO_NACIONAL = /^\d{10}$/;
+
+export interface DatosClienteKiosco {
+  nombre: string;
+  /** Ya normalizado a 10 dígitos. */
+  telefono: string;
+}
+
+export const ERROR_NOMBRE_KIOSCO = `Escribe tu nombre (entre ${NOMBRE_KIOSCO_MIN} y ${NOMBRE_KIOSCO_MAX} letras)`;
+export const ERROR_TELEFONO_KIOSCO = "Escribe tu celular a 10 dígitos";
+
+/**
+ * `{ nombre, telefono }` del cliente que manda su pedido desde el kiosco.
+ * El nombre se limpia (limpiarTexto quita controles y colapsa espacios) y se
+ * exige de 3 a 60 caracteres; el teléfono se normaliza como el resto del
+ * sistema (quita +52, 044, espacios y guiones) y debe quedar en 10 dígitos:
+ * un extranjero o un número corto no sirve para llamarle cuando esté listo.
+ */
+export function validarDatosClienteKiosco(entrada: unknown): Validacion<DatosClienteKiosco> {
+  const cuerpo = entrada == null ? {} : entrada;
+  if (!esObjeto(cuerpo)) return { ok: false, error: "Petición inválida" };
+
+  const nombre = limpiarTexto(String(cuerpo.nombre ?? ""));
+  if (nombre.length < NOMBRE_KIOSCO_MIN || nombre.length > NOMBRE_KIOSCO_MAX) {
+    return { ok: false, error: ERROR_NOMBRE_KIOSCO };
+  }
+
+  const telefono = normalizarTelefono(String(cuerpo.telefono ?? ""));
+  if (!TELEFONO_NACIONAL.test(telefono)) {
+    return { ok: false, error: ERROR_TELEFONO_KIOSCO };
+  }
+
+  return { ok: true, datos: { nombre, telefono } };
 }

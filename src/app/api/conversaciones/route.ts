@@ -24,7 +24,7 @@ export async function GET(request: Request) {
 
   const canalCrudo = searchParams.get("canal");
   const canal =
-    canalCrudo === "whatsapp" || canalCrudo === "web" || canalCrudo === "mostrador"
+    canalCrudo === "whatsapp" || canalCrudo === "web" || canalCrudo === "mostrador" || canalCrudo === "kiosco"
       ? canalCrudo
       : undefined;
 

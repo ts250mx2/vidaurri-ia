@@ -40,8 +40,10 @@ export interface HojaSurtido {
 }
 
 /** Existencia por código en bdav. Hay códigos capturados dos veces: se toma la
- *  mayor, igual que al cotizar (articuloParaPedido). Claves en mayúsculas. */
-async function existenciasNuevas(codigos: string[]): Promise<Map<string, number>> {
+ *  mayor, igual que al cotizar (articuloParaPedido). Claves en mayúsculas. La
+ *  comparte pos-backorder.ts para decidir el faltante que va a Aldo: una sola
+ *  consulta para las dos, que si cambia tiene que cambiar para ambas. */
+export async function existenciasNuevas(codigos: string[]): Promise<Map<string, number>> {
   const existencias = new Map<string, number>();
   if (codigos.length === 0) return existencias;
   const filas = await consultaBdav<{ codigo: string; existencia: number }>(

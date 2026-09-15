@@ -7,23 +7,27 @@ import {
   guardarBackorderPos,
   leerBackorderPos,
   leerIdVendedorPos,
+  marcarSobrePedidoPorFaltante,
   obtenerPedido,
   type BackorderPosGuardada,
   type ResultadoBkoPos,
 } from "@/lib/db-pedidos";
 import { IVA } from "@/lib/formato";
+import { existenciasNuevas } from "@/lib/hoja-surtido";
 import {
   BKO_FIRMA_MAX,
   IVA_PEDIDOS,
   fechaCompromisoAldo,
   firmaBackorder,
   folioDeId,
-  partidasParaBackorder,
+  partidasAMarcarSobrePedido,
   puedeTenerBackorder,
   redondear2,
+  renglonesParaBackorder,
   type CompromisoAldo,
   type PartidaPedido,
   type PedidoDetalle,
+  type RenglonAldo,
 } from "@/lib/pedidos";
 import { ID_CTE_NO_REGISTRADO, idClienteBdavDe, type SentenciaPos } from "@/lib/pos-cotiza";
 
@@ -177,6 +181,10 @@ export interface ContextoBackorderPos {
   fechaCompromiso: CompromisoAldo;
   /** articulos.id por número de partida del pedido; las que falten se omiten. */
   idArticuloPorPartida: Map<number, number>;
+  /** Piezas que van a Aldo por número de partida (renglonesParaBackorder):
+   *  puede ser el faltante y no la cantidad del pedido. Lo que no está aquí,
+   *  no se pide. */
+  cantidadPorPartida: ReadonlyMap<number, number>;
 }
 
 export type ArmadoBackorderPos = { ok: true; backorder: BackorderPos } | { ok: false; error: string };
@@ -200,29 +208,33 @@ export function totalesBko(importesSinIva: readonly number[]): { subtotal: numbe
 }
 
 /**
- * Traduce el pedido a lo que el POS guarda como back order. Solo van las
- * partidas sobre pedido (partidasParaBackorder) con artículo resuelto en bdav;
- * las que no se resolvieron se omiten y quedan anotadas para el resumen. Los
- * precios del pedido traen IVA; el POS los guarda sin él y recalcula el IVA
- * sobre el subtotal, así que aquí se desglosa igual.
+ * Traduce el pedido a lo que el POS guarda como back order. Quién va y con
+ * cuántas piezas ya lo decidió renglonesParaBackorder: aquí solo entran las
+ * partidas de `cantidadPorPartida` y con ESA cantidad (que puede ser el
+ * faltante, no la del pedido). Las que no resolvieron su artículo en bdav se
+ * omiten y quedan anotadas para el resumen. Los precios del pedido traen IVA;
+ * el POS los guarda sin él y recalcula el IVA sobre el subtotal, así que aquí
+ * se desglosa igual.
  */
 export function armarBackorderPos(pedido: PedidoParaBackorderPos, contexto: ContextoBackorderPos): ArmadoBackorderPos {
   const renglones: RenglonBackorderPos[] = [];
   const omitidas: string[] = [];
 
-  for (const partida of partidasParaBackorder(pedido.partidas)) {
+  for (const partida of pedido.partidas) {
+    const cantidad = contexto.cantidadPorPartida.get(partida.partida) ?? 0;
+    if (cantidad <= 0) continue;
     const idArt = contexto.idArticuloPorPartida.get(partida.partida);
     if (!idArt) {
-      omitidas.push(`${partida.cantidad} × ${partida.codigo ?? "sin código"} (sin artículo en bdav)`);
+      omitidas.push(`${cantidad} × ${partida.codigo ?? "sin código"} (sin artículo en bdav)`);
       continue;
     }
     const precio = precioSinIvaBko(partida.precioUnitario);
     renglones.push({
       idArt,
       partida: renglones.length + 1,
-      cantidad: partida.cantidad,
+      cantidad,
       precio,
-      totalPart: redondear2(partida.cantidad * precio),
+      totalPart: redondear2(cantidad * precio),
       estatus: ESTATUS_RENGLON_BKO,
     });
   }
@@ -343,6 +355,39 @@ export function detalleInsercionBko(numBko: number, backorder: BackorderPos): st
 export async function idVendedorDe(usuario: string | null): Promise<number> {
   const enTabla = usuario ? await leerIdVendedorPos(usuario) : null;
   return enTabla ?? idVendedorDefault();
+}
+
+/**
+ * Existencia ACTUAL en bdav, por número de partida, de los renglones que
+ * podrían ir a Aldo: los que no son usadas y que el mostrador no ha resuelto
+ * (ni confirmada ni sin existencia). Es la misma consulta de la hoja de
+ * surtido (existenciasNuevas). Un código que bdav no conoce vale 0 (no hay
+ * nada que descontar); si la consulta falla, todas salen null, se loguea y
+ * nada se deduce: la back order se arma como antes de esta regla. Nunca se
+ * inventa una existencia.
+ */
+export async function existenciasParaBackorder(
+  partidas: readonly PartidaPedido[]
+): Promise<ReadonlyMap<number, number | null>> {
+  const candidatas = partidas.flatMap((p) =>
+    p.origen !== "usada" &&
+    p.codigo !== null &&
+    p.estatusPartida !== "confirmada" &&
+    p.estatusPartida !== "sin_existencia"
+      ? [{ partida: p.partida, codigo: p.codigo.toUpperCase() }]
+      : []
+  );
+  const existencias = new Map<number, number | null>();
+  if (candidatas.length === 0) return existencias;
+
+  try {
+    const porCodigo = await existenciasNuevas([...new Set(candidatas.map((c) => c.codigo))]);
+    for (const c of candidatas) existencias.set(c.partida, porCodigo.get(c.codigo) ?? 0);
+  } catch (error) {
+    console.error("[pos-backorder] no se pudo leer la existencia en bdav para el faltante de Aldo:", error);
+    for (const c of candidatas) existencias.set(c.partida, null);
+  }
+  return existencias;
 }
 
 /** El folio que leímos ya lo subió el POS en el mismo instante. */
@@ -564,6 +609,40 @@ async function cancelarVigente(
   }
 }
 
+/** Piezas que van a Aldo por número de partida, como las espera el armado. */
+function cantidadesDe(renglones: readonly RenglonAldo[]): ReadonlyMap<number, number> {
+  return new Map(renglones.map((r) => [r.partida, r.cantidad]));
+}
+
+/**
+ * Los renglones pendientes que el faltante manda a Aldo se marcan solos como
+ * sobre pedido, guardando en cada uno las piezas que van (para que el próximo
+ * intento pida lo mismo) y con su evento en la bitácora; el pedido se vuelve a
+ * leer para que quien llama reciba el detalle ya actualizado. Sin nada que
+ * marcar, el pedido se devuelve tal cual y no se toca la base.
+ */
+async function marcarFaltantes(
+  idPedido: number,
+  pedido: PedidoDetalle,
+  existencias: ReadonlyMap<number, number | null>,
+  renglones: readonly RenglonAldo[],
+  usuario: string | null
+): Promise<PedidoDetalle> {
+  const piezas = cantidadesDe(renglones);
+  const aMarcar = partidasAMarcarSobrePedido(pedido.partidas, existencias).flatMap((partida) => {
+    const cantidad = piezas.get(partida) ?? 0;
+    return cantidad > 0 ? [{ partida, cantidad }] : [];
+  });
+  if (aMarcar.length === 0) return pedido;
+
+  const marcadas = await marcarSobrePedidoPorFaltante(idPedido, aMarcar, usuario);
+  if (marcadas === 0) return pedido;
+  console.info(
+    `[pos-backorder] pedido ${folioDe(pedido)}: ${marcadas} renglón(es) sin existencia marcados sobre pedido para Aldo`
+  );
+  return (await obtenerPedido(idPedido)) ?? pedido;
+}
+
 /** Ya no hay partidas sobre pedido: la vigente se cancela; si nunca hubo, queda omitida (no es error). */
 async function sinRenglones(
   idPedido: number,
@@ -635,14 +714,24 @@ async function apagado(
  * pedido no exista o que la propia base de pedidos falle.
  */
 export async function sincronizarBackorderPos(idPedido: number, usuario: string | null): Promise<PedidoDetalle> {
-  const pedido = await obtenerPedido(idPedido);
-  if (!pedido) throw new PedidoNoEncontradoError();
-  if (!puedeTenerBackorder(pedido.estatus)) return pedido;
+  const capturado = await obtenerPedido(idPedido);
+  if (!capturado) throw new PedidoNoEncontradoError();
+  if (!puedeTenerBackorder(capturado.estatus)) return capturado;
 
   const guardada = await leerBackorderPos(idPedido);
   if (!guardada) throw new PedidoNoEncontradoError();
-  const renglones = partidasParaBackorder(pedido.partidas);
+
+  // Lo que va a Aldo se decide con la existencia de AHORA, no con la de cuando
+  // se capturó, y sobre el pedido tal como está antes de marcar nada: los
+  // renglones que el faltante manda a Aldo se marcan solos después, y si se
+  // calcularan sobre el pedido ya marcado irían completos en vez del faltante.
+  const existencias = await existenciasParaBackorder(capturado.partidas);
+  const renglones = renglonesParaBackorder(capturado.partidas, existencias);
   const firma = firmaBackorder(renglones);
+
+  // Se marcan aunque la back order no cambie: el mostrador tiene que ver por
+  // qué se pidieron y poder corregir el renglón si esa sí la tenía.
+  const pedido = await marcarFaltantes(idPedido, capturado, existencias, renglones, usuario);
 
   if (esVigente(guardada) && mismaFirma(guardada.firma, firma)) return pedido;
   if (renglones.length === 0) return sinRenglones(idPedido, pedido, guardada, usuario);
@@ -659,10 +748,12 @@ export async function sincronizarBackorderPos(idPedido: number, usuario: string 
       : null;
 
   try {
+    const cantidadPorPartida = cantidadesDe(renglones);
+    const partidasDeAldo = pedido.partidas.filter((p) => cantidadPorPartida.has(p.partida));
     const [idClienteBdav, idVendedor, idArticuloPorPartida] = await Promise.all([
       idClienteBdavDe(pedido.idCliente),
       idVendedorDe(usuario),
-      idArticuloPorPartidaDe(renglones),
+      idArticuloPorPartidaDe(partidasDeAldo),
     ]);
     const { fecha } = ahoraMonterrey();
     const armado = armarBackorderPos(pedido, {
@@ -671,6 +762,7 @@ export async function sincronizarBackorderPos(idPedido: number, usuario: string 
       fechaBko: fecha,
       fechaCompromiso: fechaCompromisoAldo(fecha),
       idArticuloPorPartida,
+      cantidadPorPartida,
     });
     if (!armado.ok) return await guardarError(idPedido, armado.error, usuario, anterior);
 

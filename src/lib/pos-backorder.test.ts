@@ -60,6 +60,8 @@ const CONTEXTO: ContextoBackorderPos = {
     [1, 5348],
     [2, 19099],
   ]),
+  // Lo que decidió renglonesParaBackorder: solo la partida 2, con sus 2 piezas.
+  cantidadPorPartida: new Map([[2, 2]]),
 };
 
 describe("armarBackorderPos", () => {
@@ -103,6 +105,7 @@ describe("armarBackorderPos", () => {
     const contexto: ContextoBackorderPos = {
       ...CONTEXTO,
       idArticuloPorPartida: new Map(sinIva.map((_, i) => [i + 1, 1000 + i])),
+      cantidadPorPartida: new Map(sinIva.map((_, i) => [i + 1, 1])),
     };
 
     const armado = armarBackorderPos(pedido, contexto);
@@ -117,7 +120,11 @@ describe("armarBackorderPos", () => {
   it("el IVA se calcula sobre el subtotal ya redondeado y subtotal + IVA cuadra con el total", () => {
     // 3 × 99.99 con IVA → precio 86.20, total_part 258.60
     const pedido = { ...PEDIDO, partidas: [partida(1, "A", 3, 99.99)] };
-    const armado = armarBackorderPos(pedido, { ...CONTEXTO, idArticuloPorPartida: new Map([[1, 7]]) });
+    const armado = armarBackorderPos(pedido, {
+      ...CONTEXTO,
+      idArticuloPorPartida: new Map([[1, 7]]),
+      cantidadPorPartida: new Map([[1, 3]]),
+    });
 
     expect(armado.ok).toBe(true);
     if (!armado.ok) return;
@@ -165,7 +172,7 @@ describe("armarBackorderPos", () => {
     expect(armado.ok && armado.backorder.cabecera.comentarios).toBe("Pedido web P-000041");
   });
 
-  it("solo van las partidas sobre pedido: las confirmadas y las usadas se quedan fuera sin anotarse", () => {
+  it("solo van las partidas del mapa: lo demás se queda fuera sin anotarse", () => {
     const pedido = {
       ...PEDIDO,
       partidas: [
@@ -182,6 +189,10 @@ describe("armarBackorderPos", () => {
         [3, 19099],
         [4, 888],
       ]),
+      cantidadPorPartida: new Map([
+        [3, 2],
+        [4, 1],
+      ]),
     };
     const armado = armarBackorderPos(pedido, contexto);
 
@@ -195,12 +206,35 @@ describe("armarBackorderPos", () => {
     expect(armado.backorder.cabecera.subtotal).toBe(1976);
   });
 
+  it("pide la cantidad del mapa (el faltante), no la del pedido: de 3 con 1 en tienda van 2", () => {
+    const pedido = { ...PEDIDO, partidas: [partida(1, "FAC123", 3, 1088.08)] };
+    const armado = armarBackorderPos(pedido, {
+      ...CONTEXTO,
+      idArticuloPorPartida: new Map([[1, 19099]]),
+      cantidadPorPartida: new Map([[1, 2]]),
+    });
+
+    expect(armado.ok).toBe(true);
+    if (!armado.ok) return;
+    expect(armado.backorder.renglones).toEqual([
+      { idArt: 19099, partida: 1, cantidad: 2, precio: 938, totalPart: 1876, estatus: "BKO" },
+    ]);
+    expect(armado.backorder.cabecera.subtotal).toBe(1876);
+  });
+
   it("una partida sobre pedido sin artículo en bdav se omite, se anota y los renglones se renumeran", () => {
     const pedido = {
       ...PEDIDO,
       partidas: [partida(1, "NOEXISTE", 1, 116), partida(2, "DDNVE15M", 2, 1088.08)],
     };
-    const armado = armarBackorderPos(pedido, { ...CONTEXTO, idArticuloPorPartida: new Map([[2, 19099]]) });
+    const armado = armarBackorderPos(pedido, {
+      ...CONTEXTO,
+      idArticuloPorPartida: new Map([[2, 19099]]),
+      cantidadPorPartida: new Map([
+        [1, 1],
+        [2, 2],
+      ]),
+    });
 
     expect(armado.ok).toBe(true);
     if (!armado.ok) return;
@@ -218,7 +252,13 @@ describe("armarBackorderPos", () => {
     const sinResolver = { ...PEDIDO, partidas: [partida(1, "ZZZ", 1, 500)] };
 
     expect(armarBackorderPos(sinSobrePedido, CONTEXTO)).toEqual({ ok: false, error: ERROR_SIN_RENGLONES_BKO });
-    expect(armarBackorderPos(sinResolver, { ...CONTEXTO, idArticuloPorPartida: new Map() })).toEqual({
+    expect(
+      armarBackorderPos(sinResolver, {
+        ...CONTEXTO,
+        idArticuloPorPartida: new Map(),
+        cantidadPorPartida: new Map([[1, 1]]),
+      })
+    ).toEqual({
       ok: false,
       error: ERROR_SIN_RENGLONES_BKO,
     });
@@ -302,7 +342,14 @@ describe("resumirSimulacionBko / detalleInsercionBko", () => {
       ...PEDIDO,
       partidas: [partida(1, "NOEXISTE", 1, 116), partida(2, "DDNVE15M", 2, 1088.08)],
     };
-    const armado = armarBackorderPos(pedido, { ...CONTEXTO, idArticuloPorPartida: new Map([[2, 19099]]) });
+    const armado = armarBackorderPos(pedido, {
+      ...CONTEXTO,
+      idArticuloPorPartida: new Map([[2, 19099]]),
+      cantidadPorPartida: new Map([
+        [1, 1],
+        [2, 2],
+      ]),
+    });
     if (!armado.ok) throw new Error("armado inválido");
     const resumen = resumirSimulacionBko(armado.backorder, "?");
     expect(resumen).toMatch(/num_bko estimado \?/);

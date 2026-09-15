@@ -3,18 +3,27 @@ import { ahoraMonterrey } from "@/lib/db-conversaciones";
 import { leerBackorderPos } from "@/lib/db-pedidos";
 import {
   fechaCompromisoAldo,
-  partidasParaBackorder,
   redondear2,
+  renglonesParaBackorder,
   type EstadoBkoPos,
   type PedidoDetalle,
 } from "@/lib/pedidos";
-import { ID_PROV_ALDO, idVendedorDe, precioSinIvaBko, totalesBko } from "@/lib/pos-backorder";
+import {
+  ID_PROV_ALDO,
+  existenciasParaBackorder,
+  idVendedorDe,
+  precioSinIvaBko,
+  totalesBko,
+} from "@/lib/pos-backorder";
 
 // Hoja de la back order a Aldo: la orden de compra que el mostrador imprime
-// para el proveedor. Lleva los renglones sobre pedido del pedido tal como se
+// para el proveedor. Lleva los renglones que se le piden a Aldo tal como se
 // piden (precio sin IVA, IVA en el total), aunque la back order todavía no
 // exista en el POS (pendiente, error, simulada): la hoja sirve igual para
-// pedir por teléfono. El proveedor y el nombre del vendedor se leen de bdav
+// pedir por teléfono. Qué va y cuántas piezas se decide con la misma regla y
+// la misma lectura de existencia que usa la inserción en el POS
+// (renglonesParaBackorder), para que la hoja y el POS digan lo mismo: de un
+// renglón del que se piden 3 y hay 1 en tienda, van 2. El proveedor y el nombre del vendedor se leen de bdav
 // (solo lectura) y degradan a null si bdav no responde.
 
 export interface RenglonBackorderHoja {
@@ -22,8 +31,12 @@ export interface RenglonBackorderHoja {
   partida: number;
   codigo: string;
   descripcion: string;
+  /** Piezas que van a Aldo: el faltante cuando en tienda ya hay algunas. */
   cantidad: number;
+  /** Piezas que pidió el cliente; si difiere de `cantidad`, la hoja dice "2 de 3". */
+  cantidadPedida: number;
   precioSinIva: number;
+  /** cantidad (la que va a Aldo) × precioSinIva. */
   importeSinIva: number;
   /** Días que prometió el mostrador al marcarla sobre pedido; null si no dijo. */
   diasEntrega: number | null;
@@ -105,27 +118,35 @@ async function oNulo<T>(consulta: Promise<T>, contexto: string): Promise<T | nul
 export async function armarHojaBackorder(pedido: PedidoDetalle): Promise<HojaBackorder> {
   // El vendedor que firma (o firmaría) es el último que atendió el pedido, que
   // es quien confirmó las partidas; antes de eso, quien lo capturó.
-  const [guardada, idVendedor] = await Promise.all([
+  const [guardada, idVendedor, existencias] = await Promise.all([
     leerBackorderPos(pedido.id),
     idVendedorDe(pedido.atendidoPor ?? pedido.capturadoPor),
+    existenciasParaBackorder(pedido.partidas),
   ]);
   const [proveedor, vendedor] = await Promise.all([
     oNulo(proveedorAldo(), "leyendo el proveedor Aldo en bdav"),
     oNulo(nombreVendedor(idVendedor), `leyendo el vendedor ${idVendedor} en bdav`),
   ]);
 
-  const renglones: RenglonBackorderHoja[] = partidasParaBackorder(pedido.partidas).map((partida, indice) => {
+  const piezasParaAldo = new Map(
+    renglonesParaBackorder(pedido.partidas, existencias).map((r) => [r.partida, r.cantidad])
+  );
+  const renglones: RenglonBackorderHoja[] = [];
+  for (const partida of pedido.partidas) {
+    const cantidad = piezasParaAldo.get(partida.partida);
+    if (cantidad === undefined) continue;
     const precioSinIva = precioSinIvaBko(partida.precioUnitario);
-    return {
-      partida: indice + 1,
+    renglones.push({
+      partida: renglones.length + 1,
       codigo: partida.codigo ?? "",
       descripcion: partida.descripcion,
-      cantidad: partida.cantidad,
+      cantidad,
+      cantidadPedida: partida.cantidad,
       precioSinIva,
-      importeSinIva: redondear2(partida.cantidad * precioSinIva),
+      importeSinIva: redondear2(cantidad * precioSinIva),
       diasEntrega: partida.diasEntrega,
-    };
-  });
+    });
+  }
 
   const { fecha, momento } = ahoraMonterrey();
   return {

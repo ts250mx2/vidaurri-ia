@@ -65,9 +65,10 @@ export async function idDeRuta(params: Promise<Record<string, string>>, clave: s
 /**
  * Traduce un error a la respuesta que le toca. Los de dominio ya traen el
  * mensaje para el usuario; cualquier otro es una falla de base o de código:
- * se loguea con el contexto de la ruta y sale como 502 sin detalles.
+ * se loguea con el contexto de la ruta (y el área que llama, para no firmar
+ * como "mostrador" lo que reventó en el kiosco) y sale como 502 sin detalles.
  */
-export function respuestaDeError(error: unknown, contexto: string): NextResponse {
+export function respuestaDeError(error: unknown, contexto: string, area = "mostrador"): NextResponse {
   if (error instanceof PedidoNoEncontradoError || error instanceof PartidaNoEncontradaError) {
     return respuestaError(error.message, 404);
   }
@@ -89,7 +90,7 @@ export function respuestaDeError(error: unknown, contexto: string): NextResponse
   if (error instanceof ReferenciaApvDuplicadaError) {
     return respuestaError(error.message, 409);
   }
-  console.error(`[mostrador] ${contexto}:`, error);
+  console.error(`[${area}] ${contexto}:`, error);
   return respuestaError(ERROR_BASE, 502);
 }
 
