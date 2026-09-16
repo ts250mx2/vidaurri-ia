@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, RotateCcw, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { preguntarAgente, SesionExpiradaError } from "@/lib/agente-cliente";
+import { etiquetaIA, preguntarAgente, SesionExpiradaError, type IAUsada } from "@/lib/agente-cliente";
 import { AgenteMarkdown } from "@/components/dashboard/AgenteMarkdown";
 
 interface Mensaje {
   rol: "usuario" | "agente";
   texto: string;
+  /** Proveedor y modelo que contestaron (solo en respuestas del agente). */
+  ia?: IAUsada;
 }
 
 const ENDPOINT = "/api/chat/vendedor";
@@ -72,6 +74,7 @@ export default function VendedorPage() {
       const controlador = new AbortController();
       abortRef.current = controlador;
       try {
+        let iaUsada: IAUsada | undefined;
         const respuesta = await preguntarAgente(
           ENDPOINT,
           limpia,
@@ -82,10 +85,11 @@ export default function VendedorPage() {
               setBorrador(t);
             },
             alEstado: setEstado,
+            alIA: (ia) => { iaUsada = ia; },
           },
           controlador.signal
         );
-        setMensajes([...historial, { rol: "agente", texto: respuesta || "…" }]);
+        setMensajes([...historial, { rol: "agente", texto: respuesta || "…", ia: iaUsada }]);
       } catch (err: unknown) {
         if (err instanceof SesionExpiradaError) {
           window.location.href = "/login";
@@ -191,7 +195,14 @@ export default function VendedorPage() {
                       : "bg-white/[0.05] border-white/10 rounded-bl-md"
                   )}
                 >
-                  {m.rol === "usuario" ? m.texto : <AgenteMarkdown texto={m.texto} />}
+                  {m.rol === "usuario" ? (
+                    m.texto
+                  ) : (
+                    <>
+                      <AgenteMarkdown texto={m.texto} />
+                      {m.ia && <div className="mt-1.5 text-[10px] text-white/35">{etiquetaIA(m.ia)}</div>}
+                    </>
+                  )}
                 </div>
               </div>
             ))}

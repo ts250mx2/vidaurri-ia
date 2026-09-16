@@ -2,7 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { consultaBdav } from "@/lib/db";
 import { consultaUsadas } from "@/lib/db-usadas";
 import { precioAldo } from "@/lib/aldo";
-import { correrTurnoAgente, type CredencialIA, type UsoHerramienta } from "@/lib/agente-modelo";
+import { correrTurnoAgente, iaDe, type CredencialIA, type IAUsada, type UsoHerramienta } from "@/lib/agente-modelo";
 import { condicionesPorPalabra, expresionRelevancia } from "@/lib/busqueda";
 import { observacionOrigen } from "@/lib/origen-pieza";
 import {
@@ -770,6 +770,8 @@ export interface OpcionesVendedor {
   alReinicio?: () => void;
   /** Estado de progreso ("Buscando productos"). */
   alEstado?: (texto: string) => void;
+  /** Con qué proveedor y modelo contestó cada turno (el respaldo, si el principal falló). */
+  alIA?: (ia: IAUsada) => void;
 }
 
 /**
@@ -823,6 +825,7 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
         op.alTexto?.(frag);
       },
     });
+    op.alIA?.(iaDe(resultado, op.credencial));
 
     if (resultado.usos.length === 0) {
       textoFinal = textoRonda; // se conserva por si la corrección no alcanza

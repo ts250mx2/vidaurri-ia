@@ -8,7 +8,7 @@ import {
   TABLAS_PERMITIDAS,
   TABLAS_PERMITIDAS_USADAS,
 } from "@/lib/agente-sql";
-import { correrTurnoAgente, credencialParaRuta, type UsoHerramienta } from "@/lib/agente-modelo";
+import { correrTurnoAgente, credencialParaRuta, iaDe, type IAUsada, type UsoHerramienta } from "@/lib/agente-modelo";
 
 // Agente VIDA — Vidaurri Inteligencia de Datos Automotriz.
 // Protocolo de streaming NDJSON (patrón kyk-server-web):
@@ -239,6 +239,8 @@ export async function POST(request: Request) {
   const ia = await credencialParaRuta("vida");
   if (!ia.ok) return Response.json({ error: ia.error }, { status: 503 });
   const { credencial } = ia;
+  // Con qué proveedor y modelo se contestó (el respaldo, si el principal falló): va al final del stream.
+  let iaUsada: IAUsada = { proveedor: credencial.proveedorHl ?? credencial.proveedor, modelo: credencial.modelo };
 
   // Historial reciente (texto plano) → mensajes del modelo.
   const historial = (cuerpo.historial ?? []).slice(-MAX_HISTORIAL);
@@ -277,6 +279,7 @@ export async function POST(request: Request) {
             alTexto: (texto) => emitir({ t: "delta", texto }),
           });
 
+          iaUsada = iaDe(resultado, credencial);
           if (resultado.usos.length === 0) break; // respuesta final ya streameada
 
           // Ronda de herramientas: descartar el preámbulo ya enviado.
@@ -303,7 +306,7 @@ export async function POST(request: Request) {
           }
           mensajes.push({ role: "user", content: resultadosHerramientas });
         }
-        emitir({ t: "fin" });
+        emitir({ t: "fin", ia: iaUsada });
       } catch (error) {
         console.error("Error en agente VIDA:", error);
         emitir({

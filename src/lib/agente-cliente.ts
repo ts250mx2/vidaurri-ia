@@ -6,11 +6,27 @@ export class SesionExpiradaError extends Error {
   }
 }
 
+/** Con qué proveedor y modelo contestó el agente (lo manda el servidor al final del stream). */
+export interface IAUsada {
+  proveedor: string;
+  modelo: string;
+}
+
+const NOMBRE_PROVEEDOR: Record<string, string> = { claude: "Claude", openai: "OpenAI", gemini: "Gemini", deepseek: "DeepSeek", groq: "Groq", mistral: "Mistral", xai: "xAI", openrouter: "OpenRouter", kimi: "Kimi", qwen: "Qwen", glm: "GLM" };
+
+/** Leyenda corta para el chat: "Claude · claude-sonnet-5". */
+export function etiquetaIA(ia: IAUsada): string {
+  const nombre = NOMBRE_PROVEEDOR[ia.proveedor] ?? (ia.proveedor.charAt(0).toUpperCase() + ia.proveedor.slice(1));
+  return `${nombre} · ${ia.modelo}`;
+}
+
 export interface EventosAgente {
   /** Texto acumulado de la respuesta (ya con reinicios aplicados). */
   alTexto: (texto: string) => void;
   /** Estado de progreso ("Consultando ventas del día..."). */
   alEstado: (texto: string) => void;
+  /** Con qué proveedor y modelo se contestó; llega con el evento final. */
+  alIA?: (ia: IAUsada) => void;
 }
 
 interface MensajeHistorial {
@@ -50,7 +66,7 @@ export async function preguntarAgente(
   const procesar = (linea: string) => {
     const limpia = linea.trim();
     if (!limpia) return;
-    let evento: { t?: string; texto?: string; error?: string };
+    let evento: { t?: string; texto?: string; error?: string; ia?: IAUsada };
     try {
       evento = JSON.parse(limpia);
     } catch {
@@ -67,6 +83,9 @@ export async function preguntarAgente(
         break;
       case "estado":
         eventos.alEstado(evento.texto ?? "");
+        break;
+      case "fin":
+        if (evento.ia) eventos.alIA?.(evento.ia);
         break;
       case "error":
         errorServidor = evento.error ?? "Error del agente";

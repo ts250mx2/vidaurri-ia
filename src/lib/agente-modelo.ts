@@ -45,6 +45,8 @@ export interface CredencialIA {
   respaldo?: CredencialIA | null;
   /** De qué agente de HL salió: permite volver a pedirla si HL avisa que cambió de proveedor. */
   agente?: AgenteHl;
+  /** Nombre del proveedor en HL ("claude", "deepseek"...) para decir quién contestó; `proveedor` solo dice el SDK. */
+  proveedorHl?: string;
 }
 
 /** El SDK exige una llave; la real la pone HL en el proxy. */
@@ -72,6 +74,22 @@ export interface ResultadoTurno {
   /** Modelo que contestó de verdad (el respaldo, si el principal falló).
    *  Opcional para que los dobles de prueba de los agentes sigan valiendo. */
   modelo?: string;
+  /** Proveedor en HL que contestó ("claude", "deepseek"...); opcional por los mismos dobles. */
+  proveedor?: string;
+}
+
+/** Con qué proveedor y modelo se atendió una respuesta: lo que se le muestra a quien pregunta. */
+export interface IAUsada {
+  proveedor: string;
+  modelo: string;
+}
+
+/** Proveedor y modelo que contestaron un turno; si el resultado no lo trae, los de la credencial. */
+export function iaDe(resultado: ResultadoTurno, credencial: CredencialIA): IAUsada {
+  return {
+    proveedor: resultado.proveedor ?? credencial.proveedorHl ?? credencial.proveedor,
+    modelo: resultado.modelo ?? credencial.modelo,
+  };
 }
 
 /** Proveedores que hablan el API de OpenAI: por el proxy de HL se corren con el SDK de OpenAI. */
@@ -113,7 +131,7 @@ export async function credencialDeAgente(
       `HL asignó al agente ${agente} el proveedor "${proveedor}", que este sistema no sabe correr (solo los que hablan el API de Anthropic o de OpenAI)`
     );
   }
-  return { proveedor: soportado, modelo, ...configProxy(agente, env), agente };
+  return { proveedor: soportado, modelo, ...configProxy(agente, env), agente, proveedorHl: proveedor.trim().toLowerCase() };
 }
 
 /** Lo que ve quien usa el agente cuando HL no dio credencial; el detalle va al log. */
@@ -302,7 +320,7 @@ async function turnoAnthropic(turno: TurnoAgente): Promise<ResultadoTurno> {
     .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
     .map((b) => ({ id: b.id, name: b.name, input: (b.input ?? {}) as Record<string, unknown> }));
   const pidioHerramientas = resultado.stop_reason === "tool_use" && usos.length > 0;
-  return { contenido: resultado.content, usos: pidioHerramientas ? usos : [], modelo: turno.modelo };
+  return { contenido: resultado.content, usos: pidioHerramientas ? usos : [], modelo: turno.modelo, proveedor: turno.proveedorHl ?? turno.proveedor };
 }
 
 // ---------- OpenAI ----------
@@ -423,5 +441,5 @@ async function turnoOpenAI(turno: TurnoAgente): Promise<ResultadoTurno> {
       input,
     } as Anthropic.ContentBlock);
   }
-  return { contenido, usos, modelo: turno.modelo };
+  return { contenido, usos, modelo: turno.modelo, proveedor: turno.proveedorHl ?? turno.proveedor };
 }

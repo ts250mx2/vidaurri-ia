@@ -1,5 +1,5 @@
 import { sesionActual } from "@/lib/auth";
-import { credencialParaRuta } from "@/lib/agente-modelo";
+import { credencialParaRuta, type IAUsada } from "@/lib/agente-modelo";
 import { correrVendedor, type MensajeConversacion } from "@/lib/vendedor";
 
 // Endpoint web del Vendedor IA (canal del dashboard). Streaming NDJSON:
@@ -61,6 +61,7 @@ export async function POST(request: Request) {
       };
 
       try {
+        let iaUsada: IAUsada | undefined;
         await correrVendedor({
           pregunta,
           historial,
@@ -69,8 +70,9 @@ export async function POST(request: Request) {
           alTexto: (fragmento) => emitir({ t: "delta", texto: fragmento }),
           alReinicio: () => emitir({ t: "reinicio" }),
           alEstado: (texto) => emitir({ t: "estado", texto }),
+          alIA: (ia) => { iaUsada = ia; },
         });
-        emitir({ t: "fin" });
+        emitir({ t: "fin", ia: iaUsada });
       } catch (error) {
         console.error("Error en agente Vendedor IA (web):", error);
         emitir({ t: "error", error: "El Vendedor IA tuvo un problema; intenta de nuevo" });

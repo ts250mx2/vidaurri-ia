@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileDown, Loader2, RotateCcw, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { preguntarVida, SesionExpiradaError } from "@/lib/agente-cliente";
+import { etiquetaIA, preguntarVida, SesionExpiradaError, type IAUsada } from "@/lib/agente-cliente";
 import { AgenteMarkdown } from "@/components/dashboard/AgenteMarkdown";
 
 interface Mensaje {
   rol: "usuario" | "agente";
   texto: string;
+  /** Proveedor y modelo que contestaron (solo en respuestas del agente). */
+  ia?: IAUsada;
 }
 
 const CLAVE_STORAGE = "vida-conversacion";
@@ -101,6 +103,7 @@ export default function VidaPage() {
       const controlador = new AbortController();
       abortRef.current = controlador;
       try {
+        let iaUsada: IAUsada | undefined;
         const respuesta = await preguntarVida(
           limpia,
           historial.slice(0, -1),
@@ -110,10 +113,11 @@ export default function VidaPage() {
               setBorrador(t);
             },
             alEstado: setEstado,
+            alIA: (ia) => { iaUsada = ia; },
           },
           controlador.signal
         );
-        setMensajes([...historial, { rol: "agente", texto: respuesta || "…" }]);
+        setMensajes([...historial, { rol: "agente", texto: respuesta || "…", ia: iaUsada }]);
       } catch (err: unknown) {
         if (err instanceof SesionExpiradaError) {
           window.location.href = "/login";
@@ -225,6 +229,7 @@ export default function VidaPage() {
                   ) : (
                     <>
                       <AgenteMarkdown texto={m.texto} />
+                      {m.ia && <div className="mt-1.5 text-[10px] text-white/35">{etiquetaIA(m.ia)}</div>}
                       <div className="mt-2 flex justify-end">
                         <button
                           onClick={() => void exportarPdf(i)}

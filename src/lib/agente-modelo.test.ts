@@ -36,6 +36,7 @@ const PRINCIPAL: CredencialIA = {
   baseURL: `${HL_URL}/api/ws/proxy/${UUID_VICO}`,
   headers: CABECERAS,
   agente: "vico",
+  proveedorHl: "claude",
 };
 const RESPALDO: CredencialIA = {
   proveedor: "openai",
@@ -43,6 +44,7 @@ const RESPALDO: CredencialIA = {
   baseURL: `${HL_URL}/api/ws/proxy/${UUID_RESPALDO}`,
   headers: CABECERAS,
   agente: "respaldo",
+  proveedorHl: "openai",
 };
 
 function turnoDePrueba(alTexto: (f: string) => void = () => {}): TurnoAgente {

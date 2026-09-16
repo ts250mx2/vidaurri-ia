@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { credencialParaRuta } from "@/lib/agente-modelo";
+import { credencialParaRuta, type IAUsada } from "@/lib/agente-modelo";
 import { exigirMostrador } from "@/lib/auth-mostrador";
 import { obtenerClienteDescuento } from "@/lib/db-clientes-descuento";
 import { guardarIntercambio } from "@/lib/db-conversaciones";
@@ -148,6 +148,7 @@ export async function POST(request: Request) {
     // "Agregar al pedido" sin volver a consultar el catálogo.
     const resultadosPorHerramienta: Array<{ herramienta: string; resultados: unknown[] }> = [];
 
+    let iaUsada: IAUsada | undefined;
     const respuesta = await correrVendedor({
       pregunta: mensaje,
       historial: memoria.historialDe(clave),
@@ -159,6 +160,7 @@ export async function POST(request: Request) {
       alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),
       alFotosUsadas: (fotos) => fotos.forEach((f) => fotosUsadas.set(f.codigo.toUpperCase(), f.url)),
       alResultados: (herramienta, resultados) => resultadosPorHerramienta.push({ herramienta, resultados }),
+      alIA: (ia) => { iaUsada = ia; },
     });
     const { texto: limpio, codigosMarcados } = separarMarcadorFotos(respuesta);
     const texto = limpio || RESPUESTA_VACIA;
@@ -193,7 +195,7 @@ export async function POST(request: Request) {
       console.error("[mostrador-vico] no se pudo guardar la conversación en la bitácora:", error);
     });
 
-    return NextResponse.json({ ok: true, respuesta: texto, fotos, productos, pedido });
+    return NextResponse.json({ ok: true, respuesta: texto, fotos, productos, pedido, ia: iaUsada });
   } catch (error) {
     console.error("Error en Vendedor IA (mostrador):", error);
     return NextResponse.json(
