@@ -93,9 +93,19 @@ function hlDoble(porAgente: Partial<Record<AgenteHl, AgenteIA | Error>>) {
 }
 
 describe("credencial de cada agente desde HL", () => {
-  it("claude y openai se corren; gemini u otro no", () => {
+  it("manda el API que dice HL: anthropic corre como claude, openai como openai, lo demás no", () => {
+    expect(proveedorSoportado("claude", "anthropic")).toBe("claude");
+    expect(proveedorSoportado("deepseek", "openai")).toBe("openai");
+    expect(proveedorSoportado("gemini", "gemini")).toBeNull();
+    // HL puede reasignar el proveedor sin que la app cambie: el API pesa más que el nombre.
+    expect(proveedorSoportado("claude", "gemini")).toBeNull();
+  });
+
+  it("sin el campo api (HL viejo) se deduce del nombre: claude, openai y los compatibles con OpenAI", () => {
     expect(proveedorSoportado("claude")).toBe("claude");
     expect(proveedorSoportado(" OpenAI ")).toBe("openai");
+    expect(proveedorSoportado("deepseek")).toBe("openai");
+    expect(proveedorSoportado("groq", null)).toBe("openai");
     expect(proveedorSoportado("gemini")).toBeNull();
     expect(proveedorSoportado("otro")).toBeNull();
   });

@@ -40,11 +40,16 @@ export function agenteConfigurado(agente: AgenteHl, env: EntornoHl = process.env
 }
 
 /** Lo que HL sabe del agente. La llave NO viene aquí: va por el proxy. */
+/** Con qué SDK se habla el proveedor, según HL. */
+export type ApiIA = "anthropic" | "openai" | "gemini";
+
 export interface AgenteIA {
   uuid: string;
   /** Nombre del agente en el portal ("Asistente VIDA"). */
   nombre: string;
   proveedor: "claude" | "openai" | "gemini" | "otro" | string;
+  /** API (SDK) que habla el proveedor; HL lo manda desde 2026-09. Sin él, el adaptador deduce por el nombre. */
+  api?: ApiIA | null;
   modelo: string;
   caducidad: string | null;
 }
@@ -136,6 +141,10 @@ function esTexto(valor: unknown): valor is string {
  * Lo que manda HL no se confía sin revisar su forma. La llave no se mira
  * siquiera: en modo proxy no sale del servidor de HL.
  */
+function esApi(valor: unknown): valor is ApiIA {
+  return valor === "anthropic" || valor === "openai" || valor === "gemini";
+}
+
 function validarAgente(data: unknown): AgenteIA | null {
   if (typeof data !== "object" || data === null) return null;
   const d = data as Record<string, unknown>;
@@ -144,6 +153,7 @@ function validarAgente(data: unknown): AgenteIA | null {
     uuid: typeof d.uuid === "string" ? d.uuid : "",
     nombre: typeof d.agente === "string" ? d.agente : "",
     proveedor: d.proveedor.trim().toLowerCase(),
+    api: esApi(d.api) ? d.api : undefined,
     modelo: d.modelo.trim(),
     caducidad: typeof d.caducidad === "string" ? d.caducidad : null,
   };

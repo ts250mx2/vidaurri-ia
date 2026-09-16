@@ -6,6 +6,7 @@ import {
   configProxy,
   obtenerAgente,
   type AgenteHl,
+  type ApiIA,
   type EntornoHl,
 } from "./hl-cliente";
 
@@ -73,10 +74,21 @@ export interface ResultadoTurno {
   modelo?: string;
 }
 
-/** El proveedor que manda HL, si este adaptador lo sabe correr; null para gemini, otro… */
-export function proveedorSoportado(proveedor: string): ProveedorIA | null {
+/** Proveedores que hablan el API de OpenAI: por el proxy de HL se corren con el SDK de OpenAI. */
+const COMPATIBLES_OPENAI = new Set(["openai", "deepseek", "groq", "mistral", "xai", "openrouter", "kimi", "qwen", "glm"]);
+
+/**
+ * Con qué SDK se corre el proveedor que manda HL. Manda el campo `api` de HL
+ * (anthropic | openai | gemini); si HL es anterior y no lo trae, se deduce del
+ * nombre. null para gemini, otro… que este adaptador no sabe correr.
+ */
+export function proveedorSoportado(proveedor: string, api?: ApiIA | null): ProveedorIA | null {
+  if (api === "anthropic") return "claude";
+  if (api === "openai") return "openai";
+  if (api) return null;
   const limpio = proveedor.trim().toLowerCase();
-  return limpio === "claude" || limpio === "openai" ? limpio : null;
+  if (limpio === "claude") return "claude";
+  return COMPATIBLES_OPENAI.has(limpio) ? "openai" : null;
 }
 
 export interface DependenciasHl {
@@ -94,11 +106,11 @@ export async function credencialDeAgente(
   agente: AgenteHl,
   { obtener = obtenerAgente, env = process.env }: DependenciasHl = {}
 ): Promise<CredencialIA> {
-  const { proveedor, modelo } = await obtener(agente, { env });
-  const soportado = proveedorSoportado(proveedor);
+  const { proveedor, modelo, api } = await obtener(agente, { env });
+  const soportado = proveedorSoportado(proveedor, api);
   if (!soportado) {
     throw new HlClienteError(
-      `HL asignó al agente ${agente} el proveedor "${proveedor}", que este sistema no sabe correr (solo claude u openai)`
+      `HL asignó al agente ${agente} el proveedor "${proveedor}", que este sistema no sabe correr (solo los que hablan el API de Anthropic o de OpenAI)`
     );
   }
   return { proveedor: soportado, modelo, ...configProxy(agente, env), agente };
