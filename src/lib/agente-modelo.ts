@@ -124,8 +124,14 @@ export async function credencialDeAgente(
   agente: AgenteHl,
   { obtener = obtenerAgente, env = process.env }: DependenciasHl = {}
 ): Promise<CredencialIA> {
-  const { proveedor, modelo, api } = await obtener(agente, { env });
-  const soportado = proveedorSoportado(proveedor, api);
+  let { proveedor, modelo, api } = await obtener(agente, { env });
+  let soportado = proveedorSoportado(proveedor, api);
+  if (!soportado) {
+    // Puede ser un valor viejo del cache: si en el portal ya le asignaron otra llave,
+    // aquí nunca llega el 422 del proxy que dispara el refresco. Se pregunta de nuevo a HL.
+    ({ proveedor, modelo, api } = await obtener(agente, { env, forzar: true }));
+    soportado = proveedorSoportado(proveedor, api);
+  }
   if (!soportado) {
     throw new HlClienteError(
       `HL asignó al agente ${agente} el proveedor "${proveedor}", que este sistema no sabe correr (solo los que hablan el API de Anthropic o de OpenAI)`
