@@ -655,7 +655,9 @@ export default function ClientesDescuentoPage() {
                       <span
                         className={cn(
                           "inline-block text-[11px] font-black tabular-nums px-2 py-1 rounded-lg border",
-                          datos.descuentoDefault > 0 && r.descuento >= datos.descuentoDefault
+                          // Ámbar = tiene MÁS que el descuento general. Con ">=" y el
+                          // general en 33, casi todo el padrón saldría resaltado.
+                          datos.descuentoDefault > 0 && r.descuento > datos.descuentoDefault
                             ? "text-amber-300 bg-amber-500/10 border-amber-500/25"
                             : "text-slate-300 bg-white/[0.04] border-white/10"
                         )}

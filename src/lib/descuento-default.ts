@@ -1,8 +1,11 @@
 // Descuento que se propone al dar de alta un cliente con descuento cuando el
 // teléfono NO está en el catálogo de clientes de bdav. Se configura con
-// DESCUENTO_DEFAULT en el .env (el negocio lo tiene en 38); si falta o trae
-// un valor inválido, se usa 33: el descuento general que traen casi todos los
-// clientes del punto de venta.
+// DESCUENTO_DEFAULT en el .env; si falta o trae un valor inválido, se usa 33:
+// el descuento general que traen casi todos los clientes del punto de venta.
+//
+// El sugerido pesa más de lo que parece: quien captura el alta casi siempre lo
+// acepta tal cual. Con DESCUENTO_DEFAULT=38 (ago-sep 2026) los clientes nuevos
+// se fueron con 38% en vez de 33%; el valor del .env debe ser el general.
 
 export const DESCUENTO_RESPALDO = 33;
 export const DESCUENTO_MIN = 0;
