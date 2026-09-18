@@ -546,12 +546,22 @@ async function buscarProductos(
   // Enriquecimiento para la lógica de entrega: disponibilidad con el proveedor
   // (Aldo, solo primeros resultados; precioAldo cachea y limita concurrencia)
   // y resumen de usado equivalente en la Bodega, en paralelo.
+  // Si el proveedor no contestó, la disponibilidad es DESCONOCIDA (null), no
+  // cero: con 0 Vico le decía al cliente que la pieza no se conseguía cuando en
+  // realidad no se había podido preguntar.
+  let proveedorSinRespuesta = false;
   const [disponibilidadAldo, usadoPorLlave] = await Promise.all([
     Promise.all(
       filas.map(async (f, i) => {
         if (i >= MAX_CONSULTAS_ALDO) return null; // no consultado
         const aldo = await precioAldo(f.codigo);
-        return aldo.encontrado ? (aldo.existencia ?? 0) : 0;
+        if (aldo.sinRespuesta) {
+          proveedorSinRespuesta = true;
+          return null;
+        }
+        // `disponible` cuenta también lo del siguiente reparto de Aldo: una
+        // pieza con existencia 0 hoy y reparto "Mas de 60" sí va sobre pedido.
+        return aldo.encontrado ? (aldo.disponible ?? aldo.existencia ?? 0) : 0;
       })
     ),
     resumenUsadoPorLlave(filas),
@@ -584,7 +594,13 @@ async function buscarProductos(
     };
   });
 
-  return JSON.stringify({ total: resultados.length, resultados });
+  // La nota viaja solo cuando aplica y va aquí, no en el prompt de sistema: el
+  // prompt trata sobrePedido null como "esa opción no existe", y sin este aviso
+  // Vico negaría piezas de las que simplemente no se pudo preguntar.
+  const nota = proveedorSinRespuesta
+    ? "AVISO: en este momento no se pudo consultar la disponibilidad sobre pedido (sobrePedido viene en null por eso, no porque no exista). Para las piezas sin entrega inmediata ni usado NO digas que no se consiguen: di que el mostrador confirma si se puede conseguir sobre pedido."
+    : undefined;
+  return JSON.stringify({ total: resultados.length, resultados, ...(nota ? { nota } : {}) });
 }
 
 interface FilaPiezaUsada {
