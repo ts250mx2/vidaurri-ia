@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileDown, Loader2, RotateCcw, Send, Square } from "lucide-react";
+import { FileDown, FileSpreadsheet, Loader2, RotateCcw, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etiquetaIA, preguntarVida, SesionExpiradaError, type IAUsada } from "@/lib/agente-cliente";
 import { AgenteMarkdown } from "@/components/dashboard/AgenteMarkdown";
+import { tieneTablas } from "@/lib/tiene-tablas";
 
 interface Mensaje {
   rol: "usuario" | "agente";
@@ -14,6 +15,11 @@ interface Mensaje {
 }
 
 const CLAVE_STORAGE = "vida-conversacion";
+
+type FormatoExport = "pdf" | "excel";
+
+const CLASE_BOTON_EXPORTAR =
+  "flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-transparent text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-amber-300 hover:bg-white/[0.06] hover:border-white/10 transition-colors disabled:opacity-40";
 
 const SUGERENCIAS = [
   "¿Cómo van las ventas de hoy?",
@@ -32,8 +38,8 @@ export default function VidaPage() {
   const [estado, setEstado] = useState("");
   const [pensando, setPensando] = useState(false);
   const [error, setError] = useState("");
-  /** Índice de la respuesta que se está exportando a PDF. */
-  const [exportando, setExportando] = useState<number | null>(null);
+  /** Respuesta que se está exportando y a qué formato (para girar solo ese botón). */
+  const [exportando, setExportando] = useState<{ indice: number; formato: FormatoExport } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Espejo del texto en curso: el catch de abort lee el acumulado real, no el
   // valor capturado por el closure del render en que se hizo clic.
@@ -50,21 +56,32 @@ export default function VidaPage() {
     }
   }, []);
 
-  /** PDF de una respuesta junto con la pregunta que la originó (el mensaje anterior). */
-  const exportarPdf = async (indice: number) => {
+  /**
+   * Exporta una respuesta junto con la pregunta que la originó (el mensaje
+   * anterior): a PDF con todo su formato, o a Excel con sus tablas (una hoja
+   * por tabla). Las librerías se cargan al momento para no pesar en la página.
+   */
+  const exportar = async (indice: number, formato: FormatoExport) => {
     const respuesta = mensajes[indice];
     const anterior = mensajes[indice - 1];
     if (!respuesta || respuesta.rol !== "agente") return;
-    setExportando(indice);
+    const datos = {
+      pregunta: anterior?.rol === "usuario" ? anterior.texto : "",
+      respuesta: respuesta.texto,
+    };
+    setExportando({ indice, formato });
     setError("");
     try {
-      const { exportarRespuestaPdf } = await import("@/lib/pdf-respuesta");
-      await exportarRespuestaPdf({
-        pregunta: anterior?.rol === "usuario" ? anterior.texto : "",
-        respuesta: respuesta.texto,
-      });
+      if (formato === "pdf") {
+        const { exportarRespuestaPdf } = await import("@/lib/pdf-respuesta");
+        await exportarRespuestaPdf(datos);
+      } else {
+        const { exportarRespuestaExcel } = await import("@/lib/excel-respuesta");
+        await exportarRespuestaExcel(datos);
+      }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "No se pudo generar el PDF");
+      const respaldo = formato === "pdf" ? "No se pudo generar el PDF" : "No se pudo generar el Excel";
+      setError(err instanceof Error ? err.message : respaldo);
     } finally {
       setExportando(null);
     }
@@ -230,15 +247,34 @@ export default function VidaPage() {
                     <>
                       <AgenteMarkdown texto={m.texto} />
                       {m.ia && <div className="mt-1.5 text-[10px] text-white/35">{etiquetaIA(m.ia)}</div>}
-                      <div className="mt-2 flex justify-end">
+                      <div className="mt-2 flex justify-end gap-1">
+                        {/* Excel solo cuando la respuesta trae tablas: es lo único que se exporta. */}
+                        {tieneTablas(m.texto) && (
+                          <button
+                            type="button"
+                            onClick={() => void exportar(i, "excel")}
+                            disabled={exportando !== null}
+                            title="Exportar las tablas de esta respuesta a Excel"
+                            aria-label="Exportar las tablas de esta respuesta a Excel"
+                            className={CLASE_BOTON_EXPORTAR}
+                          >
+                            {exportando?.indice === i && exportando.formato === "excel" ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <FileSpreadsheet className="h-3.5 w-3.5" />
+                            )}
+                            Excel
+                          </button>
+                        )}
                         <button
-                          onClick={() => void exportarPdf(i)}
+                          type="button"
+                          onClick={() => void exportar(i, "pdf")}
                           disabled={exportando !== null}
                           title="Exportar esta respuesta a PDF"
                           aria-label="Exportar esta respuesta a PDF"
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-transparent text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-amber-300 hover:bg-white/[0.06] hover:border-white/10 transition-colors disabled:opacity-40"
+                          className={CLASE_BOTON_EXPORTAR}
                         >
-                          {exportando === i ? (
+                          {exportando?.indice === i && exportando.formato === "pdf" ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           ) : (
                             <FileDown className="h-3.5 w-3.5" />
