@@ -71,6 +71,29 @@ eso al chat.
 Sustituye `{{contacto.telefono}}` y `{{mensaje.texto}}` por las variables que
 use tu flujo de Axon Logic para el número del contacto y el texto entrante.
 
+### Cuando el cliente manda una foto
+
+Vico puede ver fotos (la pieza, una etiqueta con el número de parte, el golpe).
+Agrega al body **la variable del medio** que dé tu flujo para el mensaje entrante:
+
+```json
+{
+  "telefono": "{{contacto.telefono}}",
+  "mensaje": "{{mensaje.texto}}",
+  "imagenUrl": "{{mensaje.media_url}}"
+}
+```
+
+- `imagenUrl` (o `imagen`) admite la **URL `https`** del medio o el archivo en
+  **base64**. Si el mensaje no trae foto y la variable llega vacía, no pasa nada: se
+  ignora. Para varias fotos usa `imagenes` (arreglo, máx. 3).
+- El nombre `{{mensaje.media_url}}` es un ejemplo: usa la variable que tu flujo tenga
+  para el adjunto. `mensaje` puede ir vacío si el cliente solo mandó la foto (el pie
+  de foto, si lo escribió, va en `mensaje`).
+- Si la URL del medio pide autenticación, avísanos el host y el token: se configuran
+  en el servidor (`WHATSAPP_MEDIA_HOSTS` y `WHATSAPP_MEDIA_AUTH`), no van en el flujo.
+- Si mandas base64 la petición crece: sube el timeout de subida del nodo si lo tiene.
+
 ## 3. Respuesta del webservice (response body)
 
 **Éxito (HTTP 200):**
@@ -194,8 +217,8 @@ Recorre el arreglo y envía una imagen por cada elemento (máx. 3).
   capturas. Si se filtra, genera otra
   (`node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`)
   y actualízala en el `.env` del servidor y en Axon Logic.
-- Los mensajes de voz/imagen que reciba tu flujo no se soportan: envía al
-  webservice solo texto (si llega audio, responde pidiendo que lo escriban).
+- Las **imágenes** sí se soportan (ver "Cuando el cliente manda una foto"). Los
+  mensajes de **voz** no: si llega audio, responde pidiendo que lo escriban.
 
 ## 8. Bienvenida por WhatsApp al dar de alta un cliente
 

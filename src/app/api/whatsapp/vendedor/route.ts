@@ -15,6 +15,7 @@ import {
 import { fotosDeRespuesta, separarMarcadorFotos } from "@/lib/fotos-respuesta";
 import { crearMemoriaConversacion } from "@/lib/memoria-conversacion";
 import { normalizarTelefono } from "@/lib/telefono";
+import { leerImagenesDelCuerpo, prepararImagenes } from "@/lib/imagenes-mensaje";
 import { baseUrlConfigurada, baseUrlPublica } from "@/lib/url-publica";
 
 // Webservice del Vendedor IA para WhatsApp. A diferencia del canal web (que usa
@@ -28,6 +29,15 @@ export const maxDuration = 120;
 
 const MAX_MENSAJE = 2000;
 const LIMITE_POR_MINUTO = 20;
+const RESPUESTA_FOTO_ILEGIBLE =
+  "No pude abrir la foto que me mandaste 🙏 ¿Me la reenvías o me escribes qué pieza buscas y para qué carro?";
+
+/** "[foto] cofre versa" / "[2 fotos]": lo que queda en la memoria y la bitácora de un turno con fotos. */
+function conMarcaDeFotos(mensaje: string, fotos: number): string {
+  if (fotos === 0) return mensaje;
+  const marca = fotos === 1 ? "[foto]" : `[${fotos} fotos]`;
+  return mensaje ? `${marca} ${mensaje}` : marca;
+}
 
 // Memoria de conversación por número de teléfono (para que el chat tenga
 // contexto): 30 min de inactividad y 12 mensajes (memoria-conversacion.ts).
@@ -98,19 +108,24 @@ export async function POST(request: Request) {
   if (!ia.ok) return Response.json({ ok: false, error: ia.error }, { status: 503 });
   const { credencial } = ia;
 
+  // `imagenes` (o `imagen` / `imagenUrl`): las fotos que mandó el cliente, como
+  // URL https del medio o en base64 (imagenes-mensaje.ts).
   let cuerpo: { telefono?: string; mensaje?: string; reiniciar?: boolean };
   try {
     cuerpo = await request.json();
   } catch {
     return Response.json({ ok: false, error: "Petición inválida" }, { status: 400 });
   }
+  const lectura = leerImagenesDelCuerpo(cuerpo);
+  if (!lectura.ok) return Response.json({ ok: false, error: lectura.error }, { status: 400 });
 
   // El teléfono identifica la conversación; se saneé para usarlo de clave.
   const telefono = String(cuerpo.telefono ?? "").replace(/[^\d+]/g, "").slice(0, 20) || "anon";
   const mensaje = String(cuerpo.mensaje ?? "").trim().slice(0, MAX_MENSAJE);
 
   if (cuerpo.reiniciar) memoria.olvidar(telefono);
-  if (!mensaje) {
+  // Una foto sola también es un mensaje: el cliente manda la pieza sin escribir nada.
+  if (!mensaje && lectura.imagenes.length === 0) {
     return Response.json({ ok: false, error: "Falta el mensaje" }, { status: 400 });
   }
   if (excedeLimite(telefono)) {
@@ -121,6 +136,14 @@ export async function POST(request: Request) {
   }
 
   try {
+    // Las fotos se descargan y se normalizan DESPUÉS del límite de mensajes (cuesta
+    // red y CPU). Una que no se pueda abrir no deja al cliente sin respuesta: si
+    // además escribió algo, Vico sigue con el texto y sabe que hubo una foto ilegible.
+    const fotosCliente = await prepararImagenes(lectura.imagenes);
+    if (!mensaje && fotosCliente.listas.length === 0) {
+      return Response.json({ ok: true, respuesta: RESPUESTA_FOTO_ILEGIBLE, fotos: [] });
+    }
+
     // Códigos que el agente consultó (para adjuntar las fotos que mencione) y
     // fotos públicas de las piezas usadas encontradas (código → URL).
     const codigosConsultados = new Set<string>();
@@ -182,6 +205,8 @@ export async function POST(request: Request) {
       pregunta: preguntaConNota(nota, mensaje),
       historial: memoria.historialDe(telefono),
       credencial,
+      imagenes: fotosCliente.listas,
+      fotosIlegibles: fotosCliente.fallidas,
       descuentoCliente: cliente?.descuento ?? null,
       actor,
       alCodigos: (codigos) => codigos.forEach((c) => codigosConsultados.add(c)),
@@ -198,7 +223,10 @@ export async function POST(request: Request) {
     // hay liga.
     const enlace = await enlacePdfDelTurno(actor, inicioTurno, baseUrlConfigurada());
     const texto = enlace ? textoConEnlacePdf(respuestaLimpia, enlace) : respuestaLimpia;
-    memoria.guardarTurno(telefono, mensaje, texto);
+    // La memoria y la bitácora guardan solo texto: la foto se ve en el turno en
+    // que llega y después queda la marca de que la hubo.
+    const mensajeRegistrado = conMarcaDeFotos(mensaje, lectura.imagenes.length);
+    memoria.guardarTurno(telefono, mensajeRegistrado, texto);
 
     // Solo se aceptan códigos REALES (que el catálogo devolvió) y con foto, ya
     // con la URL del proxy sellado (fotos-respuesta.ts).
@@ -216,7 +244,7 @@ export async function POST(request: Request) {
       // El chat de la página entra por este mismo webservice con una sesión
       // sintética 77…: en la bitácora debe quedar como canal web, no WhatsApp.
       canal: ES_SESION_WEB.test(telefono) ? "web" : "whatsapp",
-      mensajeCliente: mensaje,
+      mensajeCliente: mensajeRegistrado,
       respuestaVendedor: texto,
       fotos: fotos.map((f) => f.url),
     }).catch((error) => {

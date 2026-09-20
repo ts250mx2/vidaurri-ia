@@ -757,9 +757,70 @@ export interface MensajeConversacion {
   texto: string;
 }
 
+/** Una foto del cliente ya lista para el modelo (imagenes-mensaje.ts la normaliza a JPEG). */
+export interface ImagenParaModelo {
+  mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+  base64: string;
+}
+
+/**
+ * Lo que acompaña a las fotos en el turno del cliente. Va aquí y no en el prompt
+ * de sistema: solo aplica cuando hay foto, y el prompt tiene sus hashes fijados.
+ * `ilegibles` son las fotos que el cliente mandó y no se pudieron abrir.
+ */
+export function textoConFotos(pregunta: string, fotos: number, ilegibles = 0): string {
+  const notas: string[] = [];
+  if (fotos > 0) {
+    notas.push(
+      `[El cliente envió ${fotos === 1 ? "una foto" : `${fotos} fotos`}. Mírala${fotos === 1 ? "" : "s"} para identificar la pieza: ` +
+        "tipo de parte, lado (izquierdo/derecho), posición y, si se alcanza a ver, el vehículo; si hay una etiqueta o un " +
+        "número de parte, léelo tal cual. Con eso búscala en el catálogo con tus herramientas, igual que si te la hubiera " +
+        "descrito. Si la foto no basta para saber marca, modelo o año, pregúntale solo lo que falte. No describas la foto " +
+        "de más ni diagnostiques daños: tu trabajo es cotizar la pieza.]"
+    );
+  }
+  if (ilegibles > 0) {
+    notas.push(
+      `[El cliente envió ${ilegibles === 1 ? "una foto que no se pudo abrir" : `${ilegibles} fotos que no se pudieron abrir`}: ` +
+        "pídele que la reenvíe o que te escriba qué pieza busca.]"
+    );
+  }
+  return [...notas, pregunta.trim()].filter(Boolean).join("\n\n");
+}
+
+/** El turno del cliente: sus fotos primero y luego lo que escribió, con la nota de fotos. */
+function turnoDelCliente(
+  pregunta: string,
+  imagenes: ImagenParaModelo[],
+  ilegibles: number
+): Anthropic.MessageParam["content"] {
+  const texto = textoConFotos(pregunta, imagenes.length, ilegibles);
+  if (imagenes.length === 0) return texto;
+  return [
+    ...imagenes.map(
+      (img): Anthropic.ImageBlockParam => ({
+        type: "image",
+        source: { type: "base64", media_type: img.mediaType, data: img.base64 },
+      })
+    ),
+    { type: "text", text: texto },
+  ];
+}
+
+/** 400/422 del proveedor: la petición como tal no le gustó (p. ej. un modelo sin visión). */
+function esPeticionRechazada(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return status === 400 || status === 422;
+}
+
 export interface OpcionesVendedor {
   pregunta: string;
   historial: MensajeConversacion[];
+  /** Fotos que el cliente mandó en este turno, ya normalizadas. Solo viajan en
+   *  este turno: el historial guarda texto. */
+  imagenes?: ImagenParaModelo[];
+  /** Fotos que el cliente mandó y no se pudieron abrir (Vico le pide reenviarlas). */
+  fotosIlegibles?: number;
   /** Proveedor, modelo y llave con que corre Vico (de HL Servidor, HL_AGENTE_VICO). */
   credencial: CredencialIA;
   /** Canal de la conversación: 'web' muestra fotos, 'whatsapp' no. */
@@ -812,7 +873,10 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
     role: m.rol === "usuario" ? "user" : "assistant",
     content: m.texto.slice(0, 4000),
   }));
-  mensajes.push({ role: "user", content: op.pregunta });
+  const imagenes = op.imagenes ?? [];
+  const indiceTurno = mensajes.length;
+  mensajes.push({ role: "user", content: turnoDelCliente(op.pregunta, imagenes, op.fotosIlegibles ?? 0) });
+  let conFotos = imagenes.length > 0;
 
   const actor: ActorVendedor = op.actor ?? { tipo: "anonimo" };
   const sistema = promptSistema(new Date().toLocaleDateString("sv-SE"), op.canal ?? "whatsapp", actor);
@@ -829,18 +893,33 @@ export async function correrVendedor(op: OpcionesVendedor): Promise<string> {
   for (let ronda = 0; ronda < MAX_ITERACIONES; ronda++) {
     const ultimaRonda = ronda === MAX_ITERACIONES - 1;
     let textoRonda = "";
-    const resultado = await correrTurnoAgente({
-      ...op.credencial,
-      sistema,
-      herramientas,
-      mensajes,
-      maxTokens: MAX_TOKENS,
-      sinHerramientas: ultimaRonda,
-      alTexto: (frag) => {
-        textoRonda += frag;
-        op.alTexto?.(frag);
-      },
-    });
+    const correrRonda = () =>
+      correrTurnoAgente({
+        ...op.credencial,
+        sistema,
+        herramientas,
+        mensajes,
+        maxTokens: MAX_TOKENS,
+        sinHerramientas: ultimaRonda,
+        alTexto: (frag) => {
+          textoRonda += frag;
+          op.alTexto?.(frag);
+        },
+      });
+    let resultado: Awaited<ReturnType<typeof correrRonda>>;
+    try {
+      resultado = await correrRonda();
+    } catch (error) {
+      // El modelo que HL asignó no acepta imágenes: el cliente no se queda sin
+      // respuesta, el turno se repite sin la foto y Vico le pide describir la pieza.
+      if (!conFotos || !esPeticionRechazada(error)) throw error;
+      console.warn("Vendedor IA: el modelo rechazó el turno con fotos; se repite sin ellas.", error);
+      conFotos = false;
+      mensajes[indiceTurno] = { role: "user", content: textoConFotos(op.pregunta, 0, imagenes.length) };
+      textoRonda = "";
+      op.alReinicio?.();
+      resultado = await correrRonda();
+    }
     op.alIA?.(iaDe(resultado, op.credencial));
 
     if (resultado.usos.length === 0) {

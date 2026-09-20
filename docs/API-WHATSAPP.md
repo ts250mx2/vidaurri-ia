@@ -48,8 +48,29 @@ servidor, el webservice queda cerrado (siempre `401`).
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `telefono` | string | Número del cliente. Identifica la conversación para recordar el contexto. Opcional (si falta, se usa `anon`). |
-| `mensaje` | string | Lo que escribió el cliente. **Requerido.** |
+| `mensaje` | string | Lo que escribió el cliente. **Requerido**, salvo que venga al menos una imagen. |
 | `reiniciar` | boolean | Opcional. Si es `true`, olvida el historial de ese teléfono y empieza de cero. |
+| `imagenes` | array | Opcional. Hasta **3** fotos que mandó el cliente (la pieza, una etiqueta con el número de parte, el golpe). Cada elemento es la **URL `https`** del medio, el archivo en **base64** (con o sin prefijo `data:image/...;base64,`) o un objeto `{ "url": ... }` / `{ "base64": ... }`. Para mapear una sola variable de la pasarela también se aceptan `imagen` o `imagenUrl`. |
+
+### Fotos del cliente
+
+Vico ve la foto en el turno en que llega y con ella busca la pieza en el catálogo;
+en la memoria de la conversación y en la bitácora queda solo la marca `[foto]`.
+
+- Máximo 3 imágenes y 8 MB cada una. Se normalizan en el servidor (orientación,
+  tamaño, JPEG, sin metadatos), así que da igual si llegan en PNG, WebP o HEIC-convertido.
+- **Por URL**: solo `https`, sin credenciales en la URL y nunca a direcciones privadas;
+  cada redirección se vuelve a validar. Si la pasarela exige un token para bajar el
+  medio, va en `WHATSAPP_MEDIA_AUTH` y **solo** se manda a los hosts de
+  `WHATSAPP_MEDIA_HOSTS` (lista blanca separada por comas; con ella, cualquier otro
+  host se rechaza).
+- **En base64**: la petición crece; nginx corta en 1 MB por omisión, así que hace
+  falta `client_max_body_size 12m;` en el `server` de este sitio.
+- Una foto que no se pueda abrir no da error: si el cliente además escribió algo, Vico
+  contesta al texto y le pide reenviarla; si solo mandó la foto, la respuesta le pide
+  reenviarla o escribir qué busca. `400` solo si el campo viene mal formado o son más de 3.
+- Si el modelo que HL tiene asignado a Vico no ve imágenes, el turno se repite sin la
+  foto y Vico le pide al cliente que describa la pieza.
 
 La conversación por teléfono se recuerda **30 minutos** desde el último mensaje
 (hasta 12 mensajes de contexto). Límite: 20 mensajes por minuto por teléfono.

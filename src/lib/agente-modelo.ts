@@ -334,7 +334,7 @@ async function turnoAnthropic(turno: TurnoAgente): Promise<ResultadoTurno> {
 type MensajeOpenAI = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
 /** Traduce el historial formato Anthropic al formato chat.completions. */
-function traducirMensajes(sistema: string, mensajes: Anthropic.MessageParam[]): MensajeOpenAI[] {
+export function traducirMensajes(sistema: string, mensajes: Anthropic.MessageParam[]): MensajeOpenAI[] {
   const salida: MensajeOpenAI[] = [{ role: "system", content: sistema }];
   for (const mensaje of mensajes) {
     if (typeof mensaje.content === "string") {
@@ -360,17 +360,33 @@ function traducirMensajes(sistema: string, mensajes: Anthropic.MessageParam[]): 
         ...(llamadas.length ? { tool_calls: llamadas } : {}),
       });
     } else {
+      // Texto e imágenes seguidos forman UN mensaje del usuario (la foto y lo
+      // que dice de ella van juntos); un tool_result corta y va por su lado.
+      let partes: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [];
+      const vaciarPartes = () => {
+        if (partes.length === 0) return;
+        const soloTexto = partes.length === 1 && partes[0].type === "text";
+        salida.push({ role: "user", content: soloTexto ? (partes[0] as { text: string }).text : partes });
+        partes = [];
+      };
       for (const bloque of mensaje.content) {
         if (bloque.type === "tool_result") {
+          vaciarPartes();
           salida.push({
             role: "tool",
             tool_call_id: bloque.tool_use_id,
             content: typeof bloque.content === "string" ? bloque.content : JSON.stringify(bloque.content),
           });
         } else if (bloque.type === "text") {
-          salida.push({ role: "user", content: bloque.text });
+          partes.push({ type: "text", text: bloque.text });
+        } else if (bloque.type === "image") {
+          // Sin esto la foto del cliente se perdía en silencio cuando HL asigna OpenAI.
+          const origen = bloque.source;
+          const url = origen.type === "base64" ? `data:${origen.media_type};base64,${origen.data}` : origen.type === "url" ? origen.url : null;
+          if (url) partes.push({ type: "image_url", image_url: { url } });
         }
       }
+      vaciarPartes();
     }
   }
   return salida;
