@@ -171,7 +171,7 @@ const COLUMNAS_PEDIDO = `p.id, p.folio, p.estatus, p.canal, p.id_cliente AS idCl
        p.capturado_por AS capturadoPor, p.atendido_por AS atendidoPor,
        p.subtotal, p.iva, p.total, p.observaciones,
        p.dom_calle AS domCalle, p.dom_colonia AS domColonia, p.dom_cp AS domCp,
-       p.dom_municipio AS domMunicipio, p.dom_estado AS domEstado,
+       p.dom_municipio AS domMunicipio, p.dom_estado AS domEstado, p.dom_telefono AS domTelefono,
        p.folio_venta_pos AS folioVentaPos, p.motivo_cancelacion AS motivoCancelacion,
        p.num_cotiza_pos AS numCotizaPos, p.cotiza_pos_estado AS cotizaPosEstado,
        p.cotiza_pos_error AS cotizaPosError,
@@ -257,8 +257,16 @@ function domicilioDe(fila: RowDataPacket): Domicilio | null {
   const cp = texto(fila.domCp);
   const municipio = texto(fila.domMunicipio);
   const estado = texto(fila.domEstado);
-  if (!calle && !colonia && !cp && !municipio && !estado) return null;
-  return { calle: calle ?? "", colonia: colonia ?? "", cp: cp ?? "", municipio: municipio ?? "", estado: estado ?? "" };
+  const telefono = texto(fila.domTelefono);
+  if (!calle && !colonia && !cp && !municipio && !estado && !telefono) return null;
+  return {
+    calle: calle ?? "",
+    colonia: colonia ?? "",
+    cp: cp ?? "",
+    municipio: municipio ?? "",
+    estado: estado ?? "",
+    telefono,
+  };
 }
 
 function aPartida(fila: RowDataPacket): PartidaPedido {
@@ -1028,7 +1036,7 @@ export async function enviarPedido(
     await conexion.query(
       `UPDATE pedidos_mostrador
           SET estatus = 'enviado', folio = ?, clave_borrador = NULL, observaciones = ?,
-              dom_calle = ?, dom_colonia = ?, dom_cp = ?, dom_municipio = ?, dom_estado = ?,
+              dom_calle = ?, dom_colonia = ?, dom_cp = ?, dom_municipio = ?, dom_estado = ?, dom_telefono = ?,
               enviado_en = ?, actualizado_en = ?
         WHERE id = ?`,
       [
@@ -1039,6 +1047,7 @@ export async function enviarPedido(
         domicilio?.cp ?? null,
         domicilio?.municipio ?? null,
         domicilio?.estado ?? null,
+        domicilio?.telefono ?? null,
         momento,
         momento,
         idPedido,

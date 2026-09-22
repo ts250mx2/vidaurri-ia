@@ -5,7 +5,7 @@
 import type { jsPDF } from "jspdf";
 import { moneda } from "./formato";
 import { textoImprimible } from "./pdf-respuesta";
-import { SUCURSALES_ENTREGA, type EstatusPedido, type PedidoDetalle } from "./pedidos";
+import { SUCURSALES_ENTREGA, textoDomicilio, type EstatusPedido, type PedidoDetalle } from "./pedidos";
 
 const EMPRESA = "AUTO PARTES VIDAURRI";
 const MARGEN = 40;
@@ -61,6 +61,8 @@ export function datosDelPedido(pedido: PedidoDetalle): Array<[string, string]> {
     ["Cliente", pedido.cliente],
     ["Teléfono", pedido.telefono ?? "—"],
     ["Recoge en", nombreSucursalPedido(pedido.sucursal)],
+    // Solo si lo dieron: un renglón "Domicilio: —" no le dice nada a nadie.
+    ...(pedido.domicilio ? ([["Domicilio", textoDomicilio(pedido.domicilio)]] as Array<[string, string]>) : []),
     ["Levantado por", CANAL_TEXTO[pedido.canal]],
     ["Enviado el", fechaHoraPedido(pedido.enviadoEn)],
   ];
@@ -114,17 +116,21 @@ export async function generarPdfPedido(pedido: PedidoDetalle): Promise<ArrayBuff
   y += 24;
 
   // Datos del pedido: el cliente en un renglón completo (los nombres largos no
-  // caben en media página) y el resto en dos columnas.
-  const escribirDato = (etiqueta: string, valor: string, x: number, linea: number, anchoValor: number) => {
+  // caben en media página), el resto en dos columnas y, al final, el domicilio
+  // otra vez a lo ancho (con su teléfono no cabe en media página y se cortaba).
+  const escribirDato = (etiqueta: string, valor: string, x: number, linea: number, anchoValor: number, lineasMax = 1) => {
     doc.setFont("helvetica", "bold");
     doc.setTextColor(GRIS);
     doc.text(`${etiqueta}:`, x, linea);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(0);
-    const [recortado] = doc.splitTextToSize(textoImprimible(valor), anchoValor) as string[];
-    doc.text(recortado ?? "", x + ANCHO_ETIQUETA, linea);
+    const lineas = (doc.splitTextToSize(textoImprimible(valor), anchoValor) as string[]).slice(0, lineasMax);
+    doc.text(lineas, x + ANCHO_ETIQUETA, linea);
+    return lineas.length;
   };
-  const [principal, ...resto] = datosDelPedido(pedido);
+  const [principal, ...todos] = datosDelPedido(pedido);
+  const domicilio = todos.find(([etiqueta]) => etiqueta === "Domicilio");
+  const resto = todos.filter(([etiqueta]) => etiqueta !== "Domicilio");
   doc.setFontSize(10);
   escribirDato(principal[0], principal[1], MARGEN, y + 10, ancho - ANCHO_ETIQUETA);
   resto.forEach(([etiqueta, valor], i) => {
@@ -132,7 +138,12 @@ export async function generarPdfPedido(pedido: PedidoDetalle): Promise<ArrayBuff
     const linea = y + (1 + Math.floor(i / 2)) * ALTO_LINEA_DATOS + 10;
     escribirDato(etiqueta, valor, x, linea, ancho / 2 - ANCHO_ETIQUETA - 6);
   });
-  y += (1 + Math.ceil(resto.length / 2)) * ALTO_LINEA_DATOS + 14;
+  y += (1 + Math.ceil(resto.length / 2)) * ALTO_LINEA_DATOS;
+  if (domicilio) {
+    const lineas = escribirDato(domicilio[0], domicilio[1], MARGEN, y + 10, ancho - ANCHO_ETIQUETA, 2);
+    y += lineas * ALTO_LINEA_DATOS;
+  }
+  y += 14;
 
   autoTable(doc, {
     startY: y,

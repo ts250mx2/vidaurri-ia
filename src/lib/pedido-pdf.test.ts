@@ -83,17 +83,37 @@ describe("datos y notas del pedido", () => {
     expect(datosDelPedido(PEDIDO)).toEqual([
       ["Cliente", "JUAN RUBEN HERNANDEZ GONZALEZ"],
       ["Teléfono", "8186921848"],
-      ["Recoge en", "Matriz"],
+      ["Recoge en", "Mostrador"],
       ["Levantado por", "WhatsApp"],
       ["Enviado el", "03/09/2026 00:20"],
     ]);
+  });
+
+  it("imprime el domicilio, con su teléfono, solo cuando el cliente lo dio", () => {
+    const domicilio = {
+      calle: "Av. Ruiz Cortines 1234",
+      colonia: "Mitras Centro",
+      cp: "64460",
+      municipio: "Monterrey",
+      estado: "Nuevo León",
+      telefono: "8112345678",
+    };
+    expect(datosDelPedido({ ...PEDIDO, domicilio })).toContainEqual([
+      "Domicilio",
+      "Av. Ruiz Cortines 1234, Mitras Centro, 64460 Monterrey, Nuevo León · Tel. 81 1234 5678",
+    ]);
+    expect(datosDelPedido({ ...PEDIDO, domicilio: { ...domicilio, telefono: null } })).toContainEqual([
+      "Domicilio",
+      "Av. Ruiz Cortines 1234, Mitras Centro, 64460 Monterrey, Nuevo León",
+    ]);
+    expect(datosDelPedido(PEDIDO).map(([e]) => e)).not.toContain("Domicilio");
   });
 
   it("agrega la cotización del POS en cuanto el pedido tiene número", () => {
     expect(datosDelPedido({ ...PEDIDO, numCotizaPos: 166789, cotizaPosEstado: "insertada" })).toEqual([
       ["Cliente", "JUAN RUBEN HERNANDEZ GONZALEZ"],
       ["Teléfono", "8186921848"],
-      ["Recoge en", "Matriz"],
+      ["Recoge en", "Mostrador"],
       ["Levantado por", "WhatsApp"],
       ["Enviado el", "03/09/2026 00:20"],
       ["Cotización", "166789"],

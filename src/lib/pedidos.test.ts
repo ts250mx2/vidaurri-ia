@@ -45,7 +45,14 @@ import {
 } from "./pedidos";
 
 describe("validarDomicilio", () => {
-  const completo = { calle: " Av. Ruiz Cortines 1234 ", colonia: "Mitras Centro", cp: "64460", municipio: "Monterrey", estado: "Nuevo León" };
+  const completo = {
+    calle: " Av. Ruiz Cortines 1234 ",
+    colonia: "Mitras Centro",
+    cp: "64460",
+    municipio: "Monterrey",
+    estado: "Nuevo León",
+    telefono: " 81 1234-5678 ",
+  };
 
   it("ausente, null o todo vacío es sin domicilio", () => {
     expect(validarDomicilio(undefined)).toEqual({ ok: true, datos: null });
@@ -56,8 +63,18 @@ describe("validarDomicilio", () => {
   it("acepta el domicilio completo, recortando espacios", () => {
     expect(validarDomicilio(completo)).toEqual({
       ok: true,
-      datos: { ...completo, calle: "Av. Ruiz Cortines 1234" },
+      datos: { ...completo, calle: "Av. Ruiz Cortines 1234", telefono: "8112345678" },
     });
+  });
+
+  it("el teléfono es opcional, pero si viene son 10 dígitos", () => {
+    expect(validarDomicilio({ ...completo, telefono: "" })).toEqual({
+      ok: true,
+      datos: { ...completo, calle: "Av. Ruiz Cortines 1234", telefono: null },
+    });
+    expect(validarDomicilio({ ...completo, telefono: "811234" }).ok).toBe(false);
+    // Solo el teléfono, sin domicilio, es "algo tecleado" y falta todo lo demás.
+    expect(validarDomicilio({ telefono: "8112345678" }).ok).toBe(false);
   });
 
   it("con algo tecleado exige todos los campos y un CP de cinco dígitos", () => {

@@ -40,7 +40,8 @@ const globalConPool = globalThis as unknown as {
 // v9: clientes_acceso (usuario y contraseña con hash del cliente del padrón
 // para el área de clientes; capa de datos en db-clientes-acceso.ts).
 // v10: dom_* en pedidos_mostrador (el domicilio opcional del cliente).
-const VERSION_ESQUEMA = 10;
+// v11: dom_telefono (teléfono de contacto del domicilio).
+const VERSION_ESQUEMA = 11;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -185,6 +186,7 @@ const TABLAS = [
   dom_cp CHAR(5) NULL,
   dom_municipio VARCHAR(80) NULL,
   dom_estado VARCHAR(60) NULL,
+  dom_telefono VARCHAR(20) NULL COMMENT 'Teléfono de contacto en el domicilio, 10 dígitos',
   folio_venta_pos VARCHAR(20) NULL COMMENT 'Folio de la venta en el POS al entregar (referencia, solo lectura)',
   motivo_cancelacion VARCHAR(200) NULL,
   num_cotiza_pos BIGINT NULL COMMENT 'cotiza.num_cotiza en bdav (folio que ve el POS)',
@@ -447,6 +449,12 @@ const COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR: ReadonlyArray<ColumnaNueva> = [
   { columna: "dom_cp", alter: "ALTER TABLE pedidos_mostrador ADD COLUMN dom_cp CHAR(5) NULL AFTER dom_colonia" },
   { columna: "dom_municipio", alter: "ALTER TABLE pedidos_mostrador ADD COLUMN dom_municipio VARCHAR(80) NULL AFTER dom_cp" },
   { columna: "dom_estado", alter: "ALTER TABLE pedidos_mostrador ADD COLUMN dom_estado VARCHAR(60) NULL AFTER dom_municipio" },
+  // v11: el teléfono de contacto del domicilio.
+  {
+    columna: "dom_telefono",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN dom_telefono VARCHAR(20) NULL COMMENT 'Teléfono de contacto en el domicilio, 10 dígitos' AFTER dom_estado",
+  },
 ];
 
 // v8: las piezas que van a Aldo cuando el sistema marca el renglón por

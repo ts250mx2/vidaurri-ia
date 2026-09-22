@@ -205,7 +205,7 @@ describe("formatearRespuestaPedido", () => {
       cliente: "Taller López",
       descuentoPct: 38,
       sucursal: "fierro",
-      sucursalNombre: "Sucursal Fierro",
+      sucursalNombre: "Ruta",
       total: 3596,
       numPartidas: 2,
     });

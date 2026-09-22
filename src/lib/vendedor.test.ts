@@ -64,10 +64,11 @@ const HASH_PROMPT_KIOSCO_CLIENTE: Record<CanalVendedor, string> = {
 // se registra con el botón de la pantalla; si este prompt cambia sin querer,
 // el cliente puede irse creyendo que su pedido ya se mandó. El cliente por
 // WhatsApp (sin canal) NO cambia. Si lo cambias a propósito, regenera el hash
-// y di por qué. Última regeneración: 15 sep 2026, al crear el área de clientes.
+// y di por qué. Última regeneración: 22 sep 2026, al renombrar las sucursales
+// en los pedidos ("Mostrador o Ruta" en vez de "Matriz o Sucursal Fierro").
 const HASH_PROMPT_CLIENTE_WEB: Record<CanalVendedor, string> = {
-  whatsapp: "6827d65fdede6e5903afb8ef97242998bb504ddc6a0a8f5edd9380265eea3971",
-  web: "e0bf57d58263d2063ded49ffdb93d83883375ecc1e6997ae26379b4f740e4717",
+  whatsapp: "9746c2bde576e2f39acf247c98075d7c1a3d72216ad4178086255a6c0df184d5",
+  web: "aa9e1d5a22047993ede5d649276aeb75cc212213e183806176f4c93d9c5287dd",
 };
 
 const CANALES: CanalVendedor[] = ["whatsapp", "web"];

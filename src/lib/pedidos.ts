@@ -68,8 +68,10 @@ export const ESTADOS_BKO_POS: ReadonlyArray<EstadoBkoPos> = [
 ];
 
 export const SUCURSALES_ENTREGA: ReadonlyArray<{ clave: SucursalEntrega; nombre: string }> = [
-  { clave: "matriz", nombre: "Matriz" },
-  { clave: "fierro", nombre: "Sucursal Fierro" },
+  // Las claves se quedan (matriz / fierro: así están en la base y en el POS);
+  // los nombres son como el mostrador habla de ellas en los pedidos.
+  { clave: "matriz", nombre: "Mostrador" },
+  { clave: "fierro", nombre: "Ruta" },
 ];
 
 /** Multiplicador del IVA. El precio unitario guardado en la partida YA lo
@@ -94,12 +96,24 @@ export interface Domicilio {
   cp: string;
   municipio: string;
   estado: string;
+  /** Teléfono de contacto en ese domicilio, 10 dígitos; null si no lo dieron. */
+  telefono: string | null;
 }
 
 export const DOMICILIO_MAX = { calle: 120, colonia: 80, municipio: 80, estado: 60 } as const;
 const ES_CP = /^\d{5}$/;
 export const ERROR_DOMICILIO =
   "Domicilio incompleto: hace falta calle y número, código postal de 5 dígitos, colonia, municipio y estado";
+export const ERROR_TELEFONO_DOMICILIO = "El teléfono de contacto del domicilio son 10 dígitos";
+
+/** "Av. Ruiz Cortines 1234, Mitras Centro, 64460 Monterrey, Nuevo León · Tel. 81 1234 5678" (para el PDF y los mensajes). */
+export function textoDomicilio(d: Domicilio): string {
+  const base = `${d.calle}, ${d.colonia}, ${d.cp} ${d.municipio}, ${d.estado}`;
+  if (!d.telefono) return base;
+  const t = d.telefono;
+  const legible = t.length === 10 ? `${t.slice(0, 2)} ${t.slice(2, 6)} ${t.slice(6)}` : t;
+  return `${base} · Tel. ${legible}`;
+}
 /** Largo del folio 'P-000131' con el relleno mínimo de dígitos. */
 export const FOLIO_DIGITOS = 6;
 /** Columnas VARCHAR de las tablas de pedidos (db-conversaciones.ts). */
@@ -836,13 +850,25 @@ export function validarDomicilio(crudo: unknown): Validacion<Domicilio | null> {
   const municipio = leerTextoOpcional(crudo.municipio, DOMICILIO_MAX.municipio);
   const estado = leerTextoOpcional(crudo.estado, DOMICILIO_MAX.estado);
   const cp = leerTextoOpcional(crudo.cp, 5);
+  const telefonoCrudo = leerTextoOpcional(crudo.telefono, 20);
   const campos = [calle, colonia, municipio, estado, cp];
-  if (campos.some((c) => c === undefined)) return { ok: false, error: ERROR_DOMICILIO };
-  if (campos.every((c) => c === null)) return { ok: true, datos: null };
+  if (campos.some((c) => c === undefined) || telefonoCrudo === undefined) return { ok: false, error: ERROR_DOMICILIO };
+  if (campos.every((c) => c === null) && telefonoCrudo === null) return { ok: true, datos: null };
   if (campos.some((c) => c === null) || !ES_CP.test(cp as string)) return { ok: false, error: ERROR_DOMICILIO };
+  // El teléfono es opcional dentro del domicilio; si viene, son 10 dígitos
+  // (se aceptan espacios y guiones al teclearlo, se guardan solo los dígitos).
+  const telefono = telefonoCrudo === null ? null : telefonoCrudo.replace(/\D/g, "");
+  if (telefono !== null && telefono.length !== 10) return { ok: false, error: ERROR_TELEFONO_DOMICILIO };
   return {
     ok: true,
-    datos: { calle: calle as string, colonia: colonia as string, cp: cp as string, municipio: municipio as string, estado: estado as string },
+    datos: {
+      calle: calle as string,
+      colonia: colonia as string,
+      cp: cp as string,
+      municipio: municipio as string,
+      estado: estado as string,
+      telefono,
+    },
   };
 }
 
