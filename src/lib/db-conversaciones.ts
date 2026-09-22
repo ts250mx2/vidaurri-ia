@@ -39,7 +39,8 @@ const globalConPool = globalThis as unknown as {
 // back order cuando el sistema marca el renglón por faltante).
 // v9: clientes_acceso (usuario y contraseña con hash del cliente del padrón
 // para el área de clientes; capa de datos en db-clientes-acceso.ts).
-const VERSION_ESQUEMA = 9;
+// v10: dom_* en pedidos_mostrador (el domicilio opcional del cliente).
+const VERSION_ESQUEMA = 10;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -179,6 +180,11 @@ const TABLAS = [
   iva DECIMAL(11,2) NOT NULL DEFAULT 0,
   total DECIMAL(11,2) NOT NULL DEFAULT 0 COMMENT 'IVA incluido; suma de importes',
   observaciones VARCHAR(500) NULL,
+  dom_calle VARCHAR(120) NULL COMMENT 'Domicilio del cliente (opcional): calle y número',
+  dom_colonia VARCHAR(80) NULL,
+  dom_cp CHAR(5) NULL,
+  dom_municipio VARCHAR(80) NULL,
+  dom_estado VARCHAR(60) NULL,
   folio_venta_pos VARCHAR(20) NULL COMMENT 'Folio de la venta en el POS al entregar (referencia, solo lectura)',
   motivo_cancelacion VARCHAR(200) NULL,
   num_cotiza_pos BIGINT NULL COMMENT 'cotiza.num_cotiza en bdav (folio que ve el POS)',
@@ -430,6 +436,17 @@ const COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR: ReadonlyArray<ColumnaNueva> = [
     alter:
       "ALTER TABLE pedidos_mostrador ADD COLUMN bko_pos_compromiso VARCHAR(15) NULL COMMENT 'MARTES | VIERNES: día de entrega de Aldo con el que se pidió' AFTER bko_pos_firma",
   },
+  // v10: el domicilio del cliente (opcional). Va después de observaciones, como
+  // en el CREATE TABLE.
+  {
+    columna: "dom_calle",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN dom_calle VARCHAR(120) NULL COMMENT 'Domicilio del cliente (opcional): calle y número' AFTER observaciones",
+  },
+  { columna: "dom_colonia", alter: "ALTER TABLE pedidos_mostrador ADD COLUMN dom_colonia VARCHAR(80) NULL AFTER dom_calle" },
+  { columna: "dom_cp", alter: "ALTER TABLE pedidos_mostrador ADD COLUMN dom_cp CHAR(5) NULL AFTER dom_colonia" },
+  { columna: "dom_municipio", alter: "ALTER TABLE pedidos_mostrador ADD COLUMN dom_municipio VARCHAR(80) NULL AFTER dom_cp" },
+  { columna: "dom_estado", alter: "ALTER TABLE pedidos_mostrador ADD COLUMN dom_estado VARCHAR(60) NULL AFTER dom_municipio" },
 ];
 
 // v8: las piezas que van a Aldo cuando el sistema marca el renglón por

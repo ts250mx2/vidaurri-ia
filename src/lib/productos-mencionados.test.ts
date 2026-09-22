@@ -43,7 +43,7 @@ describe("codigoMencionado", () => {
 });
 
 describe("productosMencionados", () => {
-  it("mapea nuevas y usadas con existencia, idPieza y la foto de la respuesta", () => {
+  it("mapea nuevas y usadas con existencia, idPieza y la foto: la de la respuesta si Vico la enseñó, si no la del catálogo", () => {
     const productos = productosMencionados({
       resultadosPorHerramienta: [
         { herramienta: "buscar_productos", resultados: [nueva("DDDAI15", { entregaInmediata: 3 })] },
@@ -70,7 +70,7 @@ describe("productosMencionados", () => {
         descripcion: "CALAVERA CAL-01",
         precioConIva: 580,
         existencia: 1,
-        foto: null,
+        foto: "/api/usadas/foto?n=x.jpg",
       },
     ]);
   });

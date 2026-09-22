@@ -55,6 +55,7 @@ const PEDIDO = {
   bkoPosEstado: "pendiente",
   bkoPosError: null,
   bkoPosCompromiso: null,
+  domicilio: null,
   folioVentaPos: null,
   motivoCancelacion: null,
   creadoEn: "2026-09-14 09:00:00",

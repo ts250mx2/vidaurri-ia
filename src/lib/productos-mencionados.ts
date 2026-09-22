@@ -70,7 +70,10 @@ function nuevaDe(fila: unknown): ProductoMencionado | null {
     // La herramienta expone la existencia en tienda como entregaInmediata;
     // `existencia` se acepta por si algún día cambia el nombre.
     existencia: existenciaDe(fila, ["entregaInmediata", "existencia"]),
-    foto: null,
+    // Por el proxy de fotos de la pantalla (PAGE lo sirve sellado). Se pide
+    // por código: la herramienta no trae `imagen` y son 15 de 42 mil los que
+    // tienen la foto prestada de otro código.
+    foto: `/api/foto?codigo=${encodeURIComponent(codigo)}`,
   };
 }
 
@@ -90,7 +93,9 @@ function usadaDe(fila: unknown): ProductoMencionado | null {
     descripcion,
     precioConIva,
     existencia: existenciaDe(fila, ["existencia"]),
-    foto: null,
+    // La herramienta ya trae la ruta al proxy de fotos usadas (o null si la
+    // Bodega no tiene foto de esa pieza).
+    foto: textoNoVacio(fila.foto),
   };
 }
 
@@ -134,7 +139,9 @@ export function productosMencionados(entrada: EntradaProductosMencionados): Prod
       const llave = llaveDe(producto);
       if (vistos.has(llave)) continue;
       vistos.add(llave);
-      consultados.push({ ...producto, foto: fotoPorCodigo.get(producto.codigo.toUpperCase()) ?? null });
+      // La foto que Vico enseñó en la respuesta manda; si no la enseñó, la del
+      // catálogo: cada renglón lleva foto, no solo los que mencionó.
+      consultados.push({ ...producto, foto: fotoPorCodigo.get(producto.codigo.toUpperCase()) ?? producto.foto });
     }
   }
 

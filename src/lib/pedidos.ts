@@ -78,6 +78,28 @@ export const IVA_PEDIDOS = 1.16;
 export const CANTIDAD_MAX = 99;
 export const PARTIDAS_MAX = 30;
 export const OBSERVACIONES_MAX = 500;
+
+/**
+ * Domicilio del cliente en el pedido (opcional): lo captura el vendedor en
+ * /mostrador/nuevo o el propio cliente en el kiosco y en el área de clientes,
+ * con el código postal prellenando colonia, municipio y estado del catálogo
+ * de Correos de México (que vive en PAGE). Se guarda como texto, no como
+ * claves: un catálogo que cambie no debe dejar ilegible un pedido viejo.
+ */
+export interface Domicilio {
+  /** Calle y número (exterior e interior, como lo diga el cliente). */
+  calle: string;
+  colonia: string;
+  /** Cinco dígitos. */
+  cp: string;
+  municipio: string;
+  estado: string;
+}
+
+export const DOMICILIO_MAX = { calle: 120, colonia: 80, municipio: 80, estado: 60 } as const;
+const ES_CP = /^\d{5}$/;
+export const ERROR_DOMICILIO =
+  "Domicilio incompleto: hace falta calle y número, código postal de 5 dígitos, colonia, municipio y estado";
 /** Largo del folio 'P-000131' con el relleno mínimo de dígitos. */
 export const FOLIO_DIGITOS = 6;
 /** Columnas VARCHAR de las tablas de pedidos (db-conversaciones.ts). */
@@ -182,6 +204,8 @@ export interface PedidoResumen {
   bkoPosError: string | null;
   /** MARTES | VIERNES: día de entrega de Aldo con el que se pidió; null sin back order. */
   bkoPosCompromiso: string | null;
+  /** Domicilio del cliente, si lo dio al enviar; null si no. */
+  domicilio: Domicilio | null;
   creadoEn: string;
   enviadoEn: string | null;
   confirmadoEn: string | null;
@@ -796,6 +820,30 @@ export function validarAperturaBorrador(entrada: unknown): Validacion<AperturaBo
 export interface EnvioBorrador {
   observaciones: string | null;
   sucursal: SucursalEntrega | null;
+  domicilio: Domicilio | null;
+}
+
+/**
+ * `domicilio` del cuerpo: ausente, null o con todos los campos vacíos es
+ * "sin domicilio" (null); con cualquier campo tecleado se exige completo, con
+ * el CP de cinco dígitos. Todo o nada: media dirección no le sirve a nadie.
+ */
+export function validarDomicilio(crudo: unknown): Validacion<Domicilio | null> {
+  if (crudo == null) return { ok: true, datos: null };
+  if (!esObjeto(crudo)) return { ok: false, error: ERROR_DOMICILIO };
+  const calle = leerTextoOpcional(crudo.calle, DOMICILIO_MAX.calle);
+  const colonia = leerTextoOpcional(crudo.colonia, DOMICILIO_MAX.colonia);
+  const municipio = leerTextoOpcional(crudo.municipio, DOMICILIO_MAX.municipio);
+  const estado = leerTextoOpcional(crudo.estado, DOMICILIO_MAX.estado);
+  const cp = leerTextoOpcional(crudo.cp, 5);
+  const campos = [calle, colonia, municipio, estado, cp];
+  if (campos.some((c) => c === undefined)) return { ok: false, error: ERROR_DOMICILIO };
+  if (campos.every((c) => c === null)) return { ok: true, datos: null };
+  if (campos.some((c) => c === null) || !ES_CP.test(cp as string)) return { ok: false, error: ERROR_DOMICILIO };
+  return {
+    ok: true,
+    datos: { calle: calle as string, colonia: colonia as string, cp: cp as string, municipio: municipio as string, estado: estado as string },
+  };
 }
 
 /** Cuerpo de POST /borrador/enviar: `{ observaciones?, sucursal? }`; el cuerpo
@@ -810,7 +858,10 @@ export function validarEnvioBorrador(entrada: unknown): Validacion<EnvioBorrador
   const sucursal = leerSucursalOpcional(cuerpo.sucursal);
   if (sucursal === undefined) return { ok: false, error: ERROR_SUCURSAL };
 
-  return { ok: true, datos: { observaciones, sucursal } };
+  const domicilio = validarDomicilio(cuerpo.domicilio);
+  if (!domicilio.ok) return domicilio;
+
+  return { ok: true, datos: { observaciones, sucursal, domicilio: domicilio.datos } };
 }
 
 // ---------------------------------------------------------------------------

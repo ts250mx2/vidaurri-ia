@@ -25,6 +25,7 @@ import {
   puedeEditarPedido,
   redondear2,
   type CanalPedido,
+  type Domicilio,
   type ConfirmacionPartida,
   type EstadoBkoPos,
   type EstadoCotizaPos,
@@ -169,6 +170,8 @@ const COLUMNAS_PEDIDO = `p.id, p.folio, p.estatus, p.canal, p.id_cliente AS idCl
        p.telefono, p.descuento_pct AS descuentoPct, p.sucursal,
        p.capturado_por AS capturadoPor, p.atendido_por AS atendidoPor,
        p.subtotal, p.iva, p.total, p.observaciones,
+       p.dom_calle AS domCalle, p.dom_colonia AS domColonia, p.dom_cp AS domCp,
+       p.dom_municipio AS domMunicipio, p.dom_estado AS domEstado,
        p.folio_venta_pos AS folioVentaPos, p.motivo_cancelacion AS motivoCancelacion,
        p.num_cotiza_pos AS numCotizaPos, p.cotiza_pos_estado AS cotizaPosEstado,
        p.cotiza_pos_error AS cotizaPosError,
@@ -236,6 +239,7 @@ function aResumen(fila: RowDataPacket): PedidoResumen {
     bkoPosEstado: String(fila.bkoPosEstado) as EstadoBkoPos,
     bkoPosError: texto(fila.bkoPosError),
     bkoPosCompromiso: texto(fila.bkoPosCompromiso),
+    domicilio: domicilioDe(fila),
     creadoEn: String(fila.creadoEn),
     enviadoEn: texto(fila.enviadoEn),
     confirmadoEn: texto(fila.confirmadoEn),
@@ -244,6 +248,17 @@ function aResumen(fila: RowDataPacket): PedidoResumen {
     canceladoEn: texto(fila.canceladoEn),
     actualizadoEn: String(fila.actualizadoEn),
   };
+}
+
+/** Las cinco columnas dom_* como un domicilio, o null si el pedido no trae ninguna. */
+function domicilioDe(fila: RowDataPacket): Domicilio | null {
+  const calle = texto(fila.domCalle);
+  const colonia = texto(fila.domColonia);
+  const cp = texto(fila.domCp);
+  const municipio = texto(fila.domMunicipio);
+  const estado = texto(fila.domEstado);
+  if (!calle && !colonia && !cp && !municipio && !estado) return null;
+  return { calle: calle ?? "", colonia: colonia ?? "", cp: cp ?? "", municipio: municipio ?? "", estado: estado ?? "" };
 }
 
 function aPartida(fila: RowDataPacket): PartidaPedido {
@@ -997,7 +1012,8 @@ export async function enviarPedido(
   idPedido: number,
   usuario: string | null,
   canal: CanalPedido,
-  observaciones: string | null
+  observaciones: string | null,
+  domicilio: Domicilio | null = null
 ): Promise<PedidoDetalle> {
   await asegurarEsquema();
   const { momento } = ahoraMonterrey();
@@ -1012,9 +1028,21 @@ export async function enviarPedido(
     await conexion.query(
       `UPDATE pedidos_mostrador
           SET estatus = 'enviado', folio = ?, clave_borrador = NULL, observaciones = ?,
+              dom_calle = ?, dom_colonia = ?, dom_cp = ?, dom_municipio = ?, dom_estado = ?,
               enviado_en = ?, actualizado_en = ?
         WHERE id = ?`,
-      [folioDeId(idPedido), observaciones?.slice(0, OBSERVACIONES_MAX) ?? null, momento, momento, idPedido]
+      [
+        folioDeId(idPedido),
+        observaciones?.slice(0, OBSERVACIONES_MAX) ?? null,
+        domicilio?.calle ?? null,
+        domicilio?.colonia ?? null,
+        domicilio?.cp ?? null,
+        domicilio?.municipio ?? null,
+        domicilio?.estado ?? null,
+        momento,
+        momento,
+        idPedido,
+      ]
     );
     await registrarEvento(
       conexion,
@@ -1023,7 +1051,9 @@ export async function enviarPedido(
         evento: "enviado",
         estatusAnterior: "borrador",
         estatusNuevo: "enviado",
-        detalle: `Folio ${folioDeId(idPedido)} · recoge en ${pedido.sucursal}`,
+        detalle: `Folio ${folioDeId(idPedido)} · recoge en ${pedido.sucursal}${
+          domicilio ? ` · domicilio: ${domicilio.colonia}, ${domicilio.municipio}, CP ${domicilio.cp}` : ""
+        }`,
         usuario,
         canal,
       },

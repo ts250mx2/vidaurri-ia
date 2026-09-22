@@ -77,6 +77,7 @@ const PEDIDO = {
   bkoPosEstado: "insertada",
   bkoPosError: "detalle del POS",
   bkoPosCompromiso: "MARTES",
+  domicilio: null,
   creadoEn: "2026-09-15 10:00:00",
   enviadoEn: "2026-09-15 10:05:00",
   confirmadoEn: "2026-09-15 10:30:00",

@@ -26,6 +26,7 @@ const PEDIDO: PedidoDetalle = {
   bkoPosEstado: "pendiente",
   bkoPosError: null,
   bkoPosCompromiso: null,
+  domicilio: null,
   creadoEn: "2026-09-03 00:19:31",
   enviadoEn: "2026-09-03 00:20:10",
   confirmadoEn: null,

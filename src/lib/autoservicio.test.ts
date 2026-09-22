@@ -114,7 +114,7 @@ describe("enviar", () => {
   it("los datos del envío: el kiosco anónimo teclea nombre y celular y va a la sucursal del aparato", () => {
     expect(datosEnvioDe(KIOSCO, { nombre: "Ana Ruiz", telefono: "81 8765 4321", sucursal: "matriz" })).toEqual({
       ok: true,
-      datos: { cliente: { cliente: "Ana Ruiz", telefono: "8187654321" }, sucursal: "fierro", observaciones: null },
+      datos: { cliente: { cliente: "Ana Ruiz", telefono: "8187654321" }, sucursal: "fierro", observaciones: null, domicilio: null },
     });
     expect(datosEnvioDe(KIOSCO, {}).ok).toBe(false);
   });
@@ -122,14 +122,14 @@ describe("enviar", () => {
   it("el kiosco con cliente ignora lo tecleado: nombre y celular del padrón, sucursal del aparato", () => {
     expect(datosEnvioDe(KIOSCO_CON_CLIENTE, { nombre: "Otro", telefono: "8100000000" })).toEqual({
       ok: true,
-      datos: { cliente: { cliente: "Taller López", telefono: "8112345678" }, sucursal: "fierro", observaciones: null },
+      datos: { cliente: { cliente: "Taller López", telefono: "8112345678" }, sucursal: "fierro", observaciones: null, domicilio: null },
     });
   });
 
   it("el área de clientes no vuelve a sellar el cliente (ya nació con él): sucursal y observaciones del cuerpo", () => {
     expect(datosEnvioDe(WEB, { sucursal: "matriz", observaciones: "paso a las 5", nombre: "Otro" })).toEqual({
       ok: true,
-      datos: { cliente: null, sucursal: "matriz", observaciones: "paso a las 5" },
+      datos: { cliente: null, sucursal: "matriz", observaciones: "paso a las 5", domicilio: null },
     });
     expect(datosEnvioDe(WEB, { nombre: "Ana", telefono: "8187654321" }).ok).toBe(false);
   });
@@ -140,10 +140,10 @@ describe("enviar", () => {
   });
 
   it("el cliente elige la sucursal al enviar (obligatoria, del catálogo) y observaciones opcionales", () => {
-    expect(validarEnvioCliente({ sucursal: "fierro" })).toEqual({ ok: true, datos: { sucursal: "fierro", observaciones: null } });
+    expect(validarEnvioCliente({ sucursal: "fierro" })).toEqual({ ok: true, datos: { sucursal: "fierro", observaciones: null, domicilio: null } });
     expect(validarEnvioCliente({ sucursal: "matriz", observaciones: "  paso a las 5  " })).toEqual({
       ok: true,
-      datos: { sucursal: "matriz", observaciones: "paso a las 5" },
+      datos: { sucursal: "matriz", observaciones: "paso a las 5", domicilio: null },
     });
     expect(validarEnvioCliente({ sucursal: "bodega" }).ok).toBe(false);
     expect(validarEnvioCliente({}).ok).toBe(false);

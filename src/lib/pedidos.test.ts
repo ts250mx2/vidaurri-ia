@@ -40,8 +40,37 @@ import {
   NOMBRE_KIOSCO_MIN,
   esCanalPedido,
   leerFolioRuta,
+  validarDomicilio,
   validarTelefonoKiosco,
 } from "./pedidos";
+
+describe("validarDomicilio", () => {
+  const completo = { calle: " Av. Ruiz Cortines 1234 ", colonia: "Mitras Centro", cp: "64460", municipio: "Monterrey", estado: "Nuevo León" };
+
+  it("ausente, null o todo vacío es sin domicilio", () => {
+    expect(validarDomicilio(undefined)).toEqual({ ok: true, datos: null });
+    expect(validarDomicilio(null)).toEqual({ ok: true, datos: null });
+    expect(validarDomicilio({ calle: "", colonia: " ", cp: "", municipio: null })).toEqual({ ok: true, datos: null });
+  });
+
+  it("acepta el domicilio completo, recortando espacios", () => {
+    expect(validarDomicilio(completo)).toEqual({
+      ok: true,
+      datos: { ...completo, calle: "Av. Ruiz Cortines 1234" },
+    });
+  });
+
+  it("con algo tecleado exige todos los campos y un CP de cinco dígitos", () => {
+    expect(validarDomicilio({ ...completo, colonia: "" }).ok).toBe(false);
+    expect(validarDomicilio({ ...completo, cp: "6446" }).ok).toBe(false);
+    expect(validarDomicilio({ ...completo, cp: "6446A" }).ok).toBe(false);
+    expect(validarDomicilio("Monterrey").ok).toBe(false);
+  });
+
+  it("rechaza un campo más largo que su tope", () => {
+    expect(validarDomicilio({ ...completo, calle: "x".repeat(121) }).ok).toBe(false);
+  });
+});
 
 const PERFILES: PerfilPos[] = ["Administrador", "Operaciones", "Ventas"];
 const ESTATUS: EstatusPedido[] = ["borrador", "enviado", "confirmado", "listo", "entregado", "cancelado"];
@@ -682,14 +711,14 @@ describe("validarAperturaBorrador", () => {
 
 describe("validarEnvioBorrador", () => {
   it("el cuerpo vacío o ausente vale: se manda tal cual", () => {
-    expect(validarEnvioBorrador({})).toEqual({ ok: true, datos: { observaciones: null, sucursal: null } });
-    expect(validarEnvioBorrador(undefined)).toEqual({ ok: true, datos: { observaciones: null, sucursal: null } });
+    expect(validarEnvioBorrador({})).toEqual({ ok: true, datos: { observaciones: null, sucursal: null, domicilio: null } });
+    expect(validarEnvioBorrador(undefined)).toEqual({ ok: true, datos: { observaciones: null, sucursal: null, domicilio: null } });
   });
 
   it("limpia las observaciones y toma la sucursal", () => {
     expect(validarEnvioBorrador({ observaciones: "  lo recoge​  su hijo ", sucursal: "matriz" })).toEqual({
       ok: true,
-      datos: { observaciones: "lo recoge su hijo", sucursal: "matriz" },
+      datos: { observaciones: "lo recoge su hijo", sucursal: "matriz", domicilio: null },
     });
   });
 

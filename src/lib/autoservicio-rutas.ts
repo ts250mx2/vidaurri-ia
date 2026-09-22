@@ -304,7 +304,7 @@ export function rutasAutoservicio(resolver: ResolverAmbito): RutasAutoservicio {
         await cambiarSucursal(borrador.id, envio.datos.sucursal, usuario, canal);
       }
       if (envio.datos.cliente) await fijarClienteBorrador(borrador.id, envio.datos.cliente, usuario, canal);
-      const pedido = await enviarPedido(borrador.id, usuario, canal, envio.datos.observaciones);
+      const pedido = await enviarPedido(borrador.id, usuario, canal, envio.datos.observaciones, envio.datos.domicilio);
 
       return respuestaOk({ ...acuseParaKiosco(pedido) });
     } catch (error) {

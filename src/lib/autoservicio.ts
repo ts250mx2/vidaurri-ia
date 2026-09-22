@@ -15,7 +15,14 @@ import {
 } from "@/lib/kiosco-api";
 import { datosClienteParaEnvio } from "@/lib/kiosco-cliente";
 import type { LimiteIntentos } from "@/lib/limite-intentos";
-import { validarObservaciones, validarSucursal, type CanalPedido, type SucursalEntrega } from "@/lib/pedidos";
+import {
+  validarDomicilio,
+  validarObservaciones,
+  validarSucursal,
+  type CanalPedido,
+  type Domicilio,
+  type SucursalEntrega,
+} from "@/lib/pedidos";
 import type { ActorVendedor } from "@/lib/vendedor-pedidos";
 
 // El "ámbito" del autoservicio: quién está armando el pedido y desde dónde.
@@ -157,23 +164,34 @@ export interface DatosEnvio {
   cliente: { cliente: string; telefono: string | null } | null;
   sucursal: SucursalEntrega;
   observaciones: string | null;
+  /** Domicilio que dio el cliente, si lo dio (opcional en los dos ámbitos). */
+  domicilio: Domicilio | null;
 }
 
 /**
  * Lo que hace falta para enviar, según el ámbito. Kiosco: nombre y celular
  * (tecleados, o del padrón si entró), sucursal del aparato, sin observaciones.
  * Cliente: elige la sucursal y puede dejar observaciones; nombre y celular ya
- * están en el borrador desde que nació.
+ * están en el borrador desde que nació. En los dos, el domicilio es opcional.
  */
 export function datosEnvioDe(ambito: Ambito, cuerpo: unknown): Validacion<DatosEnvio> {
   if (ambito.tipo === "kiosco") {
     const datos = datosClienteParaEnvio(ambito.cliente, cuerpo);
     if (!datos.ok) return datos;
-    return { ok: true, datos: { cliente: datos.datos, sucursal: ambito.sesion.sucursal, observaciones: null } };
+    const domicilio = validarDomicilio(esObjeto(cuerpo) ? cuerpo.domicilio : null);
+    if (!domicilio.ok) return domicilio;
+    return {
+      ok: true,
+      datos: { cliente: datos.datos, sucursal: ambito.sesion.sucursal, observaciones: null, domicilio: domicilio.datos },
+    };
   }
   const envio = validarEnvioCliente(cuerpo);
   if (!envio.ok) return envio;
   return { ok: true, datos: { cliente: null, ...envio.datos } };
+}
+
+function esObjeto(entrada: unknown): entrada is Record<string, unknown> {
+  return !!entrada && typeof entrada === "object" && !Array.isArray(entrada);
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +201,7 @@ export function datosEnvioDe(ambito: Ambito, cuerpo: unknown): Validacion<DatosE
 export interface EnvioCliente {
   sucursal: SucursalEntrega;
   observaciones: string | null;
+  domicilio: Domicilio | null;
 }
 
 /** `{ sucursal, observaciones? }` con que el cliente manda su pedido: la
@@ -192,7 +211,12 @@ export function validarEnvioCliente(entrada: unknown): Validacion<EnvioCliente> 
   if (!sucursal.ok) return sucursal;
   const observaciones = validarObservaciones(entrada);
   if (!observaciones.ok) return observaciones;
-  return { ok: true, datos: { sucursal: sucursal.datos.sucursal, observaciones: observaciones.datos.observaciones } };
+  const domicilio = validarDomicilio(esObjeto(entrada) ? entrada.domicilio : null);
+  if (!domicilio.ok) return domicilio;
+  return {
+    ok: true,
+    datos: { sucursal: sucursal.datos.sucursal, observaciones: observaciones.datos.observaciones, domicilio: domicilio.datos },
+  };
 }
 
 export interface CuerpoVico {

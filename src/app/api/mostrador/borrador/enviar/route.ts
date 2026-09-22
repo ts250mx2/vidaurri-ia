@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   if (!lectura.ok) return lectura.respuesta;
   const validacion = validarEnvioBorrador(lectura.cuerpo);
   if (!validacion.ok) return respuestaError(validacion.error, 400);
-  const { observaciones, sucursal } = validacion.datos;
+  const { observaciones, sucursal, domicilio } = validacion.datos;
 
   try {
     const borrador = await obtenerBorrador(actorDe(sesion));
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     if (sucursal !== null && sucursal !== borrador.sucursal) {
       await cambiarSucursal(borrador.id, sucursal, sesion.usuario, CANAL_MOSTRADOR);
     }
-    const pedido = await enviarPedido(borrador.id, sesion.usuario, CANAL_MOSTRADOR, observaciones);
+    const pedido = await enviarPedido(borrador.id, sesion.usuario, CANAL_MOSTRADOR, observaciones, domicilio);
     return respuestaOk({ pedido });
   } catch (error) {
     return respuestaDeError(error, "enviando el borrador del vendedor");
