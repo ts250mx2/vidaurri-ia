@@ -86,6 +86,7 @@ const PEDIDO: PedidoDetalle = {
       diasEntrega: null,
       cantidadAldo: null,
       nota: null,
+      foto: null,
     },
     {
       id: 901,
@@ -102,6 +103,7 @@ const PEDIDO: PedidoDetalle = {
       diasEntrega: null,
       cantidadAldo: null,
       nota: null,
+      foto: null,
     },
   ],
   eventos: [],

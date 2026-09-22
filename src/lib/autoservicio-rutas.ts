@@ -1,5 +1,5 @@
 import type { NextResponse } from "next/server";
-import { buscarArticulosParaPedido } from "@/lib/articulos-pedido";
+import { buscarArticulosParaPedido, LIMITE_BUSQUEDA_ARTICULOS } from "@/lib/articulos-pedido";
 import { exigirCliente } from "@/lib/auth-clientes";
 import { exigirKiosco, respuestaNoAutorizadoKiosco } from "@/lib/auth-kiosco";
 import {
@@ -63,6 +63,12 @@ import { leerFolioRuta, validarCantidad, validarCapturaPartida } from "@/lib/ped
 // kiosco lo lee quien se pare enfrente y el cliente solo debe ver lo suyo.
 
 const BUSQUEDA_MAX = 80;
+
+/** `limite` del querystring: un entero positivo, o el default si no viene o no se entiende; la librería lo acota. */
+function limiteDe(crudo: string | null): number {
+  const n = Number.parseInt(crudo ?? "", 10);
+  return Number.isInteger(n) && n > 0 ? n : LIMITE_BUSQUEDA_ARTICULOS;
+}
 const MOTIVO_DESCARTE = "Pedido descartado por el cliente";
 
 export type ResultadoAmbito = { ok: true; ambito: Ambito } | { ok: false; respuesta: NextResponse };
@@ -141,7 +147,11 @@ export function rutasAutoservicio(resolver: ResolverAmbito): RutasAutoservicio {
 
     try {
       // Precio de MOSTRADOR (descuento null) o el del cliente del padrón.
-      const encontrados = await buscarArticulosParaPedido(busqueda, descuentoDe(ambito));
+      const encontrados = await buscarArticulosParaPedido(
+        busqueda,
+        descuentoDe(ambito),
+        limiteDe(searchParams.get("limite"))
+      );
       return respuestaOk({ articulos: encontrados.map(articuloParaKiosco) });
     } catch (error) {
       return respuestaDeError(error, `buscando artículos ("${busqueda}")`, areaDe(ambito));

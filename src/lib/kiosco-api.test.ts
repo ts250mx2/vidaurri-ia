@@ -33,6 +33,7 @@ const PARTIDA: PartidaPedido = {
   diasEntrega: null,
   cantidadAldo: null,
   nota: "apartada para el 3",
+  foto: null,
 };
 
 const PEDIDO = {
@@ -102,6 +103,7 @@ describe("pedidoParaKiosco", () => {
           precioConIva: 1088.08,
           importe: 2176.16,
           hayEnTienda: true,
+          foto: null,
         },
       ],
     });
@@ -154,6 +156,7 @@ describe("articuloParaKiosco", () => {
       precioSinIva: 938.0,
       marca: "NISSAN",
       tipoParte: "DEFENSAS DELANTERAS",
+      foto: "FAC123",
     });
 
     expect(articulo).toEqual({
@@ -163,6 +166,7 @@ describe("articuloParaKiosco", () => {
       hayEnTienda: true,
       marca: "NISSAN",
       tipoParte: "DEFENSAS DELANTERAS",
+      foto: "FAC123",
     });
     expect(JSON.stringify(articulo)).not.toContain("938");
     expect(JSON.stringify(articulo)).not.toContain("7");
@@ -177,6 +181,7 @@ describe("articuloParaKiosco", () => {
       precioSinIva: 8.62,
       marca: "",
       tipoParte: "",
+      foto: "X",
     });
     expect(articulo.hayEnTienda).toBe(false);
   });

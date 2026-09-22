@@ -6,6 +6,7 @@ import {
   poolConversaciones,
 } from "@/lib/db-conversaciones";
 import { moneda } from "@/lib/formato";
+import { conFotos } from "@/lib/fotos-partidas";
 import {
   BKO_FIRMA_MAX,
   CANTIDAD_MAX,
@@ -261,6 +262,8 @@ function aPartida(fila: RowDataPacket): PartidaPedido {
     diasEntrega: numero(fila.diasEntrega),
     cantidadAldo: numero(fila.cantidadAldo),
     nota: texto(fila.nota),
+    // Se resuelve aparte (`conFotos`): la tabla del pedido no guarda fotos.
+    foto: null,
   };
 }
 
@@ -304,7 +307,8 @@ async function leerDetalle(ejecutor: Ejecutor, id: number): Promise<PedidoDetall
     `SELECT ${COLUMNAS_EVENTO} FROM pedidos_mostrador_eventos WHERE id_pedido = ? ORDER BY id`,
     [id]
   );
-  return aDetalle(cabeceras[0], partidas, eventos);
+  const detalle = aDetalle(cabeceras[0], partidas, eventos);
+  return { ...detalle, partidas: await conFotos(detalle.partidas) };
 }
 
 /** El detalle recién escrito; que no exista después de tocarlo es un error de programación. */

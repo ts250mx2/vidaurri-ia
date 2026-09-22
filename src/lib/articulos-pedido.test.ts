@@ -3,9 +3,36 @@ import {
   depurarDuplicados,
   factorDescuento,
   normalizarDescuento,
+  separarAnios,
+  sqlFiltroAnio,
   sqlFiltroPrecio,
   sqlPrecioBase,
 } from "./articulos-pedido";
+
+describe("separarAnios", () => {
+  it("aparta los años de cuatro cifras y deja el resto de la frase", () => {
+    expect(separarAnios("facia nissan versa 2017")).toEqual({ resto: "facia nissan versa", anios: [2017] });
+  });
+
+  it("no toma por año los rangos cortos ni los códigos", () => {
+    expect(separarAnios("versa 15-19 DDNVE15 19")).toEqual({ resto: "versa 15-19 DDNVE15 19", anios: [] });
+  });
+
+  it("sin años devuelve la frase tal cual", () => {
+    expect(separarAnios("  cofre  aveo ")).toEqual({ resto: "cofre aveo", anios: [] });
+  });
+});
+
+describe("sqlFiltroAnio", () => {
+  it("acepta el año dentro del rango o con un extremo sin capturar, y empuja dos parámetros", () => {
+    const params: unknown[] = [];
+    const sql = sqlFiltroAnio(2017, params);
+    expect(params).toEqual([2017, 2017]);
+    expect(sql).toContain("a.aini <= ?");
+    expect(sql).toContain("a.afin >= ?");
+    expect(sql).toContain("IFNULL(a.aini, 0) = 0");
+  });
+});
 
 describe("normalizarDescuento", () => {
   it("acepta un porcentaje entre 0 y 100 (sin incluir 100)", () => {

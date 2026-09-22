@@ -16,6 +16,8 @@ import type { OrigenPartida } from "@/lib/pedidos";
 // Tope del buscador manual de /mostrador/nuevo: es una lista para elegir a
 // mano, no un catálogo.
 export const LIMITE_BUSQUEDA_ARTICULOS = 20;
+/** Lo más que se deja pedir con `limite`: la pantalla de buscar de /mostrador/nuevo pide 60. */
+export const LIMITE_BUSQUEDA_ARTICULOS_MAX = 100;
 
 /** Multiplicador de IVA con el que se publican todos los precios. */
 const IVA = 1.16;
@@ -28,6 +30,13 @@ export interface ArticuloParaPedido {
   precioSinIva: number;
   marca: string;
   tipoParte: string;
+  /**
+   * Nombre de archivo de la foto en el S3: la columna `imagen` cuando está
+   * capturada (hay artículos que comparten la foto de otro), si no el código.
+   * Es lo que PAGE le pasa a su proxy /api/foto; ir con el código directo
+   * deja sin foto a los que la tienen prestada.
+   */
+  foto: string;
 }
 
 export interface PiezaUsadaParaPedido {
@@ -99,7 +108,7 @@ export function sqlFiltroPrecio(descuento: number | null): string {
 /** Las columnas de precio y existencia que comparten las consultas a bdav. */
 function columnasArticulo(descuento: number | null): string {
   const precioBase = sqlPrecioBase(descuento);
-  return `a.codigo, a.descripcion,
+  return `a.codigo, a.descripcion, a.imagen,
           IFNULL(l.linea, '') AS marca, IFNULL(p.parte, '') AS tipoParte,
           ${precioBase} AS precioSinIva,
           ROUND((${precioBase}) * ${IVA}, 2) AS precioConIva,
@@ -109,6 +118,7 @@ function columnasArticulo(descuento: number | null): string {
 interface FilaArticulo {
   codigo: string;
   descripcion: string;
+  imagen: string | null;
   marca: string;
   tipoParte: string;
   precioSinIva: number;
@@ -125,6 +135,7 @@ function articuloDeFila(fila: FilaArticulo): ArticuloParaPedido {
     precioSinIva: Number(fila.precioSinIva) || 0,
     marca: String(fila.marca ?? ""),
     tipoParte: String(fila.tipoParte ?? ""),
+    foto: String(fila.imagen ?? "").trim() || String(fila.codigo),
   };
 }
 
@@ -220,15 +231,46 @@ export async function piezaUsadaParaPedido(idPieza: number): Promise<PiezaUsadaP
 }
 
 // Campos donde puede caer lo que teclea el vendedor en el buscador manual:
-// descripción o código. Las palabras se expanden a sus sinónimos ("facia" →
-// FASCIA) igual que en el chat, para que el buscador encuentre lo mismo que Vico.
-const CAMPOS_BUSQUEDA = ["a.descripcion", "a.codigo"];
+// descripción, código o línea (la marca: "NISSAN" no va en la descripción,
+// que dice "FASCIA DEL VERSA 15-19"). Las palabras se expanden a sus
+// sinónimos ("facia" → FASCIA) igual que en el chat, para que el buscador
+// encuentre lo mismo que Vico.
+const CAMPOS_BUSQUEDA = ["a.descripcion", "a.codigo", "l.linea"];
+
+const ES_ANIO = /^(?:19|20)\d{2}$/;
 
 /**
- * Buscador manual de /mostrador/nuevo: artículos cuya descripción o código
- * contienen cada palabra del texto, con el precio del cliente. Solo artículos
- * con precio con el que se pueda pedir (`sqlFiltroPrecio`); primero los que
- * empiezan por la pieza pedida y los que tienen existencia.
+ * Aparta de la frase las palabras que son un año de cuatro cifras ("2017"):
+ * un año no se busca con LIKE en la descripción (ahí va "15-19") sino contra
+ * el rango `aini`-`afin` del artículo. Devuelve el resto de la frase y los años.
+ */
+export function separarAnios(frase: string): { resto: string; anios: number[] } {
+  const anios: number[] = [];
+  const resto: string[] = [];
+  for (const palabra of frase.split(/\s+/).filter(Boolean)) {
+    if (ES_ANIO.test(palabra)) anios.push(Number(palabra));
+    else resto.push(palabra);
+  }
+  return { resto: resto.join(" "), anios };
+}
+
+/**
+ * Condición SQL de "el artículo sirve para ese año": dentro del rango, o sin
+ * rango capturado (0/NULL en cualquiera de los dos extremos, que es como bdav
+ * marca "no sé"). Empuja sus parámetros a `params`.
+ */
+export function sqlFiltroAnio(anio: number, params: unknown[]): string {
+  params.push(anio, anio);
+  return "((IFNULL(a.aini, 0) = 0 OR a.aini <= ?) AND (IFNULL(a.afin, 0) = 0 OR a.afin >= ?))";
+}
+
+/**
+ * Buscador manual de /mostrador/nuevo: artículos cuya descripción, código o
+ * línea contienen cada palabra del texto —y que sirven para el año, si se
+ * tecleó uno—, con el precio del cliente. Solo artículos con precio con el que
+ * se pueda pedir (`sqlFiltroPrecio`); primero los que empiezan por la pieza
+ * pedida y los que tienen existencia. `limite` se acota a
+ * LIMITE_BUSQUEDA_ARTICULOS_MAX.
  */
 export async function buscarArticulosParaPedido(
   texto: string,
@@ -239,15 +281,17 @@ export async function buscarArticulosParaPedido(
   if (!frase) return [];
   const tope =
     Number.isInteger(limite) && limite > 0
-      ? Math.min(limite, LIMITE_BUSQUEDA_ARTICULOS)
+      ? Math.min(limite, LIMITE_BUSQUEDA_ARTICULOS_MAX)
       : LIMITE_BUSQUEDA_ARTICULOS;
 
   const descuento = normalizarDescuento(descuentoCliente);
   const condiciones: string[] = [sqlFiltroPrecio(descuento)];
   const params: unknown[] = [];
-  const palabras = condicionesPorPalabra(frase, CAMPOS_BUSQUEDA, condiciones, params);
-  // Todas las palabras eran de posición (o sinónimos vacíos): no hay nada que buscar.
-  if (palabras.requeridas.length === 0 && palabras.opcionales.length === 0) return [];
+  const { resto, anios } = separarAnios(frase);
+  for (const anio of anios) condiciones.push(sqlFiltroAnio(anio, params));
+  const palabras = condicionesPorPalabra(resto, CAMPOS_BUSQUEDA, condiciones, params);
+  // Todas las palabras eran de posición (o sinónimos vacíos) y no hubo año: no hay nada que buscar.
+  if (palabras.requeridas.length === 0 && palabras.opcionales.length === 0 && anios.length === 0) return [];
 
   const paramsOrden: unknown[] = [];
   const esLaPieza = expresionRelevancia(palabras.requeridas, ["a.descripcion"], paramsOrden, "empieza");

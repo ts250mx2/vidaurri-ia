@@ -66,6 +66,7 @@ function partida(id: number, codigo: string, cantidad: number): PartidaPedido {
     diasEntrega: null,
     cantidadAldo: null,
     nota: null,
+    foto: null,
   };
 }
 

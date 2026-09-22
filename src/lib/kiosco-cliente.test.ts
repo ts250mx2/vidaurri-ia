@@ -50,6 +50,7 @@ const PARTIDA: PartidaPedido = {
   diasEntrega: null,
   cantidadAldo: 1,
   nota: "apartada para el 3",
+  foto: null,
 };
 
 const PEDIDO = {

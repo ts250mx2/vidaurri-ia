@@ -85,6 +85,12 @@ async function responder(sql: string, params: unknown[] = []): Promise<unknown[]
   return [[]];
 }
 
+// Las fotos salen de bdav y de la Bodega, que aquí no existen: los renglones
+// pasan tal cual, con `foto: null`.
+vi.mock("@/lib/fotos-partidas", () => ({
+  conFotos: async (partidas: unknown[]) => partidas,
+}));
+
 vi.mock("@/lib/db-conversaciones", () => ({
   ahoraMonterrey: () => ({ fecha: "2026-09-14", momento: "2026-09-14 10:00:00" }),
   asegurarEsquema: async () => {},

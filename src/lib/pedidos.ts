@@ -126,6 +126,13 @@ export interface PartidaPedido {
    *  completa. Manda sobre `cantidad` al pedirle a Aldo. */
   cantidadAldo: number | null;
   nota: string | null;
+  /**
+   * Foto del renglón, resuelta al leer el pedido (`fotos-partidas.ts`): en
+   * nuevas el nombre de archivo en el S3 (`imagen` capturada o el código), en
+   * usadas el `nombre_imagen` de la Bodega. null si no hay o la base no
+   * contestó: la foto nunca detiene un pedido.
+   */
+  foto: string | null;
 }
 
 export interface EventoPedido {

@@ -63,6 +63,7 @@ function partida(numero: number, extra: Partial<PartidaPedido> = {}): PartidaPed
     diasEntrega: null,
     cantidadAldo: null,
     nota: null,
+    foto: null,
     ...extra,
   };
 }

@@ -84,6 +84,8 @@ export interface PartidaKiosco {
   importe: number;
   /** ¿Alcanza lo que hay en tienda para lo que pidió? Nunca el número. */
   hayEnTienda: boolean;
+  /** Archivo de la foto (S3 en nuevas, Bodega en usadas); null si no hay. La pantalla arma la URL. */
+  foto: string | null;
 }
 
 export interface PedidoKiosco {
@@ -109,6 +111,7 @@ function partidaParaKiosco(partida: PartidaPedido): PartidaKiosco {
     precioConIva: partida.precioUnitario,
     importe: partida.importe,
     hayEnTienda: hayEnTienda(partida.existenciaAlPedir, partida.cantidad),
+    foto: partida.foto,
   };
 }
 
@@ -145,6 +148,8 @@ export interface ArticuloKiosco {
   hayEnTienda: boolean;
   marca: string;
   tipoParte: string;
+  /** Archivo de la foto en el S3 (`imagen` capturada o el código). */
+  foto: string;
 }
 
 /** Resultado del buscador, sin costo, sin localización y sin existencia exacta. */
@@ -156,6 +161,7 @@ export function articuloParaKiosco(articulo: ArticuloParaPedido): ArticuloKiosco
     hayEnTienda: articulo.existencia > 0,
     marca: articulo.marca,
     tipoParte: articulo.tipoParte,
+    foto: articulo.foto,
   };
 }
 
