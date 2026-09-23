@@ -61,6 +61,7 @@ const PEDIDO = {
   bkoPosError: null,
   bkoPosCompromiso: null,
   domicilio: null,
+  aceptacion: null,
   creadoEn: "2026-09-15 10:00:00",
   enviadoEn: null,
   confirmadoEn: null,
@@ -70,6 +71,7 @@ const PEDIDO = {
   actualizadoEn: "2026-09-15 10:00:00",
   observaciones: "nota interna",
   folioVentaPos: null,
+  aceptadoFirma: null,
   motivoCancelacion: null,
   partidas: [PARTIDA],
   eventos: [

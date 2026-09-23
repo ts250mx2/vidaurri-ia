@@ -41,7 +41,8 @@ const globalConPool = globalThis as unknown as {
 // para el área de clientes; capa de datos en db-clientes-acceso.ts).
 // v10: dom_* en pedidos_mostrador (el domicilio opcional del cliente).
 // v11: dom_telefono (teléfono de contacto del domicilio).
-const VERSION_ESQUEMA = 11;
+// v12: aceptado_en / aceptado_nombre / aceptado_firma (cotización firmada).
+const VERSION_ESQUEMA = 12;
 
 const ZONA_HORARIA = "America/Monterrey";
 
@@ -187,6 +188,9 @@ const TABLAS = [
   dom_municipio VARCHAR(80) NULL,
   dom_estado VARCHAR(60) NULL,
   dom_telefono VARCHAR(20) NULL COMMENT 'Teléfono de contacto en el domicilio, 10 dígitos',
+  aceptado_en DATETIME NULL COMMENT 'Cuándo firmó el cliente la cotización desde la liga del WhatsApp',
+  aceptado_nombre VARCHAR(150) NULL COMMENT 'Nombre con el que firmó',
+  aceptado_firma MEDIUMTEXT NULL COMMENT 'El trazo de la firma, data URL PNG',
   folio_venta_pos VARCHAR(20) NULL COMMENT 'Folio de la venta en el POS al entregar (referencia, solo lectura)',
   motivo_cancelacion VARCHAR(200) NULL,
   num_cotiza_pos BIGINT NULL COMMENT 'cotiza.num_cotiza en bdav (folio que ve el POS)',
@@ -454,6 +458,20 @@ const COLUMNAS_NUEVAS_PEDIDOS_MOSTRADOR: ReadonlyArray<ColumnaNueva> = [
     columna: "dom_telefono",
     alter:
       "ALTER TABLE pedidos_mostrador ADD COLUMN dom_telefono VARCHAR(20) NULL COMMENT 'Teléfono de contacto en el domicilio, 10 dígitos' AFTER dom_estado",
+  },
+  // v12: la cotización aceptada con firma desde la liga del WhatsApp.
+  {
+    columna: "aceptado_en",
+    alter:
+      "ALTER TABLE pedidos_mostrador ADD COLUMN aceptado_en DATETIME NULL COMMENT 'Cuándo firmó el cliente la cotización desde la liga del WhatsApp' AFTER dom_telefono",
+  },
+  {
+    columna: "aceptado_nombre",
+    alter: "ALTER TABLE pedidos_mostrador ADD COLUMN aceptado_nombre VARCHAR(150) NULL COMMENT 'Nombre con el que firmó' AFTER aceptado_en",
+  },
+  {
+    columna: "aceptado_firma",
+    alter: "ALTER TABLE pedidos_mostrador ADD COLUMN aceptado_firma MEDIUMTEXT NULL COMMENT 'El trazo de la firma, data URL PNG' AFTER aceptado_nombre",
   },
 ];
 

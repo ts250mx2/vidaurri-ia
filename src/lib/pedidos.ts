@@ -220,6 +220,12 @@ export interface PedidoResumen {
   bkoPosCompromiso: string | null;
   /** Domicilio del cliente, si lo dio al enviar; null si no. */
   domicilio: Domicilio | null;
+  /**
+   * El cliente aceptó la cotización firmándola desde la liga del WhatsApp
+   * (quién y cuándo); null si el pedido no nació así. El trazo va aparte, en
+   * el detalle (`aceptadoFirma`): pesa y las listas no lo necesitan.
+   */
+  aceptacion: { nombre: string; en: string } | null;
   creadoEn: string;
   enviadoEn: string | null;
   confirmadoEn: string | null;
@@ -231,6 +237,8 @@ export interface PedidoResumen {
 
 export interface PedidoDetalle extends PedidoResumen {
   observaciones: string | null;
+  /** La firma con la que se aceptó la cotización (data URL PNG); null si no la hubo. */
+  aceptadoFirma: string | null;
   /** Folio de la venta en el POS al entregar (referencia, solo lectura). */
   folioVentaPos: string | null;
   motivoCancelacion: string | null;

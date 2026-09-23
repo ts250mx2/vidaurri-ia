@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PedidoDetalle } from "./pedidos";
-import { datosDelPedido, fechaHoraPedido, generarPdfPedido, notasDelPedido } from "./pedido-pdf";
+import { datosDelPedido, fechaHoraPedido, generarPdfPedido, notasDeCotizacion, notasDelPedido } from "./pedido-pdf";
 
 const PEDIDO: PedidoDetalle = {
   id: 21,
@@ -27,6 +27,7 @@ const PEDIDO: PedidoDetalle = {
   bkoPosError: null,
   bkoPosCompromiso: null,
   domicilio: null,
+  aceptacion: null,
   creadoEn: "2026-09-03 00:19:31",
   enviadoEn: "2026-09-03 00:20:10",
   confirmadoEn: null,
@@ -36,6 +37,7 @@ const PEDIDO: PedidoDetalle = {
   actualizadoEn: "2026-09-03 00:20:10",
   observaciones: "Lado derecho con fondo negro",
   folioVentaPos: null,
+  aceptadoFirma: null,
   motivoCancelacion: null,
   eventos: [],
   partidas: [
@@ -152,5 +154,18 @@ describe("generarPdfPedido", () => {
     }));
     const pdf = await generarPdfPedido({ ...PEDIDO, partidas, numPartidas: partidas.length });
     expect(pdf.byteLength).toBeGreaterThan(5000);
+  });
+});
+
+describe("cotización", () => {
+  it("las notas de una cotización dicen que no es un pedido, y conservan las observaciones", () => {
+    const notas = notasDeCotizacion({ ...PEDIDO, estatus: "borrador", folio: null });
+    expect(notas[0]).toBe("Observaciones: Lado derecho con fondo negro");
+    expect(notas[1]).toContain("Esta cotización no es un pedido");
+  });
+
+  it("el PDF de una cotización de borrador se genera", async () => {
+    const pdf = await generarPdfPedido({ ...PEDIDO, estatus: "borrador", folio: null }, { cotizacion: true });
+    expect(Buffer.from(pdf).subarray(0, 5).toString()).toBe("%PDF-");
   });
 });

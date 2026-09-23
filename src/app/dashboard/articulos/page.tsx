@@ -48,6 +48,8 @@ interface PrecioAldo {
   sinIva?: number;
   conIva?: number;
   existencia?: number | string;
+  /** Lo que llega en el siguiente reparto de Aldo (casi siempre tiene 0 en piso). */
+  proximoReparto?: number | string;
 }
 
 interface PiezaUsada {
@@ -554,6 +556,19 @@ export default function ArticulosPage() {
     if (v == null) return "—";
     return typeof v === "number" ? entero(v) : v;
   };
+  // Aldo casi siempre tiene 0 en piso y surte del siguiente reparto: si no hay
+  // existencia pero sí reparto, se muestra el reparto ("Mas de 60 en reparto").
+  const existenciaAldo = (al: PrecioAldo): React.ReactNode => {
+    const sinPiso = !al.existencia || al.existencia === "0";
+    if (sinPiso && al.proximoReparto && /[1-9]/.test(String(al.proximoReparto))) {
+      return (
+        <span className="text-amber-300" title="Sin existencia en piso; llega en el siguiente reparto de Aldo">
+          {existenciaAldoTexto(al.proximoReparto)} <span className="font-normal text-amber-300/70">en reparto</span>
+        </span>
+      );
+    }
+    return existenciaAldoTexto(al.existencia);
+  };
 
   // Contenido de una celda del grupo Aldo según el estado de carga de su código.
   const celdaAldo = (codigo: string, render: (a: PrecioAldo) => React.ReactNode) => {
@@ -925,7 +940,7 @@ export default function ArticulosPage() {
                         {celdaAldo(a.codigo, (al) => moneda(al.conIva))}
                       </td>
                       <td className="px-4 py-2.5 text-[12px] font-black text-slate-300 text-right">
-                        {celdaAldo(a.codigo, (al) => existenciaAldoTexto(al.existencia))}
+                        {celdaAldo(a.codigo, existenciaAldo)}
                       </td>
 
                       {/* Grupo Bodega Usado */}
@@ -1140,9 +1155,7 @@ export default function ArticulosPage() {
                       <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3">
                         <p className={lbl}>Existencia Aldo</p>
                         <p className="text-sm font-black mt-1 truncate text-slate-200">
-                          {typeof aldo.existencia === "number"
-                            ? entero(aldo.existencia)
-                            : (aldo.existencia ?? "—")}
+                          {existenciaAldo(aldo)}
                         </p>
                       </div>
                       {(() => {

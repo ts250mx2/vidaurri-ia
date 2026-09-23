@@ -19,6 +19,38 @@
 // WhatsApp tardaba ~57 s (18-sep-2026), al filo del corte de nginx a los 60.
 
 const URL_BUSQUEDA = "http://www.aldoautopartes.com/pi_resultados.jsp";
+/** Variables de entorno que Aldo lee (inyectables en pruebas). */
+export type EntornoAldo = Record<string, string | undefined>;
+
+/**
+ * A dónde se manda cada consulta. Si Aldo bloquea la IP del servidor, salen por
+ * un proxy propio en otra máquina (scripts/aldo-proxy.mjs de vidaurri-ia, p. ej.
+ * por Tailscale): ALDO_PROXY_URL es su base y ALDO_PROXY_KEY la llave compartida.
+ */
+export function destinoAldo(env: EntornoAldo = process.env): { url: string; headers: Record<string, string> } {
+  const proxy = (env.ALDO_PROXY_URL ?? "").trim().replace(/\/+$/, "");
+  if (!proxy) return { url: URL_BUSQUEDA, headers: {} };
+  const llave = (env.ALDO_PROXY_KEY ?? "").trim();
+  return { url: `${proxy}/pi_resultados.jsp`, headers: llave ? { "X-Aldo-Proxy-Key": llave } : {} };
+}
+
+/** La petición POST al buscador de Aldo (o al proxy), lista para fetch. */
+function peticionAldo(termino: string, timeoutMs: number, env?: EntornoAldo): [string, RequestInit] {
+  const destino = destinoAldo(env);
+  return [
+    destino.url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0",
+        ...destino.headers,
+      },
+      body: "codigo=" + encodeURIComponent(termino),
+      signal: AbortSignal.timeout(timeoutMs),
+    },
+  ];
+}
 /** La vista de Existencias del dashboard: el usuario pidió esa búsqueda y la espera. */
 const TIMEOUT_BUSQUEDA_MS = 15000;
 /** El precio por código que consulta Vico a media conversación: Aldo contesta
@@ -90,6 +122,7 @@ export interface PrecioAldo {
 export interface DependenciasAldo {
   fetch?: typeof fetch;
   ahora?: () => number;
+  env?: EntornoAldo;
 }
 
 const SIN_RESPUESTA: PrecioAldo = { encontrado: false, sinRespuesta: true };
@@ -218,16 +251,8 @@ function parsear(html: string, codigo: string): PrecioAldo {
 }
 
 /** Sube si la red falla o vence el timeout; un HTTP de error del sitio es "no encontrado". */
-async function consultarSitio(codigo: string, pedir: typeof fetch): Promise<PrecioAldo> {
-  const res = await pedir(URL_BUSQUEDA, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "Mozilla/5.0",
-    },
-    body: "codigo=" + encodeURIComponent(codigo),
-    signal: AbortSignal.timeout(TIMEOUT_PRECIO_MS),
-  });
+async function consultarSitio(codigo: string, pedir: typeof fetch, env?: EntornoAldo): Promise<PrecioAldo> {
+  const res = await pedir(...peticionAldo(codigo, TIMEOUT_PRECIO_MS, env));
   if (!res.ok) return { encontrado: false };
   // El sitio responde en ISO-8859-1: se decodifica el buffer como latin1.
   const html = new TextDecoder("latin1").decode(await res.arrayBuffer());
@@ -301,15 +326,7 @@ export async function buscarAldo(termino: string, deps: DependenciasAldo = {}): 
     const reciente = cacheBusqueda.get(clave);
     if (reciente && reciente.expira > ahora()) return reciente.valor;
 
-    const res = await pedir(URL_BUSQUEDA, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0",
-      },
-      body: "codigo=" + encodeURIComponent(termino),
-      signal: AbortSignal.timeout(TIMEOUT_BUSQUEDA_MS),
-    });
+    const res = await pedir(...peticionAldo(termino, TIMEOUT_BUSQUEDA_MS, deps.env));
     if (!res.ok) throw new Error("Aldo no respondió");
     const html = new TextDecoder("latin1").decode(await res.arrayBuffer());
     const filas = parsearFilas(html);
@@ -342,7 +359,7 @@ export async function precioAldo(codigo: string, deps: DependenciasAldo = {}): P
 
     let valor: PrecioAldo;
     try {
-      valor = await consultarSitio(codigo, pedir);
+      valor = await consultarSitio(codigo, pedir, deps.env);
     } catch {
       // Falla de red o timeout: no se cachea, y cuenta para el cortacircuito.
       anotarFallo(ahora());

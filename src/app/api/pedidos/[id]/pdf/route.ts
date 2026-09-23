@@ -1,12 +1,14 @@
 import { leerIdRuta } from "@/lib/clientes-descuento";
 import { obtenerPedido } from "@/lib/db-pedidos";
-import { firmaValida } from "@/lib/pedido-enlace";
+import { firmaCotizacionValida, firmaValida } from "@/lib/pedido-enlace";
 import { generarPdfPedido } from "@/lib/pedido-pdf";
 
 // PDF de un pedido para el cliente: lo abre desde la liga que el Vendedor IA
 // le manda por WhatsApp al confirmar. Es público a propósito (el cliente no
 // tiene sesión), pero solo abre con la firma HMAC del id (pedido-enlace.ts);
 // sin ella, o con la de otro pedido, responde 404 sin decir si el pedido existe.
+// Con `?c=<firma>` es la COTIZACIÓN que el mostrador mandó por WhatsApp: otra
+// firma, abre también borradores y el PDF sale titulado como cotización.
 
 export const dynamic = "force-dynamic";
 
@@ -18,18 +20,23 @@ function noEncontrado(): Response {
 
 export async function GET(request: Request, contexto: Contexto) {
   const id = leerIdRuta((await contexto.params).id);
-  const firma = new URL(request.url).searchParams.get("f") ?? "";
-  if (id === null || !firmaValida(id, firma)) return noEncontrado();
+  const { searchParams } = new URL(request.url);
+  const firmaCotizacion = searchParams.get("c");
+  const cotizacion = id !== null && firmaCotizacion !== null && firmaCotizacionValida(id, firmaCotizacion);
+  const firma = searchParams.get("f") ?? "";
+  if (id === null || (!cotizacion && !firmaValida(id, firma))) return noEncontrado();
 
   try {
     const pedido = await obtenerPedido(id);
-    // Un borrador no tiene folio ni es un pedido todavía: no se comparte.
-    if (!pedido || !pedido.folio) return noEncontrado();
-    const pdf = await generarPdfPedido(pedido);
+    // Un borrador no tiene folio ni es un pedido todavía: no se comparte como
+    // pedido; como cotización sí, que para eso es.
+    if (!pedido || (!cotizacion && !pedido.folio)) return noEncontrado();
+    const pdf = await generarPdfPedido(pedido, { cotizacion });
+    const archivo = cotizacion ? `cotizacion-${pedido.folio ?? pedido.id}.pdf` : `${pedido.folio}.pdf`;
     return new Response(pdf, {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${pedido.folio}.pdf"`,
+        "Content-Disposition": `inline; filename="${archivo}"`,
         "Cache-Control": "private, no-store",
         "X-Robots-Tag": "noindex",
       },

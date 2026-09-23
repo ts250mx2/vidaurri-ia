@@ -2,6 +2,15 @@
 // absolutas que alguien de fuera tenga que abrir: las fotos que se mandan por
 // WhatsApp y las páginas a las que Stripe regresa tras un pago.
 
+/**
+ * PAGINA_URL del .env (el sitio público, apvidaurri.com) sin diagonal final;
+ * '' si no está configurada. Es a donde se manda al cliente a ver y firmar su
+ * cotización; sin ella la liga va al PDF de este sistema.
+ */
+export function paginaUrlConfigurada(): string {
+  return process.env.PAGINA_URL?.trim().replace(/\/+$/, "") ?? "";
+}
+
 /** PUBLIC_BASE_URL del .env sin diagonal final; '' si no está configurada. */
 export function baseUrlConfigurada(): string {
   return process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "") ?? "";

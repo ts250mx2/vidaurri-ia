@@ -172,6 +172,7 @@ const COLUMNAS_PEDIDO = `p.id, p.folio, p.estatus, p.canal, p.id_cliente AS idCl
        p.subtotal, p.iva, p.total, p.observaciones,
        p.dom_calle AS domCalle, p.dom_colonia AS domColonia, p.dom_cp AS domCp,
        p.dom_municipio AS domMunicipio, p.dom_estado AS domEstado, p.dom_telefono AS domTelefono,
+       p.aceptado_en AS aceptadoEn, p.aceptado_nombre AS aceptadoNombre,
        p.folio_venta_pos AS folioVentaPos, p.motivo_cancelacion AS motivoCancelacion,
        p.num_cotiza_pos AS numCotizaPos, p.cotiza_pos_estado AS cotizaPosEstado,
        p.cotiza_pos_error AS cotizaPosError,
@@ -240,6 +241,10 @@ function aResumen(fila: RowDataPacket): PedidoResumen {
     bkoPosError: texto(fila.bkoPosError),
     bkoPosCompromiso: texto(fila.bkoPosCompromiso),
     domicilio: domicilioDe(fila),
+    aceptacion:
+      texto(fila.aceptadoEn) && texto(fila.aceptadoNombre)
+        ? { nombre: String(fila.aceptadoNombre), en: String(fila.aceptadoEn) }
+        : null,
     creadoEn: String(fila.creadoEn),
     enviadoEn: texto(fila.enviadoEn),
     confirmadoEn: texto(fila.confirmadoEn),
@@ -307,6 +312,7 @@ function aDetalle(fila: RowDataPacket, partidas: RowDataPacket[], eventos: RowDa
   return {
     ...aResumen(fila),
     observaciones: texto(fila.observaciones),
+    aceptadoFirma: texto(fila.aceptadoFirma),
     folioVentaPos: texto(fila.folioVentaPos),
     motivoCancelacion: texto(fila.motivoCancelacion),
     partidas: partidas.map(aPartida),
@@ -317,8 +323,10 @@ function aDetalle(fila: RowDataPacket, partidas: RowDataPacket[], eventos: RowDa
 /** Cabecera + partidas + eventos. Con la conexión de una transacción devuelve
  *  lo que esa transacción ya escribió, aunque no haya hecho commit. */
 async function leerDetalle(ejecutor: Ejecutor, id: number): Promise<PedidoDetalle | null> {
+  // La firma (un PNG en texto) solo viaja en el detalle: las listas usan las
+  // mismas columnas y no tienen por qué cargar con ella.
   const [cabeceras] = await ejecutor.query<RowDataPacket[]>(
-    `SELECT ${COLUMNAS_PEDIDO} FROM pedidos_mostrador p WHERE p.id = ?`,
+    `SELECT ${COLUMNAS_PEDIDO}, p.aceptado_firma AS aceptadoFirma FROM pedidos_mostrador p WHERE p.id = ?`,
     [id]
   );
   if (cabeceras.length === 0) return null;
@@ -966,6 +974,91 @@ export async function actualizarObservaciones(
       {
         evento: "observaciones",
         detalle: nuevas === null ? "Sin observaciones" : nuevas.slice(0, OBSERVACIONES_BITACORA),
+        usuario,
+        canal,
+      },
+      momento
+    );
+    return detalleEscrito(conexion, idPedido);
+  });
+}
+
+/**
+ * El cliente aceptó la cotización firmándola desde la liga del WhatsApp: se
+ * guarda quién, cuándo y el trazo, y el borrador se ENVÍA (recibe folio y
+ * entra a la cola del mostrador) con las observaciones y el domicilio que ya
+ * traía. Solo un borrador se puede aceptar: uno ya enviado responde 409 (la
+ * liga se abrió dos veces) y uno cancelado también.
+ */
+export async function aceptarCotizacion(
+  idPedido: number,
+  aceptacion: { nombre: string; firma: string }
+): Promise<PedidoDetalle> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+
+  const previo = await enTransaccion(async (conexion) => {
+    const pedido = await bloquearPedido(conexion, idPedido);
+    if (pedido.estatus !== "borrador") throw new TransicionInvalidaError(pedido.estatus, "enviado");
+    if ((await contarPartidas(conexion, idPedido)) === 0) throw new PedidoVacioError();
+    await conexion.query(
+      `UPDATE pedidos_mostrador SET aceptado_en = ?, aceptado_nombre = ?, aceptado_firma = ?, actualizado_en = ? WHERE id = ?`,
+      [momento, aceptacion.nombre, aceptacion.firma, momento, idPedido]
+    );
+    await registrarEvento(
+      conexion,
+      idPedido,
+      { evento: "cotizacion_aceptada", detalle: `Firmó ${aceptacion.nombre}`, usuario: "cliente", canal: pedido.canal },
+      momento
+    );
+    return detalleEscrito(conexion, idPedido);
+  });
+  // El envío es su propia transacción (folio, totales, evento "enviado"); va
+  // con lo que el borrador ya traía, que es lo que el cliente vio y firmó.
+  return enviarPedido(idPedido, "cliente", previo.canal, previo.observaciones, previo.domicilio);
+}
+
+/**
+ * Domicilio del pedido (calle, colonia, CP, municipio, estado, teléfono de
+ * contacto). Se cambia mientras el pedido se pueda editar; null lo borra. Es
+ * lo que la cotización por WhatsApp deja guardado en el borrador para que el
+ * PDF lo traiga y el envío no lo pierda.
+ */
+export async function actualizarDomicilio(
+  idPedido: number,
+  domicilio: Domicilio | null,
+  usuario: string | null,
+  canal: CanalPedido
+): Promise<PedidoDetalle> {
+  await asegurarEsquema();
+  const { momento } = ahoraMonterrey();
+
+  return enTransaccion(async (conexion) => {
+    const pedido = await bloquearPedido(conexion, idPedido);
+    if (!puedeEditarPedido(pedido.estatus)) throw new PedidoNoEditableError(pedido.estatus);
+
+    await conexion.query(
+      `UPDATE pedidos_mostrador
+          SET dom_calle = ?, dom_colonia = ?, dom_cp = ?, dom_municipio = ?, dom_estado = ?, dom_telefono = ?,
+              actualizado_en = ?
+        WHERE id = ?`,
+      [
+        domicilio?.calle ?? null,
+        domicilio?.colonia ?? null,
+        domicilio?.cp ?? null,
+        domicilio?.municipio ?? null,
+        domicilio?.estado ?? null,
+        domicilio?.telefono ?? null,
+        momento,
+        idPedido,
+      ]
+    );
+    await registrarEvento(
+      conexion,
+      idPedido,
+      {
+        evento: "domicilio",
+        detalle: domicilio ? `${domicilio.colonia}, ${domicilio.municipio}, CP ${domicilio.cp}` : "Sin domicilio",
         usuario,
         canal,
       },

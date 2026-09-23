@@ -72,6 +72,9 @@ export function datosDelPedido(pedido: PedidoDetalle): Array<[string, string]> {
   // de eso no se imprime el renglón, para no dejarle un dato vacío que no
   // sabría interpretar.
   if (pedido.numCotizaPos !== null) datos.push(["Cotización", String(pedido.numCotizaPos)]);
+  if (pedido.aceptacion) {
+    datos.push(["Aceptado", `Firmó ${pedido.aceptacion.nombre} el ${fechaHoraPedido(pedido.aceptacion.en)}`]);
+  }
   return datos;
 }
 
@@ -87,8 +90,29 @@ export function notasDelPedido(pedido: PedidoDetalle): string[] {
   return notas;
 }
 
+export interface OpcionesPdfPedido {
+  /**
+   * Cotización (normalmente de un borrador que el mostrador todavía no envía):
+   * se titula "Cotización #id", sin estatus de pedido, y la nota al pie dice
+   * que no es un pedido hasta que se envíe.
+   */
+  cotizacion?: boolean;
+}
+
+const NOTA_COTIZACION =
+  "Esta cotización no es un pedido: los precios llevan IVA incluido y quedan sujetos a existencia. Para convertirla en pedido, respóndenos por WhatsApp o pasa al mostrador.";
+
+/** Notas al pie de una cotización: las observaciones y que no es un pedido. */
+export function notasDeCotizacion(pedido: PedidoDetalle): string[] {
+  const notas: string[] = [];
+  if (pedido.observaciones) notas.push(`Observaciones: ${pedido.observaciones}`);
+  notas.push(NOTA_COTIZACION);
+  return notas;
+}
+
 /** Arma el PDF y devuelve sus bytes (para servirlo como application/pdf). */
-export async function generarPdfPedido(pedido: PedidoDetalle): Promise<ArrayBuffer> {
+export async function generarPdfPedido(pedido: PedidoDetalle, opciones: OpcionesPdfPedido = {}): Promise<ArrayBuffer> {
+  const cotizacion = opciones.cotizacion === true;
   const { default: JsPdf } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
 
@@ -106,13 +130,21 @@ export async function generarPdfPedido(pedido: PedidoDetalle): Promise<ArrayBuff
   doc.text(EMPRESA, MARGEN, y + 13);
   doc.setFontSize(16);
   doc.setTextColor(AMBAR[0], AMBAR[1], AMBAR[2]);
-  doc.text(`Pedido ${pedido.folio ?? "en captura"}`, anchoPagina - MARGEN, y + 13, { align: "right" });
+  const titulo = cotizacion
+    ? pedido.folio ? `Cotización ${pedido.folio}` : `Cotización #${pedido.id}`
+    : `Pedido ${pedido.folio ?? "en captura"}`;
+  doc.text(titulo, anchoPagina - MARGEN, y + 13, { align: "right" });
   y += 20;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(GRIS);
   doc.text(`Generado el ${generado}`, MARGEN, y + 9);
-  doc.text(textoImprimible(ESTATUS_TEXTO[pedido.estatus]), anchoPagina - MARGEN, y + 9, { align: "right" });
+  doc.text(
+    textoImprimible(cotizacion ? "Cotización · precios con IVA, sujetos a existencia" : ESTATUS_TEXTO[pedido.estatus]),
+    anchoPagina - MARGEN,
+    y + 9,
+    { align: "right" }
+  );
   y += 24;
 
   // Datos del pedido: el cliente en un renglón completo (los nombres largos no
@@ -178,7 +210,7 @@ export async function generarPdfPedido(pedido: PedidoDetalle): Promise<ArrayBuff
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(GRIS);
-  for (const nota of notasDelPedido(pedido)) {
+  for (const nota of (cotizacion ? notasDeCotizacion(pedido) : notasDelPedido(pedido))) {
     const lineas = doc.splitTextToSize(textoImprimible(nota), ancho) as string[];
     if (y + lineas.length * 12 > altoPagina - MARGEN - ALTO_PIE) {
       doc.addPage();
@@ -193,7 +225,7 @@ export async function generarPdfPedido(pedido: PedidoDetalle): Promise<ArrayBuff
     doc.setPage(pagina);
     doc.setFontSize(8);
     doc.setTextColor(GRIS_PIE);
-    doc.text(`${pedido.folio ?? "Pedido"} · Generado el ${generado} · Vidaurri IA`, MARGEN, altoPagina - 20);
+    doc.text(`${pedido.folio ?? (cotizacion ? `Cotización #${pedido.id}` : "Pedido")} · Generado el ${generado} · Vidaurri IA`, MARGEN, altoPagina - 20);
     doc.text(`Página ${pagina} de ${total}`, anchoPagina - MARGEN, altoPagina - 20, { align: "right" });
   }
   return doc.output("arraybuffer");

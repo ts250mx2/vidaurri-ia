@@ -78,6 +78,7 @@ const PEDIDO = {
   bkoPosError: "detalle del POS",
   bkoPosCompromiso: "MARTES",
   domicilio: null,
+  aceptacion: null,
   creadoEn: "2026-09-15 10:00:00",
   enviadoEn: "2026-09-15 10:05:00",
   confirmadoEn: "2026-09-15 10:30:00",
@@ -87,6 +88,7 @@ const PEDIDO = {
   actualizadoEn: "2026-09-15 10:30:00",
   observaciones: "Recoge en la tarde",
   folioVentaPos: "V-55",
+  aceptadoFirma: null,
   motivoCancelacion: "cliente moroso",
   partidas: [PARTIDA],
   eventos: [
